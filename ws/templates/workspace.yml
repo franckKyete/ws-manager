@@ -1,0 +1,12 @@
+name: ${NAME}
+created: ${CREATED}
+status: active
+repositories:
+  server:
+    branch: ${SERVER_BRANCH}
+    create: ${SERVER_CREATE}
+    path: Renttik-server
+  mobile:
+    branch: ${MOBILE_BRANCH}
+    create: ${MOBILE_CREATE}
+    path: Renttik-mobile
