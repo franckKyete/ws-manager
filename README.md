@@ -239,3 +239,31 @@ ws remove auth-flow
 | `status` | `ws status <name>` | Display Git status across all workspace worktrees |
 | `exec` | `ws exec <name> -- <cmd>` | Run command across all workspace repository worktrees |
 | `doctor` | `ws doctor` | Run system health and environment diagnostics |
+
+---
+
+## 🤝 Contributing & Bug Reports
+
+Contributions, issue reports, and feature requests are warmly welcomed!
+
+### 🐛 Reporting Bugs & Feature Requests
+If you encounter a bug or have an idea to improve `ws`:
+1. Check the [GitHub Issues](../../issues) tab to see if the issue or request is already listed.
+2. Open a new issue with a clear description, reproduction steps, expected behavior, and terminal logs.
+
+### 🛠️ Submitting Pull Requests
+1. Fork the repository and clone your fork.
+2. Create a feature branch (`git checkout -b feature/my-feature`).
+3. Make your changes and ensure all unit tests pass:
+   ```bash
+   python3 -m pytest ws/tests/ -v
+   ```
+4. Commit your changes cleanly.
+5. Push to your branch and submit a Pull Request!
+
+---
+
+## 📄 License
+
+Distributed under the MIT License. See `LICENSE` for details.
+
