@@ -172,7 +172,111 @@ Untracked files like `.env`, `node_modules/`, and temporary build outputs remain
 
 ---
 
-### 5. Pull Remote Updates (`ws pull`)
+### 5. Setup & Environment Variable Engine (`ws setup` / `ws env`)
+
+`ws` includes a powerful environment management engine that merges global store values, dynamic workspace templates, and repository-scoped overrides in a strict 3-step execution pipeline:
+
+1. **Step 1: Example Copy**: If `.env.example` is present and `.env` is missing, copies `.env.example` $\rightarrow$ `.env`.
+2. **Step 2: Scoped & Dynamic Env Injection**: Resolves placeholders like `${WORKSPACE_NAME}`, `${REPO_NAME}`, and `${PORT:4000}` (automatic collision-free port offsets per workspace slot), merging them cleanly into `.env`.
+3. **Step 3: Setup Scripts**: Sequentially runs configured setup commands with dynamic variables available both **inline** (e.g. `${DB_NAME}`, `${PORT}`) and as **exported shell environment variables** (e.g. `$DB_NAME`, `$WORKSPACE_NAME`).
+
+#### Copying Project Files into Worktrees (`copy_files:`)
+
+Files that need to be copied into worktrees (e.g. certificates, credentials, Prisma schemas) can be placed in a **`files/`** directory at the project root:
+
+```
+my-project/
+├── repositories.yml
+├── files/
+│   └── storage/
+│       └── app/
+│           └── pawapay-private.pem
+├── scripts/
+├── bares/
+└── workspaces/
+```
+
+In `repositories.yml`, refer to the relative path directly:
+
+```yaml
+repositories:
+  server:
+    bare: bares/server.git
+    checkout: server
+    copy_files:
+      # Automatically searched in files/storage/app/pawapay-private.pem:
+      - storage/app/pawapay-private.pem
+      # Or with custom destination:
+      - source: storage/app/pawapay-private.pem
+        dest: storage/app/pawapay-private.pem
+```
+
+During Step 1 of setup, `ws` searches `files/` at the project root first and copies the file directly into `workspaces/<workspace_name>/server/storage/app/pawapay-private.pem` (creating parent directories automatically).
+
+
+## 🚀 Launching Workspace Services Concurrently
+`ws launch` runs all services in a workspace **concurrently** in background processes with genuine **Pseudo-Terminal (PTY)** emulation, live port detection, and full interactive input forwarding.
+
+```bash
+# 1. Interactive Multi-Pane TUI (Default):
+ws launch auth-flow --all
+
+# 2. Interactively Attach Terminal Directly to a Service (stdin + stdout):
+ws attach auth-flow server
+
+# 3. View / Stream a Single Service Output:
+ws launch auth-flow --attach server
+
+# 4. Launch in Tiled Split Panes inside a tmux session:
+ws launch auth-flow --all --tmux
+
+# 5. Launch in Separate Native Terminal Windows/Tabs (wezterm, gnome-terminal, kitty, etc.):
+ws launch auth-flow --all --terminal
+
+# 6. Raw Multiplexed Log Stream:
+ws launch auth-flow --all --stream
+```
+
+### 🖥 Interactive TUI Keyboard Shortcuts
+
+| Shortcut | Mode | Description |
+|---|---|---|
+| **`i`** or **`Enter`** | Navigation | **Enter Interactive Input Mode** (forward all typing directly to focused service PTY) |
+| **`Esc`** or **`Ctrl+X`** | Interactive | **Exit Interactive Input Mode** back to navigation |
+| **`Tab`** / **`Shift+Tab`** / **`← → ↑ ↓`** | Navigation | Switch focus between service panes |
+| **`f`** | Navigation | **Toggle Fullscreen Single View** (expand focused service to 100% screen) |
+| **`1` .. `9`** | Navigation | Jump directly to service #N |
+| **`r`** | Navigation | Restart currently focused service without affecting others |
+| **`c`** | Navigation | Clear log buffer of focused service |
+| **`q`** or **`Ctrl+C`** | Navigation | Gracefully terminate all child processes and exit |
+
+
+# Run in verbose mode to see step starts, resolved variables, and full command output:
+ws -v setup auth-flow --all
+
+# Inspect resolved environment variables:
+ws env auth-flow server
+
+# Sync environment variables without executing setup scripts:
+ws env auth-flow --sync
+
+# Automatically create and setup a workspace in one step:
+ws new auth-flow --all --setup
+```
+
+---
+
+### 6. Launch Workspace Services (`ws launch`)
+
+Launch project services defined in `repositories.yml` (e.g., `launch: npm run dev`):
+
+```bash
+ws launch auth-flow
+```
+
+---
+
+### 7. Pull Remote Updates (`ws pull`)
 
 Pull remote updates across non-frozen workspace repositories:
 
@@ -194,7 +298,7 @@ Output displays a Rich summary table:
 
 ---
 
-### 6. Push Committed Changes (`ws push`)
+### 8. Push Committed Changes (`ws push`)
 
 Push committed changes across workspace repositories:
 
@@ -206,7 +310,7 @@ ws push auth-flow
 
 ---
 
-### 7. Inspect & Teardown Workspaces (`ws info` / `ws list` / `ws remove`)
+### 9. Inspect & Teardown Workspaces (`ws info` / `ws list` / `ws remove`)
 
 ```bash
 # List all workspaces
@@ -227,8 +331,11 @@ ws remove auth-flow
 | :--- | :--- | :--- |
 | `init` | `ws init [url...]` | Clone bare repositories into `bares/` and generate `repositories.yml` |
 | `add` | `ws add <url>` | Add a new bare repository to `repositories.yml` |
-| `new` | `ws new <name> [spec...]` | Create a workspace with custom or default branches |
-| `create` | `ws create <config.yml>` | Create a workspace from a YAML configuration file |
+| `new` | `ws new <name> [spec...] [--setup]` | Create a workspace with custom branches and optional setup |
+| `create` | `ws create <config.yml> [--setup]` | Create a workspace from a YAML file with optional setup |
+| `setup` | `ws setup <name> [--repos r1,r2]` | Run 3-step setup (env copy, dynamic env sync, setup scripts) |
+| `env` | `ws env <name> [repo] [--sync]` | Inspect or sync resolved environment variables for worktrees |
+| `launch` | `ws launch <name> [--repos r1,r2]` | Display launch commands and start workspace services |
 | `pull` | `ws pull <name> [--repos r1,r2]` | Pull remote updates across workspace worktrees |
 | `push` | `ws push <name> [--repos r1,r2]` | Push committed changes to remotes (no force push) |
 | `list` | `ws list` | List active workspaces and frozen badges `[🔒 FROZEN]` |
@@ -239,6 +346,7 @@ ws remove auth-flow
 | `status` | `ws status <name>` | Display Git status across all workspace worktrees |
 | `exec` | `ws exec <name> -- <cmd>` | Run command across all workspace repository worktrees |
 | `doctor` | `ws doctor` | Run system health and environment diagnostics |
+
 
 ---
 

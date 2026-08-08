@@ -4,10 +4,12 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import subprocess
 import sys
 from typing import Callable, Sequence
 import yaml
 
+from ws.env import EnvEngine
 from ws.exceptions import (
     BranchAlreadyExistsException,
     BranchNotFoundException,
@@ -747,6 +749,342 @@ class WorkspaceManager:
                 }
 
         return results
+
+    def setup_workspace(
+        self,
+        workspace_name: str,
+        repos: Sequence[str] | None = None,
+        dry_run: bool = False,
+        skip_scripts: bool = False,
+        verbose: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        """Run 3-step setup pipeline for repositories in a workspace.
+
+        Step 1: Copy .env.example -> .env if present and .env is missing.
+        Step 2: Resolve global, dynamic, and repository-scoped environment variables and sync into .env.
+        Step 3: Run repository setup script/commands sequentially.
+        """
+        import time
+        self.validate_environment()
+        meta, ws_dir = self.get_workspace_info(workspace_name)
+
+        if repos:
+            target_repos = list(repos)
+            for r in target_repos:
+                if r not in meta.repositories:
+                    raise RepoNotInWorkspaceException(
+                        f"Repository '{r}' is not in workspace '{workspace_name}'"
+                    )
+        else:
+            target_repos = list(meta.repositories.keys())
+
+        results: dict[str, dict[str, Any]] = {}
+
+        # 0. Optional Top-Level Workspace Infrastructure Setup (e.g. create database, start local services)
+        if not repos and self.config.setup and not skip_scripts:
+            OutputHandler.print_setup_repo_start("WORKSPACE INFRASTRUCTURE", ws_dir)
+            global_vars = EnvEngine.resolve_repo_env(self.config, workspace_name, "")
+            if verbose:
+                all_global_secrets = list(set(self.config.secrets))
+                OutputHandler.print_env_resolution_details(global_vars, explicit_secrets=all_global_secrets)
+
+            for g_cmd in self.config.setup:
+                expanded_g_cmd = EnvEngine.expand_command(
+                    g_cmd,
+                    global_vars,
+                    workspace_name,
+                    "",
+                    project_root=self.config.project_root,
+                    workspaces_dir=self.config.workspaces_dir,
+                )
+                if dry_run:
+                    OutputHandler.print_setup_step(0, f"[DRY-RUN] {expanded_g_cmd}", "skipped execution", status="info")
+                    continue
+
+                OutputHandler.print_command_start(expanded_g_cmd)
+                t0 = time.time()
+                try:
+                    proc_env = os.environ.copy()
+                    proc_env.update(global_vars)
+                    proc_env["WORKSPACE_NAME"] = workspace_name
+                    proc_env["PROJECT_ROOT"] = str(self.config.project_root.resolve())
+                    proc_env["SCRIPTS_DIR"] = str(self.config.project_root.resolve() / "scripts")
+                    proc_env["WORKSPACE_DIR"] = str(ws_dir.resolve())
+
+                    proc = subprocess.run(
+                        expanded_g_cmd,
+                        shell=True,
+                        cwd=ws_dir,
+                        env=proc_env,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    elapsed = time.time() - t0
+
+                    if proc.returncode != 0:
+                        err = proc.stderr.strip() or proc.stdout.strip()
+                        first_err = err.splitlines()[0] if err else f"exit code {proc.returncode}"
+                        OutputHandler.print_command_done(expanded_g_cmd, elapsed, success=False, returncode=proc.returncode)
+                        OutputHandler.print_command_output(expanded_g_cmd, proc.stdout, proc.stderr, proc.returncode)
+                    else:
+                        OutputHandler.print_command_done(expanded_g_cmd, elapsed, success=True, returncode=0)
+                        if verbose:
+                            OutputHandler.print_command_output(expanded_g_cmd, proc.stdout, proc.stderr, proc.returncode)
+                except Exception as e:
+                    elapsed = time.time() - t0
+                    OutputHandler.print_command_done(expanded_g_cmd, elapsed, success=False, returncode=-1)
+                    OutputHandler.print_error(f"Failed to execute workspace setup command '{expanded_g_cmd}'", str(e))
+
+        for r_name in target_repos:
+            spec = meta.repositories[r_name]
+            wt_path = ws_dir / spec.path
+            repo_cfg = self.config.repositories.get(r_name)
+
+            OutputHandler.print_setup_repo_start(r_name, wt_path)
+
+            if not repo_cfg:
+                OutputHandler.print_setup_step(1, "Config Validation", "Repository missing from project configuration", status="error")
+                results[r_name] = {
+                    "status": "failed",
+                    "reason": f"Repository '{r_name}' missing from project configuration",
+                    "env_status": "skipped",
+                    "commands_run": [],
+                }
+                continue
+
+            if not wt_path.exists():
+                OutputHandler.print_setup_step(1, "Worktree Validation", "Worktree directory does not exist", status="warning")
+                results[r_name] = {
+                    "status": "skipped",
+                    "reason": "missing worktree",
+                    "env_status": "skipped",
+                    "commands_run": [],
+                }
+                continue
+
+            # Step 1: Copy example env & Sync configured global project files
+            if verbose:
+                OutputHandler.print_step_start(1, f"Preparing templates and shared project files")
+
+            # Copy any shared configuration files
+            all_copy_files = list(self.config.copy_files) + list(repo_cfg.copy_files)
+            if all_copy_files:
+                file_ok, file_msg = EnvEngine.sync_copied_files(
+                    project_root=self.config.project_root,
+                    worktree_path=wt_path,
+                    copy_files=all_copy_files,
+                )
+                if not file_ok:
+                    OutputHandler.print_setup_step(1, "File Copy", f"Warning: {file_msg}", status="warning")
+                else:
+                    OutputHandler.print_setup_step(1, "File Copy", file_msg, status="success")
+
+            env_vars = EnvEngine.resolve_repo_env(self.config, workspace_name, r_name)
+            env_ok, env_msg = EnvEngine.prepare_and_sync_env_file(
+                worktree_path=wt_path,
+                env_vars=env_vars,
+                env_filename=repo_cfg.env_file,
+                example_filename=repo_cfg.env_example,
+            )
+
+            if not env_ok:
+                OutputHandler.print_setup_step(1, "Environment Setup", f"Failed: {env_msg}", status="error")
+                results[r_name] = {
+                    "status": "failed",
+                    "reason": f"Env sync failed: {env_msg}",
+                    "env_status": env_msg,
+                    "commands_run": [],
+                }
+                continue
+
+            OutputHandler.print_setup_step(1, "Template Setup", f"processed {repo_cfg.env_example} -> {repo_cfg.env_file}", status="success")
+            OutputHandler.print_setup_step(2, "Env Resolution", f"{env_msg}", status="success")
+
+            if verbose:
+                all_secrets = list(set(self.config.secrets + repo_cfg.secrets))
+                OutputHandler.print_env_resolution_details(env_vars, explicit_secrets=all_secrets)
+
+            # Step 3: Run setup script/commands
+            if skip_scripts or not repo_cfg.setup:
+                OutputHandler.print_setup_step(3, "Setup Scripts", "No setup scripts configured (skipped)", status="info")
+                results[r_name] = {
+                    "status": "completed",
+                    "reason": "environment synced (no setup commands)",
+                    "env_status": env_msg,
+                    "commands_run": [],
+                }
+                continue
+
+            script_failures: list[str] = []
+            executed_cmds: list[str] = []
+
+            for cmd in repo_cfg.setup:
+                expanded_cmd = EnvEngine.expand_command(
+                    cmd,
+                    env_vars,
+                    workspace_name,
+                    r_name,
+                    project_root=self.config.project_root,
+                    workspaces_dir=self.config.workspaces_dir,
+                )
+                executed_cmds.append(expanded_cmd)
+                if dry_run:
+                    OutputHandler.print_setup_step(3, f"[DRY-RUN] {expanded_cmd}", "skipped execution", status="info")
+                    continue
+
+                OutputHandler.print_command_start(expanded_cmd)
+                t0 = time.time()
+                try:
+                    proc_env = os.environ.copy()
+                    proc_env.update(env_vars)
+                    proc_env["WORKSPACE_NAME"] = workspace_name
+                    proc_env["REPO_NAME"] = r_name
+                    proc_env["PROJECT_ROOT"] = str(self.config.project_root.resolve())
+                    proc_env["SCRIPTS_DIR"] = str(self.config.project_root.resolve() / "scripts")
+                    proc_env["WORKSPACE_DIR"] = str(ws_dir.resolve())
+                    proc_env["WORKTREE_DIR"] = str(wt_path.resolve())
+
+                    proc = subprocess.run(
+                        expanded_cmd,
+                        shell=True,
+                        cwd=wt_path,
+                        env=proc_env,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    elapsed = time.time() - t0
+
+                    if proc.returncode != 0:
+                        err = proc.stderr.strip() or proc.stdout.strip()
+                        first_err = err.splitlines()[0] if err else f"exit code {proc.returncode}"
+                        script_failures.append(f"'{expanded_cmd}' failed: {first_err}")
+                        OutputHandler.print_command_done(expanded_cmd, elapsed, success=False, returncode=proc.returncode)
+                        OutputHandler.print_command_output(expanded_cmd, proc.stdout, proc.stderr, proc.returncode)
+                        break
+                    else:
+                        OutputHandler.print_command_done(expanded_cmd, elapsed, success=True, returncode=0)
+                        if verbose:
+                            OutputHandler.print_command_output(expanded_cmd, proc.stdout, proc.stderr, proc.returncode)
+                except Exception as e:
+                    elapsed = time.time() - t0
+                    script_failures.append(f"'{expanded_cmd}' execution error: {e}")
+                    OutputHandler.print_command_done(expanded_cmd, elapsed, success=False, returncode=-1)
+                    OutputHandler.print_error(f"Failed to execute command '{expanded_cmd}'", str(e))
+                    break
+
+
+
+
+            if script_failures:
+                results[r_name] = {
+                    "status": "failed",
+                    "reason": "; ".join(script_failures),
+                    "env_status": env_msg,
+                    "commands_run": executed_cmds,
+                }
+            else:
+                results[r_name] = {
+                    "status": "completed",
+                    "reason": f"ran {len(executed_cmds)} setup command(s)",
+                    "env_status": env_msg,
+                    "commands_run": executed_cmds,
+                }
+
+        return results
+
+    def sync_env(
+        self,
+        workspace_name: str,
+        repos: Sequence[str] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        """Sync environment variables only without running setup commands."""
+        return self.setup_workspace(workspace_name=workspace_name, repos=repos, skip_scripts=True)
+
+    def get_env_vars(self, workspace_name: str, repo_name: str) -> dict[str, str]:
+        """Get resolved environment variables dictionary for a repository."""
+        return EnvEngine.resolve_repo_env(self.config, workspace_name, repo_name)
+
+    def launch_workspace(
+        self,
+        workspace_name: str,
+        repos: Sequence[str] | None = None,
+        mode: str = "summary",
+        attach_repo: str | None = None,
+    ) -> list[tuple[str, str, str, dict[str, str]]]:
+        """Launch workspace services concurrently with TUI, tmux, or terminal window multiplexing.
+
+        Returns list of (repo_name, worktree_path_str, launch_command, env_vars).
+        """
+        from ws.multiplexer import TerminalLauncher, TmuxLauncher
+        from ws.process import ProcessSupervisor
+        from ws.tui import WorkspaceTUI
+
+        meta, ws_dir = self.get_workspace_info(workspace_name)
+        target_repos = list(repos) if repos else list(meta.repositories.keys())
+
+        launch_entries: list[tuple[str, str, str, dict[str, str]]] = []
+        for r_name in target_repos:
+            spec = meta.repositories.get(r_name)
+            repo_cfg = self.config.repositories.get(r_name)
+            if spec and repo_cfg and repo_cfg.launch:
+                wt_path = ws_dir / spec.path
+                env_vars = EnvEngine.resolve_repo_env(self.config, workspace_name, r_name)
+                expanded_cmd = EnvEngine.expand_command(
+                    repo_cfg.launch,
+                    env_vars,
+                    workspace_name,
+                    r_name,
+                    project_root=self.config.project_root,
+                    workspaces_dir=self.config.workspaces_dir,
+                )
+                launch_entries.append((r_name, str(wt_path), expanded_cmd, env_vars))
+
+        if not launch_entries or mode in ("summary", "list"):
+            return launch_entries
+
+        # Mode 1: tmux session
+        if mode == "tmux":
+            if TmuxLauncher.launch(workspace_name, launch_entries):
+                return launch_entries
+
+        # Mode 2: Separate terminal windows/tabs
+        if mode == "terminal":
+            if TerminalLauncher.launch(workspace_name, launch_entries):
+                return launch_entries
+
+        # Mode 3: Single service attach / direct execution
+        if mode == "attach" or (attach_repo and len(launch_entries) == 1):
+            single_svc = launch_entries[0]
+            s_name, s_cwd, s_cmd, s_env = single_svc
+            proc_env = os.environ.copy()
+            proc_env.update(s_env)
+            proc_env["WORKSPACE_NAME"] = workspace_name
+            proc_env["REPO_NAME"] = s_name
+            subprocess.run(s_cmd, shell=True, cwd=s_cwd, env=proc_env)
+            return launch_entries
+
+        # Mode 4: Interactive Multi-Pane TUI (Default for interactive CLI launch)
+        if mode == "tui":
+            log_dir = ws_dir / ".ws" / "logs"
+            supervisor = ProcessSupervisor(workspace_name=workspace_name, log_dir=log_dir)
+            for s_name, s_cwd, s_cmd, s_env in launch_entries:
+                supervisor.register_service(s_name, s_cmd, Path(s_cwd), s_env)
+
+            supervisor.start_all()
+            tui = WorkspaceTUI(
+                workspace_name=workspace_name,
+                supervisor=supervisor,
+                initial_service=attach_repo,
+            )
+            tui.run()
+            return launch_entries
+
+        return launch_entries
+
+
+
 
 
 

@@ -11,14 +11,21 @@ from ws.workspace import WorkspaceManager
 logger = logging.getLogger("ws.commands")
 
 
-def cmd_new(manager: WorkspaceManager, name: str, repo_specs: Sequence[RepoSpec]) -> None:
+def cmd_new(manager: WorkspaceManager, name: str, repo_specs: Sequence[RepoSpec], run_setup: bool = False) -> None:
     """Execute 'ws new' command."""
     manager.create_workspace(name=name, repo_specs=repo_specs)
+    if run_setup:
+        results = manager.setup_workspace(workspace_name=name)
+        OutputHandler.print_setup_summary(workspace_name=name, results=results)
 
 
-def cmd_create(manager: WorkspaceManager, config_file: Path | str) -> None:
+def cmd_create(manager: WorkspaceManager, config_file: Path | str, run_setup: bool = False) -> None:
     """Execute 'ws create' command using a YAML configuration file."""
-    manager.create_workspace_from_config(config_file=config_file)
+    meta = manager.create_workspace_from_config(config_file=config_file)
+    if run_setup:
+        results = manager.setup_workspace(workspace_name=meta.name)
+        OutputHandler.print_setup_summary(workspace_name=meta.name, results=results)
+
 
 
 def cmd_list(manager: WorkspaceManager) -> None:
@@ -185,6 +192,88 @@ def cmd_pull(
         remote=remote,
     )
     OutputHandler.print_pull_summary(workspace_name=workspace_name, results=results)
+
+
+def cmd_setup(
+    manager: WorkspaceManager,
+    workspace_name: str,
+    repos: Sequence[str] | None = None,
+    dry_run: bool = False,
+    skip_scripts: bool = False,
+    verbose: bool = False,
+) -> None:
+    """Execute 'ws setup' command."""
+    results = manager.setup_workspace(
+        workspace_name=workspace_name,
+        repos=repos,
+        dry_run=dry_run,
+        skip_scripts=skip_scripts,
+        verbose=verbose,
+    )
+    OutputHandler.print_setup_summary(workspace_name=workspace_name, results=results)
+
+
+
+def cmd_env(
+    manager: WorkspaceManager,
+    workspace_name: str,
+    repo_name: str | None = None,
+    sync: bool = False,
+) -> None:
+    """Execute 'ws env' command to inspect or sync environment variables."""
+    if sync:
+        repos = [repo_name] if repo_name else None
+        results = manager.sync_env(workspace_name=workspace_name, repos=repos)
+        OutputHandler.print_setup_summary(workspace_name=workspace_name, results=results)
+    else:
+        meta, _ = manager.get_workspace_info(workspace_name)
+        target_repos = [repo_name] if repo_name else list(meta.repositories.keys())
+        for r in target_repos:
+            env_vars = manager.get_env_vars(workspace_name=workspace_name, repo_name=r)
+            repo_cfg = manager.config.repositories.get(r)
+            repo_secrets = repo_cfg.secrets if repo_cfg else []
+            all_secrets = list(set(manager.config.secrets + repo_secrets))
+            OutputHandler.print_env_table(
+                workspace_name=workspace_name,
+                repo_name=r,
+                env_vars=env_vars,
+                explicit_secrets=all_secrets,
+            )
+
+
+
+def cmd_launch(
+    manager: WorkspaceManager,
+    workspace_name: str,
+    repos: Sequence[str] | None = None,
+    mode: str = "tui",
+    attach_repo: str | None = None,
+) -> None:
+    """Execute 'ws launch' command to start services concurrently."""
+    manager.launch_workspace(
+        workspace_name=workspace_name,
+        repos=repos,
+        mode=mode,
+        attach_repo=attach_repo,
+    )
+
+
+def cmd_attach(
+    manager: WorkspaceManager,
+    workspace_name: str,
+    repo_name: str | None = None,
+) -> None:
+    """Interactively attach to a service in the workspace."""
+    manager.launch_workspace(
+        workspace_name=workspace_name,
+        repos=[repo_name] if repo_name else None,
+        mode="attach",
+        attach_repo=repo_name,
+    )
+
+
+
+
 
 
 

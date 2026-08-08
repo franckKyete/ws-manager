@@ -80,7 +80,37 @@ class ConfigLoader:
                             repos[name] = RepoConfig.from_dict(name, repo_data)
                         except Exception as e:
                             raise ConfigException(f"Invalid repository configuration for '{name}': {e}") from e
+
+            env_raw = data.get("env", {})
+            global_env = {str(k): str(v) for k, v in env_raw.items()} if isinstance(env_raw, dict) else {}
+
+            dyn_raw = data.get("dynamic_env", {})
+            dynamic_env = {str(k): str(v) for k, v in dyn_raw.items()} if isinstance(dyn_raw, dict) else {}
+
+            setup_raw = data.get("setup", [])
+            if isinstance(setup_raw, str):
+                global_setup = [setup_raw]
+            elif isinstance(setup_raw, list):
+                global_setup = [str(s) for s in setup_raw]
+            else:
+                global_setup = []
+
+            secrets_raw = data.get("secrets", [])
+            if isinstance(secrets_raw, str):
+                global_secrets = [secrets_raw]
+            elif isinstance(secrets_raw, list):
+                global_secrets = [str(s) for s in secrets_raw]
+            else:
+                global_secrets = []
+
+            copy_files_raw = data.get("copy_files", data.get("files", []))
+            global_copy_files = list(copy_files_raw) if isinstance(copy_files_raw, list) else ([copy_files_raw] if copy_files_raw else [])
         else:
+            global_env = {}
+            dynamic_env = {}
+            global_setup = []
+            global_secrets = []
+            global_copy_files = []
             # Fallback auto-detection for .git bare repos in bares/ or current directory
             bares_dir = project_root / "bares"
             bare_dirs = sorted(bares_dir.glob("*.git")) if bares_dir.exists() else []
@@ -114,7 +144,14 @@ class ConfigLoader:
             repositories=repos,
             workspaces_dir=ws_dir_path,
             config_file_path=file_path,
+            global_env=global_env,
+            dynamic_env=dynamic_env,
+            setup=global_setup,
+            secrets=global_secrets,
+            copy_files=global_copy_files,
         )
+
+
 
     @classmethod
     def save_config(cls, repositories: dict[str, RepoConfig], config_path: Path | str | None = None) -> Path:

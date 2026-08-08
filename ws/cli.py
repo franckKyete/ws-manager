@@ -12,16 +12,19 @@ from ws.commands import (
     cmd_antigravity,
     cmd_create,
     cmd_doctor,
+    cmd_env,
     cmd_exec,
     cmd_fetch,
     cmd_info,
     cmd_init,
+    cmd_launch,
     cmd_list,
     cmd_new,
     cmd_open,
     cmd_pull,
     cmd_push,
     cmd_remove,
+    cmd_setup,
     cmd_status,
     cmd_sync,
     cmd_workspace_add_repo,
@@ -256,10 +259,48 @@ def build_parser() -> argparse.ArgumentParser:
     # Command: ws new <name> ...
     p_new = subparsers.add_parser("new", help="Create a new workspace from CLI parameters")
     p_new.add_argument("name", help="Workspace name")
+    p_new.add_argument("--setup", action="store_true", help="Run setup scripts and sync environment variables after creation")
 
     # Command: ws create <config.yml>
     p_create = subparsers.add_parser("create", help="Create a workspace from a YAML configuration file")
     p_create.add_argument("file", help="Path to workspace YAML configuration file")
+    p_create.add_argument("--setup", action="store_true", help="Run setup scripts and sync environment variables after creation")
+
+    # Command: ws setup <name> [repos...] [--all] [--repos r1,r2]
+    p_setup = subparsers.add_parser("setup", help="Run setup scripts and environment variable sync for a workspace")
+    p_setup.add_argument("name", help="Workspace name")
+    p_setup.add_argument("repos", nargs="*", help="Repository names to setup (or use --all)")
+    p_setup.add_argument("--all", action="store_true", help="Setup all repositories in the workspace")
+    p_setup.add_argument("--repos", "--only", dest="repos_flag", type=str, help="Comma-separated list of repository names to setup")
+    p_setup.add_argument("--dry-run", action="store_true", help="Print setup commands without executing them")
+    p_setup.add_argument("--skip-scripts", action="store_true", help="Only sync environment variables without running setup scripts")
+
+    # Command: ws env <name> [repo]
+    p_env = subparsers.add_parser("env", help="Inspect or sync environment variables for a workspace")
+    p_env.add_argument("name", help="Workspace name")
+    p_env.add_argument("repo", nargs="?", default=None, help="Repository name (optional)")
+    p_env.add_argument("--sync", action="store_true", help="Sync resolved environment variables into worktree .env files")
+
+    # Command: ws launch <name> [repos...] [--all] [--repos r1,r2] [--tmux] [--terminal] [--attach repo]
+    p_launch = subparsers.add_parser("launch", aliases=["start", "run"], help="Launch workspace services concurrently")
+    p_launch.add_argument("name", help="Workspace name")
+    p_launch.add_argument("repos", nargs="*", help="Repository names to launch (or use --all)")
+    p_launch.add_argument("--all", action="store_true", help="Launch all repositories in the workspace")
+    p_launch.add_argument("--repos", "--only", dest="repos_flag", type=str, help="Comma-separated list of repository names to launch")
+    p_launch.add_argument("--attach", type=str, default=None, help="Focus or connect directly to a single service output")
+    p_launch.add_argument("--tmux", action="store_true", help="Launch services in tiled split panes inside a tmux session")
+    p_launch.add_argument("--terminal", "-t", action="store_true", help="Launch services in separate terminal windows/tabs")
+    p_launch.add_argument("--stream", action="store_true", help="Stream raw multiplexed stdout/stderr without interactive TUI")
+
+    # Command: ws attach <name> [repo]
+    p_attach = subparsers.add_parser("attach", help="Interactively attach terminal directly to a workspace service")
+    p_attach.add_argument("name", help="Workspace name")
+    p_attach.add_argument("repo", nargs="?", default=None, help="Repository service name to attach to")
+
+
+
+
+
 
     # Command: ws list
     p_list = subparsers.add_parser("list", help="List all workspaces")
@@ -368,10 +409,73 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                 raw_args=raw_new_args,
                 repositories=app_config.repositories,
             )
-            cmd_new(manager=manager, name=args.name, repo_specs=repo_specs)
+            cmd_new(manager=manager, name=args.name, repo_specs=repo_specs, run_setup=args.setup)
 
         elif args.subcommand == "create":
-            cmd_create(manager=manager, config_file=args.file)
+            cmd_create(manager=manager, config_file=args.file, run_setup=args.setup)
+
+        elif args.subcommand == "setup":
+            target_repos: list[str] | None = None
+            if args.repos_flag:
+                target_repos = [r.strip() for r in args.repos_flag.split(",") if r.strip()]
+            elif args.repos:
+                target_repos = list(args.repos)
+
+            if not args.all and not target_repos:
+                raise WSException(
+                    f"Explicit repository selection required for setup in workspace '{args.name}'. "
+                    "Specify '--all' to setup all repositories, or specify repositories using '--repos repo1,repo2' or positional arguments."
+                )
+
+            cmd_setup(
+                manager=manager,
+                workspace_name=args.name,
+                repos=target_repos if not args.all else None,
+                dry_run=args.dry_run,
+                skip_scripts=args.skip_scripts,
+                verbose=args.verbose,
+            )
+
+        elif args.subcommand == "env":
+            cmd_env(
+                manager=manager,
+                workspace_name=args.name,
+                repo_name=args.repo,
+                sync=args.sync,
+            )
+
+        elif args.subcommand in ("launch", "start", "run"):
+            target_repos = None
+            if getattr(args, "repos_flag", None):
+                target_repos = [r.strip() for r in args.repos_flag.split(",") if r.strip()]
+            elif getattr(args, "repos", None):
+                target_repos = list(args.repos)
+
+            mode = "tui"
+            if getattr(args, "tmux", False):
+                mode = "tmux"
+            elif getattr(args, "terminal", False):
+                mode = "terminal"
+            elif getattr(args, "stream", False):
+                mode = "stream"
+            elif getattr(args, "attach", None):
+                mode = "attach"
+
+            cmd_launch(
+                manager=manager,
+                workspace_name=args.name,
+                repos=target_repos if not getattr(args, "all", False) else None,
+                mode=mode,
+                attach_repo=getattr(args, "attach", None),
+            )
+
+        elif args.subcommand == "attach":
+            cmd_attach(manager=manager, workspace_name=args.name, repo_name=getattr(args, "repo", None))
+
+
+
+
+
 
         elif args.subcommand == "list":
             cmd_list(manager=manager)
