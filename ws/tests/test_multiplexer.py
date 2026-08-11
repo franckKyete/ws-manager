@@ -45,8 +45,9 @@ def test_zellij_layout_generation_two_services():
     assert 'cwd="/path/to/mobile"' in kdl
     assert 'cwd="/path/to/server"' in kdl
     assert 'split_direction="vertical"' in kdl
-    assert "EXPO_PORT=8081" in kdl
-    assert "PORT=8000" in kdl
+    assert 'args "bridge" "develop" "mobile"' in kdl
+    assert 'args "bridge" "develop" "server"' in kdl
+
 
 
 def test_zellij_layout_generation_grid_services():

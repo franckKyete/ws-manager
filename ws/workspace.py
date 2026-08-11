@@ -378,6 +378,50 @@ class WorkspaceManager:
                     sock_path.unlink(missing_ok=True)
         return None
 
+
+    def get_running_services_status(self, name: str) -> dict[str, dict[str, Any]]:
+        """Return live status of running services in the workspace (engine, status, port)."""
+        active_engine = self.get_active_engine(name)
+        if not active_engine:
+            return {}
+
+        results: dict[str, dict[str, Any]] = {}
+        sock_path = self.get_session_socket_path(name)
+
+        if sock_path.exists():
+            import socket, json
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.4)
+                    s.connect(str(sock_path))
+                    s.sendall(b'{"type":"GetState"}\n')
+                    data = s.recv(4096)
+                    resp = json.loads(data.decode("utf-8").strip())
+                    if resp.get("type") == "State":
+                        for svc in resp.get("services", []):
+                            results[svc["name"]] = {
+                                "status": svc.get("status", "running"),
+                                "port": svc.get("port", 0),
+                                "engine": active_engine,
+                            }
+                        return results
+            except Exception:
+                pass
+
+        project_name = self.config.project_root.name
+        from ws.multiplexer import TmuxLauncher
+        if active_engine == "tmux":
+            panes = TmuxLauncher.list_panes(project_name, name)
+            for p in panes:
+                results[p] = {
+                    "status": "running",
+                    "port": 0,
+                    "engine": "tmux",
+                }
+
+        return results
+
+
     def is_session_running(self, name: str) -> bool:
         """Check if background daemon session, tmux window, or zellij session is active."""
         return self.get_active_engine(name) is not None
@@ -1137,7 +1181,11 @@ class WorkspaceManager:
                 OutputHandler.print_info(
                     f"Switching workspace '[bold cyan]{workspace_name}[/bold cyan]' from {active_engine} to {req_engine}..."
                 )
-                self.stop_workspace(workspace_name)
+                from ws.multiplexer import TmuxLauncher, ZellijLauncher
+                if active_engine == "tmux":
+                    TmuxLauncher.kill_workspace(workspace_name, self.config.project_root.name)
+                elif active_engine == "zellij":
+                    ZellijLauncher.kill_workspace(workspace_name, self.config.project_root.name)
             else:
                 OutputHandler.print_error(
                     f"Workspace '{workspace_name}' is already running in {active_engine}.\n"
@@ -1145,39 +1193,40 @@ class WorkspaceManager:
                 )
                 return launch_entries
 
+        # Helper to ensure background daemon is running to host the live services
+        def _ensure_daemon_running():
+            sock_path = self.get_session_socket_path(workspace_name)
+            if not self.is_session_running(workspace_name):
+                log_dir = ws_dir / ".ws" / "logs"
+                sock_path.parent.mkdir(parents=True, exist_ok=True)
+                if sock_path.exists():
+                    sock_path.unlink(missing_ok=True)
+
+                daemon_script = (
+                    "import sys, os; "
+                    "from ws._native import ServiceSpec, start_workspace_daemon; "
+                    f"specs = [ServiceSpec(s[0], s[2], s[1], s[3]) for s in {launch_entries!r}]; "
+                    f"start_workspace_daemon({workspace_name!r}, specs, {str(sock_path)!r}, {str(log_dir)!r})"
+                )
+                proc = subprocess.Popen(
+                    [sys.executable, "-c", daemon_script],
+                    start_new_session=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                )
+                import time
+                for _ in range(60):
+                    if self.is_session_running(workspace_name):
+                        break
+                    if proc.poll() is not None:
+                        break
+                    time.sleep(0.05)
 
         # Mode 0: Detached Background Daemon
         if daemon or mode == "daemon":
-            log_dir = ws_dir / ".ws" / "logs"
-            sock_path = self.get_session_socket_path(workspace_name)
-            sock_path.parent.mkdir(parents=True, exist_ok=True)
-
             try:
-                if not self.is_session_running(workspace_name):
-                    if sock_path.exists():
-                        sock_path.unlink(missing_ok=True)
-
-                    daemon_script = (
-                        "import sys, os; "
-                        "from ws._native import ServiceSpec, start_workspace_daemon; "
-                        f"specs = [ServiceSpec(s[0], s[2], s[1], s[3]) for s in {launch_entries!r}]; "
-                        f"start_workspace_daemon({workspace_name!r}, specs, {str(sock_path)!r}, {str(log_dir)!r})"
-                    )
-                    proc = subprocess.Popen(
-                        [sys.executable, "-c", daemon_script],
-                        start_new_session=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        stdin=subprocess.DEVNULL,
-                    )
-                    import time
-                    for _ in range(60):
-                        if self.is_session_running(workspace_name):
-                            break
-                        if proc.poll() is not None:
-                            break
-                        time.sleep(0.05)
-
+                _ensure_daemon_running()
                 OutputHandler.print_success(
                     f"Workspace daemon active for '{workspace_name}' ({len(launch_entries)} services).\n"
                     f"Attach anytime using: [bold yellow]ws attach {workspace_name}[/bold yellow] or [bold yellow]ws {workspace_name} attach[/bold yellow]"
@@ -1197,6 +1246,7 @@ class WorkspaceManager:
                     "Install Zellij using 'cargo install zellij' or via your system package manager."
                 )
                 return launch_entries
+            _ensure_daemon_running()
             if ZellijLauncher.launch(workspace_name, launch_entries, project_name=project_name, ws_dir=ws_dir):
                 return launch_entries
 
@@ -1209,6 +1259,7 @@ class WorkspaceManager:
                     "Install tmux via your system package manager (e.g. apt install tmux or brew install tmux)."
                 )
                 return launch_entries
+            _ensure_daemon_running()
             if TmuxLauncher.launch(workspace_name, launch_entries, project_name=project_name):
                 return launch_entries
 
@@ -1221,50 +1272,22 @@ class WorkspaceManager:
 
         # Mode 3: Single service attach / direct execution
         if mode == "attach" or (attach_repo and len(launch_entries) == 1):
-            single_svc = launch_entries[0]
-            s_name, s_cwd, s_cmd, s_env = single_svc
-            proc_env = os.environ.copy()
-            proc_env.update(s_env)
-            proc_env["WORKSPACE_NAME"] = workspace_name
-            proc_env["REPO_NAME"] = s_name
-            subprocess.run(s_cmd, shell=True, cwd=s_cwd, env=proc_env)
+            target_repo = attach_repo or launch_entries[0][0]
+            _ensure_daemon_running()
+            sock_path = self.get_session_socket_path(workspace_name)
+            try:
+                from ws._native import run_raw_bridge
+                run_raw_bridge(str(sock_path), target_repo)
+            except Exception as e:
+                OutputHandler.print_error(f"Failed attaching to service '{target_repo}': {e}")
             return launch_entries
 
         # Mode 4: Interactive Multi-Pane TUI (Default for interactive CLI launch)
         if mode == "tui":
-            log_dir = ws_dir / ".ws" / "logs"
             sock_path = self.get_session_socket_path(workspace_name)
-            sock_path.parent.mkdir(parents=True, exist_ok=True)
-
             try:
-                from ws._native import ServiceSpec, attach_workspace_session, start_workspace_daemon
-
-                # If daemon is not running, spawn it in the background
-                if not self.is_session_running(workspace_name):
-                    if sock_path.exists():
-                        sock_path.unlink(missing_ok=True)
-
-                    daemon_script = (
-                        "import sys, os; "
-                        "from ws._native import ServiceSpec, start_workspace_daemon; "
-                        f"specs = [ServiceSpec(s[0], s[2], s[1], s[3]) for s in {launch_entries!r}]; "
-                        f"start_workspace_daemon({workspace_name!r}, specs, {str(sock_path)!r}, {str(log_dir)!r})"
-                    )
-                    proc = subprocess.Popen(
-                        [sys.executable, "-c", daemon_script],
-                        start_new_session=True,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        stdin=subprocess.DEVNULL,
-                    )
-                    # Wait for daemon socket to become ready and responsive to Ping
-                    import time
-                    for _ in range(60):
-                        if self.is_session_running(workspace_name):
-                            break
-                        if proc.poll() is not None:
-                            break
-                        time.sleep(0.05)
+                from ws._native import attach_workspace_session
+                _ensure_daemon_running()
 
                 if self.is_session_running(workspace_name):
                     # Attach client TUI directly to the daemon session
@@ -1272,32 +1295,22 @@ class WorkspaceManager:
                         workspace_name=workspace_name,
                         socket_path=str(sock_path),
                         initial_focus=attach_repo,
+                        fullscreen=False,
                     )
-
-                    if self.is_session_running(workspace_name):
-                        OutputHandler.print_info(
-                            f"Detached from workspace '[bold cyan]{workspace_name}[/bold cyan]'. Services remain active in background.\n"
-                            f"Re-attach anytime: [bold yellow]ws attach {workspace_name}[/bold yellow] or [bold yellow]ws {workspace_name} attach[/bold yellow]\n"
-                            f"Stop session: [bold red]ws stop {workspace_name}[/bold red]"
-                        )
-                    return launch_entries
-                else:
-                    raise RuntimeError(f"Could not start or connect to session daemon for workspace '{workspace_name}'")
+                    if exit_code != 0:
+                        logger.info("Native TUI session finished with exit code %d", exit_code)
+                return launch_entries
 
             except ImportError:
-                # Pure-Python fallback if native extension is not compiled
-                supervisor = ProcessSupervisor(workspace_name=workspace_name, log_dir=log_dir)
-                for s_name, s_cwd, s_cmd, s_env in launch_entries:
-                    supervisor.register_service(s_name, s_cmd, Path(s_cwd), s_env)
-
-                supervisor.start_all()
-                tui = WorkspaceTUI(
-                    workspace_name=workspace_name,
-                    supervisor=supervisor,
-                    initial_service=attach_repo,
+                OutputHandler.print_warning(
+                    "Compiled native TUI extension not found.\n"
+                    "Please compile using 'cargo build --workspace'."
                 )
-                tui.run()
                 return launch_entries
+            except Exception as e:
+                OutputHandler.print_error(f"Failed starting TUI session: {e}")
+                return launch_entries
+
 
 
         return launch_entries

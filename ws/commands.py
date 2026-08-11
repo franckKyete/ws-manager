@@ -37,7 +37,15 @@ def cmd_list(manager: WorkspaceManager) -> None:
 def cmd_info(manager: WorkspaceManager, name: str) -> None:
     """Execute 'ws info' command."""
     metadata, ws_path = manager.get_workspace_info(name=name)
-    OutputHandler.print_workspace_info(metadata=metadata, workspace_path=ws_path)
+    active_engine = manager.get_active_engine(name)
+    running_services = manager.get_running_services_status(name)
+    OutputHandler.print_workspace_info(
+        metadata=metadata,
+        workspace_path=ws_path,
+        active_engine=active_engine,
+        running_services=running_services,
+    )
+
 
 
 def cmd_remove(manager: WorkspaceManager, name: str) -> None:
@@ -356,3 +364,20 @@ def cmd_attach(
         )
     except Exception as e:
         OutputHandler.print_error(f"Failed attaching to session: {e}")
+
+
+def cmd_bridge(manager: WorkspaceManager, workspace_name: str, repo_name: str) -> None:
+    """Execute high-performance raw PTY bridge to background daemon service."""
+    sock_path = manager.get_session_socket_path(workspace_name)
+    if not manager.is_session_running(workspace_name):
+        OutputHandler.print_error(
+            f"No active session found for workspace '{workspace_name}'.\n"
+            f"Start services first using: [bold yellow]ws launch {workspace_name}[/bold yellow]"
+        )
+        return
+    try:
+        from ws._native import run_raw_bridge
+        run_raw_bridge(str(sock_path), repo_name)
+    except Exception as e:
+        OutputHandler.print_error(f"Bridge connection error: {e}")
+

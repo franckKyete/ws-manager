@@ -74,89 +74,95 @@ class TmuxLauncher:
             return False
 
         sess = cls.session_name(project_name)
+        layout = "even-horizontal" if len(services) <= 3 else "tiled"
 
         if not cls.is_session_running(project_name):
             # Create new project session with the workspace as the first window
             first_svc = services[0]
-            s_name, s_cwd, s_cmd, s_env = first_svc
-            first_cmd_with_env = cls._build_env_command(s_cmd, s_env, workspace_name, s_name)
+            s_name, s_cwd, _, _ = first_svc
+            bridge_cmd = f"ws bridge {workspace_name} {s_name}"
             subprocess.run(
                 [
                     "tmux", "new-session", "-d",
                     "-s", sess,
                     "-n", workspace_name,
                     "-c", s_cwd,
-                    first_cmd_with_env,
+                    bridge_cmd,
                 ],
                 check=True,
             )
             subprocess.run(["tmux", "select-pane", "-t", f"{sess}:{workspace_name}.0", "-T", s_name], check=False)
 
             for svc in services[1:]:
-                s_name, s_cwd, s_cmd, s_env = svc
-                cmd_with_env = cls._build_env_command(s_cmd, s_env, workspace_name, s_name)
+                s_name, s_cwd, _, _ = svc
+                bridge_cmd = f"ws bridge {workspace_name} {s_name}"
                 subprocess.run(
                     [
                         "tmux", "split-window",
+                        "-h",
                         "-t", f"{sess}:{workspace_name}",
                         "-c", s_cwd,
-                        cmd_with_env,
+                        bridge_cmd,
                     ],
                     check=True,
                 )
                 subprocess.run(["tmux", "select-pane", "-t", f"{sess}:{workspace_name}", "-T", s_name], check=False)
-                subprocess.run(["tmux", "select-layout", "-t", f"{sess}:{workspace_name}", "tiled"], check=False)
+            subprocess.run(["tmux", "select-layout", "-t", f"{sess}:{workspace_name}", layout], check=False)
 
         elif not cls.is_window_running(project_name, workspace_name):
             # Session exists, create new window for this workspace
             first_svc = services[0]
-            s_name, s_cwd, s_cmd, s_env = first_svc
-            first_cmd_with_env = cls._build_env_command(s_cmd, s_env, workspace_name, s_name)
+            s_name, s_cwd, _, _ = first_svc
+            bridge_cmd = f"ws bridge {workspace_name} {s_name}"
             subprocess.run(
                 [
                     "tmux", "new-window",
                     "-t", sess,
                     "-n", workspace_name,
                     "-c", s_cwd,
-                    first_cmd_with_env,
+                    bridge_cmd,
                 ],
                 check=True,
             )
             subprocess.run(["tmux", "select-pane", "-t", f"{sess}:{workspace_name}.0", "-T", s_name], check=False)
 
             for svc in services[1:]:
-                s_name, s_cwd, s_cmd, s_env = svc
-                cmd_with_env = cls._build_env_command(s_cmd, s_env, workspace_name, s_name)
+                s_name, s_cwd, _, _ = svc
+                bridge_cmd = f"ws bridge {workspace_name} {s_name}"
                 subprocess.run(
                     [
                         "tmux", "split-window",
+                        "-h",
                         "-t", f"{sess}:{workspace_name}",
                         "-c", s_cwd,
-                        cmd_with_env,
+                        bridge_cmd,
                     ],
                     check=True,
                 )
                 subprocess.run(["tmux", "select-pane", "-t", f"{sess}:{workspace_name}", "-T", s_name], check=False)
-                subprocess.run(["tmux", "select-layout", "-t", f"{sess}:{workspace_name}", "tiled"], check=False)
+            subprocess.run(["tmux", "select-layout", "-t", f"{sess}:{workspace_name}", layout], check=False)
 
         else:
             # Window already running: add any missing service panes
             existing_panes = cls.list_panes(project_name, workspace_name)
             for svc in services:
-                s_name, s_cwd, s_cmd, s_env = svc
+                s_name, s_cwd, _, _ = svc
                 if s_name not in existing_panes:
-                    cmd_with_env = cls._build_env_command(s_cmd, s_env, workspace_name, s_name)
+                    bridge_cmd = f"ws bridge {workspace_name} {s_name}"
                     subprocess.run(
                         [
                             "tmux", "split-window",
+                            "-h",
                             "-t", f"{sess}:{workspace_name}",
                             "-c", s_cwd,
-                            cmd_with_env,
+                            bridge_cmd,
                         ],
                         check=True,
                     )
                     subprocess.run(["tmux", "select-pane", "-t", f"{sess}:{workspace_name}", "-T", s_name], check=False)
-                    subprocess.run(["tmux", "select-layout", "-t", f"{sess}:{workspace_name}", "tiled"], check=False)
+                    subprocess.run(["tmux", "select-layout", "-t", f"{sess}:{workspace_name}", layout], check=False)
+
+
 
         # Select workspace window
         subprocess.run(["tmux", "select-window", "-t", f"{sess}:{workspace_name}"], check=False)
@@ -334,15 +340,14 @@ class ZellijLauncher:
     ) -> str:
         """Generate a Zellij KDL layout file for the workspace services."""
         panes_kdl = []
-        for s_name, s_cwd, s_cmd, s_env in services:
-            cmd_with_env = TmuxLauncher._build_env_command(s_cmd, s_env, workspace_name, s_name)
-            escaped_cmd = cmd_with_env.replace("\\", "\\\\").replace('"', '\\"')
+        for s_name, s_cwd, _, _ in services:
             escaped_cwd = s_cwd.replace("\\", "\\\\").replace('"', '\\"')
             panes_kdl.append(
-                f'        pane name="{s_name}" cwd="{escaped_cwd}" command="bash" {{\n'
-                f'            args "-c" "{escaped_cmd}; exec bash"\n'
+                f'        pane name="{s_name}" cwd="{escaped_cwd}" command="ws" {{\n'
+                f'            args "bridge" "{workspace_name}" "{s_name}"\n'
                 f'        }}'
             )
+
 
         n_services = len(services)
         if n_services <= 1:

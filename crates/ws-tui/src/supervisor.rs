@@ -47,10 +47,12 @@ pub struct ManagedService {
     pub master_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
     pub pid: Arc<Mutex<Option<u32>>>,
     pub start_time: Instant,
+    pub raw_tx: tokio::sync::broadcast::Sender<Vec<u8>>,
 }
 
 impl ManagedService {
     pub fn new(spec: ServiceSpec) -> Self {
+        let (raw_tx, _) = tokio::sync::broadcast::channel(512);
         Self {
             spec,
             status: Arc::new(RwLock::new(ServiceStatus::Starting)),
@@ -59,8 +61,10 @@ impl ManagedService {
             master_writer: Arc::new(Mutex::new(None)),
             pid: Arc::new(Mutex::new(None)),
             start_time: Instant::now(),
+            raw_tx,
         }
     }
+
 
     pub async fn send_input(&self, data: &[u8]) -> bool {
         let mut writer_guard = self.master_writer.lock().await;
@@ -186,6 +190,7 @@ impl ProcessSupervisor {
         let buffer_clone = service.buffer.clone();
         let port_clone = service.detected_port.clone();
         let status_clone = service.status.clone();
+        let raw_tx_clone = service.raw_tx.clone();
         let log_file_path = self.log_dir.as_ref().map(|d| d.join(format!("{}.log", service.spec.name)));
 
         tokio::task::spawn_blocking(move || {
@@ -220,6 +225,10 @@ impl ProcessSupervisor {
                 if let Ok(mut buf_guard) = buffer_clone.try_write() {
                     buf_guard.feed_bytes(&buf[..n]);
                 }
+
+                // Broadcast raw output stream to attached bridge clients
+                let _ = raw_tx_clone.send(buf[..n].to_vec());
+
 
 
                 if let Some(fh) = file_handle.as_mut() {

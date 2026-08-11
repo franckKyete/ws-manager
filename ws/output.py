@@ -132,22 +132,48 @@ class OutputHandler:
         console.print(table)
 
     @staticmethod
-    def print_workspace_info(metadata: WorkspaceMetadata, workspace_path: Path) -> None:
-        """Print detailed workspace metadata in a Rich table/tree."""
+    def print_workspace_info(
+        metadata: WorkspaceMetadata,
+        workspace_path: Path,
+        active_engine: str | None = None,
+        running_services: dict[str, dict[str, Any]] | None = None,
+    ) -> None:
+        """Print detailed workspace metadata and running processes in a Rich tree."""
         tree = Tree(f"[bold cyan]Workspace: [yellow]{metadata.name}[/yellow][/bold cyan]")
         tree.add(f"[bold white]Created:[/bold white] {metadata.created} ({format_relative_time(metadata.created)})")
+
+        if active_engine:
+            tree.add(f"[bold white]Engine Session:[/bold white] [bold green]Active ({active_engine})[/bold green]")
+        else:
+            tree.add(f"[bold white]Engine Session:[/bold white] [dim]Inactive[/dim]")
+
         tree.add(f"[bold white]Status:[/bold white] [green]{metadata.status}[/green]")
         tree.add(f"[bold white]Path:[/bold white] {workspace_path.resolve()}")
 
-        repo_branch = tree.add("[bold cyan]Repositories[/bold cyan]")
+        repo_branch = tree.add("[bold cyan]Repositories & Services[/bold cyan]")
+        running_services = running_services or {}
+
         for repo_name, spec in metadata.repositories.items():
             mode_badge = "[green]new[/green]" if spec.create else "[yellow]existing[/yellow]"
             frozen_badge = " [bold yellow]🔒 FROZEN[/bold yellow]" if spec.frozen else ""
-            r_node = repo_branch.add(f"[bold magenta]{repo_name}[/bold magenta] ({mode_badge}){frozen_badge}")
+
+            svc_info = running_services.get(repo_name)
+            if svc_info:
+                port = svc_info.get("port", 0)
+                port_text = f" (port [bold cyan]:{port}[/bold cyan])" if port > 0 else ""
+                process_badge = f" [bold green]● RUNNING{port_text}[/bold green]"
+            elif active_engine:
+                process_badge = " [dim]○ stopped[/dim]"
+            else:
+                process_badge = ""
+
+            r_node = repo_branch.add(f"[bold magenta]{repo_name}[/bold magenta] ({mode_badge}){frozen_badge}{process_badge}")
             r_node.add(f"Branch: [bold white]{spec.branch}[/bold white]")
             r_node.add(f"Worktree Path: [dim]{spec.path}[/dim]")
+            if svc_info:
+                r_node.add(f"Process Status: [green]{svc_info.get('status', 'running')}[/green]")
             if spec.frozen:
-                r_node.add("Status: [yellow]Read-only (frozen)[/yellow]")
+                r_node.add("File Mode: [yellow]Read-only (frozen)[/yellow]")
 
         console.print(
             Panel(
@@ -156,6 +182,7 @@ class OutputHandler:
                 border_style="cyan",
             )
         )
+
 
     @staticmethod
     def print_push_summary(workspace_name: str, results: dict[str, dict[str, str]]) -> None:

@@ -11,8 +11,8 @@ from ws.commands import (
     cmd_add,
     cmd_antigravity,
     cmd_attach,
+    cmd_bridge,
     cmd_create,
-
     cmd_doctor,
     cmd_env,
     cmd_exec,
@@ -23,6 +23,7 @@ from ws.commands import (
     cmd_list,
     cmd_new,
     cmd_open,
+
     cmd_pull,
     cmd_push,
     cmd_remove,
@@ -338,8 +339,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_attach.add_argument("--mode", "-m", choices=["tui", "zellij", "tmux"], default=None, help="Multiplexer engine backend")
 
 
+    # Command: ws bridge <name> <repo>
+    p_bridge = subparsers.add_parser("bridge", help="Connect raw terminal I/O bridge to a running workspace service")
+    p_bridge.add_argument("name", help="Workspace name")
+    p_bridge.add_argument("repo", help="Repository service name")
+
     # Command: ws list
     p_list = subparsers.add_parser("list", help="List all workspaces")
+
 
     # Command: ws info <name>
     p_info = subparsers.add_parser("info", help="Display details for a workspace")
@@ -538,8 +545,12 @@ def main(sys_args: Sequence[str] | None = None) -> int:
 
 
 
+        elif args.subcommand == "bridge":
+            cmd_bridge(manager=manager, workspace_name=args.name, repo_name=args.repo)
+
         elif args.subcommand == "list":
             cmd_list(manager=manager)
+
 
         elif args.subcommand == "info":
             cmd_info(manager=manager, name=args.name)

@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
+
 
 use crossterm::{
     event::{
@@ -73,8 +74,12 @@ pub enum DaemonRequest {
     ClearBuffer {
         service: String,
     },
+    AttachRaw {
+        service: String,
+    },
     StopAll,
 }
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceInfo {
@@ -251,6 +256,61 @@ impl SessionDaemon {
                     }
                     DaemonResponse::Success
                 }
+                Ok(DaemonRequest::AttachRaw { service }) => {
+                    if let Some(s) = supervisor.services.get(&service) {
+                        let svc = s.clone();
+                        let resp = DaemonResponse::Success;
+                        let json_resp = serde_json::to_string(&resp)?;
+                        writer.write_all(json_resp.as_bytes()).await?;
+                        writer.write_all(b"\n").await?;
+                        writer.flush().await?;
+
+                        // Replay formatted terminal buffer
+                        if let Ok(mut buf) = svc.buffer.try_write() {
+                            let (rows, _) = buf.get_formatted_rows(0, 0, 50, 160);
+                            for row in rows {
+                                writer.write_all(&row).await?;
+                                writer.write_all(b"\r\n").await?;
+                            }
+                            writer.flush().await?;
+                        }
+
+                        // Stream live I/O bidirectionally
+                        let mut raw_rx = svc.raw_tx.subscribe();
+                        let mut in_buf = [0u8; 1024];
+
+                        loop {
+                            tokio::select! {
+                                msg = raw_rx.recv() => {
+                                    match msg {
+                                        Ok(bytes) => {
+                                            if writer.write_all(&bytes).await.is_err() {
+                                                break;
+                                            }
+                                            let _ = writer.flush().await;
+                                        }
+                                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                                    }
+                                }
+                                res = buf_reader.read(&mut in_buf) => {
+                                    match res {
+                                        Ok(0) => break,
+                                        Ok(n) => {
+                                            svc.send_input(&in_buf[..n]).await;
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                            }
+                        }
+                        return Ok(());
+                    } else {
+                        DaemonResponse::Error {
+                            message: format!("Service '{}' not found", service),
+                        }
+                    }
+                }
                 Ok(DaemonRequest::StopAll) => {
                     supervisor.stop_all().await;
                     should_stop_daemon = true;
@@ -259,6 +319,7 @@ impl SessionDaemon {
                 Err(e) => DaemonResponse::Error {
                     message: e.to_string(),
                 },
+
             };
 
             let json_resp = serde_json::to_string(&resp)?;

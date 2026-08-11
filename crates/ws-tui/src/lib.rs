@@ -1,3 +1,4 @@
+pub mod bridge;
 pub mod buffer;
 pub mod clipboard;
 pub mod daemon;
@@ -203,6 +204,14 @@ pub fn stop_workspace_session(socket_path: String) -> PyResult<bool> {
 }
 
 
+#[pyfunction]
+#[pyo3(signature = (socket_path, service_name))]
+pub fn run_raw_bridge(socket_path: String, service_name: String) -> PyResult<i32> {
+    bridge::run_raw_bridge(socket_path, service_name)
+        .map_err(|e| PyRuntimeError::new_err(e))
+}
+
+
 #[pymodule]
 fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyServiceSpec>()?;
@@ -211,6 +220,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(attach_workspace_session, m)?)?;
     m.add_function(wrap_pyfunction!(is_session_active, m)?)?;
     m.add_function(wrap_pyfunction!(stop_workspace_session, m)?)?;
+    m.add_function(wrap_pyfunction!(run_raw_bridge, m)?)?;
     Ok(())
 }
+
 
