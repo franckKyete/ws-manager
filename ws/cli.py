@@ -10,7 +10,9 @@ from ws import __version__
 from ws.commands import (
     cmd_add,
     cmd_antigravity,
+    cmd_attach,
     cmd_create,
+
     cmd_doctor,
     cmd_env,
     cmd_exec,
@@ -26,6 +28,7 @@ from ws.commands import (
     cmd_remove,
     cmd_setup,
     cmd_status,
+    cmd_stop,
     cmd_sync,
     cmd_workspace_add_repo,
     cmd_workspace_freeze,
@@ -40,12 +43,39 @@ from ws.workspace import WorkspaceManager
 
 logger = logging.getLogger("ws.cli")
 
+KNOWN_COMMANDS = {
+    "init", "add", "new", "create", "setup", "env", "launch", "start", "run",
+    "attach", "list", "info", "remove", "rm", "open", "stop", "kill", "workspace", "push", "pull",
+    "status", "exec", "fetch", "sync", "doctor", "antigravity",
+}
+
+
+
+def normalize_cli_args(sys_args: Sequence[str]) -> list[str]:
+    """Normalize CLI arguments to support both 'ws <command> <workspace> ...' and 'ws <workspace> <command> ...'."""
+    args_list = list(sys_args)
+    if not args_list:
+        return args_list
+
+    first = args_list[0]
+    # If first argument is not a known command and not a flag (e.g. 'develop'),
+    # but the second argument IS a known command (e.g. 'open', 'launch', 'status', etc.)
+    if first not in KNOWN_COMMANDS and not first.startswith("-") and len(args_list) >= 2:
+        second = args_list[1]
+        if second in KNOWN_COMMANDS:
+            # Swap: ['develop', 'open', '--all'] -> ['open', 'develop', '--all']
+            normalized = [second, first] + args_list[2:]
+            return normalized
+
+    return args_list
+
 
 def parse_new_workspace_args(
     workspace_name: str,
     raw_args: list[str],
     repositories: dict[str, RepoConfig],
 ) -> list[RepoSpec]:
+
     """Parse dynamic parameters for 'ws new <name>'."""
     global_existing = False
     include_all = False
@@ -281,25 +311,31 @@ def build_parser() -> argparse.ArgumentParser:
     p_env.add_argument("repo", nargs="?", default=None, help="Repository name (optional)")
     p_env.add_argument("--sync", action="store_true", help="Sync resolved environment variables into worktree .env files")
 
-    # Command: ws launch <name> [repos...] [--all] [--repos r1,r2] [--tmux] [--terminal] [--attach repo]
+    # Command: ws launch <name> [repos...] [--all] [--repos r1,r2] [--zellij] [--tmux] [--terminal] [--attach repo] [--daemon] [--mode]
     p_launch = subparsers.add_parser("launch", aliases=["start", "run"], help="Launch workspace services concurrently")
     p_launch.add_argument("name", help="Workspace name")
     p_launch.add_argument("repos", nargs="*", help="Repository names to launch (or use --all)")
     p_launch.add_argument("--all", action="store_true", help="Launch all repositories in the workspace")
     p_launch.add_argument("--repos", "--only", dest="repos_flag", type=str, help="Comma-separated list of repository names to launch")
     p_launch.add_argument("--attach", type=str, default=None, help="Focus or connect directly to a single service output")
+    p_launch.add_argument("--zellij", "-z", action="store_true", help="Launch services in tiled split panes inside a Zellij session")
     p_launch.add_argument("--tmux", action="store_true", help="Launch services in tiled split panes inside a tmux session")
     p_launch.add_argument("--terminal", "-t", action="store_true", help="Launch services in separate terminal windows/tabs")
     p_launch.add_argument("--stream", action="store_true", help="Stream raw multiplexed stdout/stderr without interactive TUI")
+    p_launch.add_argument("--daemon", "-d", "--background", dest="daemon", action="store_true", help="Launch services in a detached background daemon")
+    p_launch.add_argument("--switch", "-s", action="store_true", help="Switch multiplexer engine for a running workspace")
+    p_launch.add_argument("--mode", "-m", choices=["tui", "zellij", "tmux", "terminal", "stream", "attach", "daemon", "summary", "list"], default=None, help="Multiplexer/UI mode")
 
-    # Command: ws attach <name> [repo]
-    p_attach = subparsers.add_parser("attach", help="Interactively attach terminal directly to a workspace service")
+
+    # Command: ws attach <name> [repo] [--all]
+    p_attach = subparsers.add_parser("attach", help="Attach to a running workspace session")
     p_attach.add_argument("name", help="Workspace name")
-    p_attach.add_argument("repo", nargs="?", default=None, help="Repository service name to attach to")
-
-
-
-
+    p_attach.add_argument("repo", nargs="?", default=None, help="Repository service name to focus (optional)")
+    p_attach.add_argument("--all", action="store_true", help="Attach to all workspace services")
+    p_attach.add_argument("--switch", "-s", action="store_true", help="Switch multiplexer engine for a running workspace")
+    p_attach.add_argument("--tmux", action="store_true", help="Attach using tmux backend")
+    p_attach.add_argument("--zellij", "-z", action="store_true", help="Attach using Zellij backend")
+    p_attach.add_argument("--mode", "-m", choices=["tui", "zellij", "tmux"], default=None, help="Multiplexer engine backend")
 
 
     # Command: ws list
@@ -313,9 +349,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_remove = subparsers.add_parser("remove", aliases=["rm"], help="Remove a workspace and all its worktrees")
     p_remove.add_argument("name", help="Workspace name")
 
-    # Command: ws open <name>
-    p_open = subparsers.add_parser("open", help="Open an interactive shell inside a workspace directory")
+    # Command: ws open <name> [worktree]
+    p_open = subparsers.add_parser("open", help="Open an interactive subshell inside a workspace or repository directory")
     p_open.add_argument("name", help="Workspace name")
+    p_open.add_argument("worktree", nargs="?", default=None, help="Repository worktree name to open subshell into")
+
+
 
     # Command: ws workspace ...
     p_workspace = subparsers.add_parser("workspace", help="Manage repositories and state inside an existing workspace")
@@ -354,6 +393,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 
+    # Command: ws stop <name>
+    p_stop = subparsers.add_parser("stop", aliases=["kill"], help="Stop running workspace background session")
+    p_stop.add_argument("name", help="Workspace name")
+
     # Extension commands
     p_status = subparsers.add_parser("status", help="Show Git status across all workspace worktrees")
     p_status.add_argument("name", help="Workspace name")
@@ -367,6 +410,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor", help="Run system health checks and diagnostics")
     subparsers.add_parser("antigravity", help="Antigravity AI agent workspace health check")
 
+
     return parser
 
 
@@ -375,8 +419,10 @@ def main(sys_args: Sequence[str] | None = None) -> int:
     if sys_args is None:
         sys_args = sys.argv[1:]
 
+    normalized_args = normalize_cli_args(sys_args)
+
     parser = build_parser()
-    args, unknown = parser.parse_known_args(sys_args)
+    args, unknown = parser.parse_known_args(normalized_args)
 
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG, format="%(levelname)s [%(name)s]: %(message)s")
@@ -451,8 +497,10 @@ def main(sys_args: Sequence[str] | None = None) -> int:
             elif getattr(args, "repos", None):
                 target_repos = list(args.repos)
 
-            mode = "tui"
-            if getattr(args, "tmux", False):
+            mode = getattr(args, "mode", None) or "tui"
+            if getattr(args, "zellij", False):
+                mode = "zellij"
+            elif getattr(args, "tmux", False):
                 mode = "tmux"
             elif getattr(args, "terminal", False):
                 mode = "terminal"
@@ -461,19 +509,32 @@ def main(sys_args: Sequence[str] | None = None) -> int:
             elif getattr(args, "attach", None):
                 mode = "attach"
 
+
             cmd_launch(
                 manager=manager,
                 workspace_name=args.name,
                 repos=target_repos if not getattr(args, "all", False) else None,
                 mode=mode,
                 attach_repo=getattr(args, "attach", None),
+                daemon=getattr(args, "daemon", False),
+                switch=getattr(args, "switch", False),
             )
 
         elif args.subcommand == "attach":
-            cmd_attach(manager=manager, workspace_name=args.name, repo_name=getattr(args, "repo", None))
+            attach_mode = getattr(args, "mode", None)
+            if getattr(args, "zellij", False):
+                attach_mode = "zellij"
+            elif getattr(args, "tmux", False):
+                attach_mode = "tmux"
 
-
-
+            cmd_attach(
+                manager=manager,
+                workspace_name=args.name,
+                repo_name=getattr(args, "repo", None),
+                all_panes=getattr(args, "all", False),
+                mode=attach_mode,
+                switch=getattr(args, "switch", False),
+            )
 
 
 
@@ -487,7 +548,17 @@ def main(sys_args: Sequence[str] | None = None) -> int:
             cmd_remove(manager=manager, name=args.name)
 
         elif args.subcommand == "open":
-            cmd_open(manager=manager, name=args.name)
+            cmd_open(
+                manager=manager,
+                name=args.name,
+                worktree=getattr(args, "worktree", None),
+            )
+
+
+        elif args.subcommand in ("stop", "kill"):
+            cmd_stop(manager=manager, name=args.name)
+
+
 
         elif args.subcommand == "workspace":
             if not getattr(args, "ws_subcommand", None):

@@ -98,3 +98,32 @@ def test_parse_new_positional_repo_branch(sample_repositories):
     assert spec_dict["mobile"] == RepoSpec(name="mobile", branch="main", create=False, path="Renttik-mobile")
 
 
+def test_normalize_cli_args():
+    """Test flexible CLI argument normalization ('ws <workspace> <command>' -> 'ws <command> <workspace>')."""
+    from ws.cli import normalize_cli_args
+
+    assert normalize_cli_args(["develop", "attach"]) == ["attach", "develop"]
+    assert normalize_cli_args(["develop", "attach", "server"]) == ["attach", "develop", "server"]
+    assert normalize_cli_args(["develop", "open", "server"]) == ["open", "develop", "server"]
+    assert normalize_cli_args(["develop", "launch", "-d"]) == ["launch", "develop", "-d"]
+    assert normalize_cli_args(["develop", "status"]) == ["status", "develop"]
+    assert normalize_cli_args(["develop", "stop"]) == ["stop", "develop"]
+    assert normalize_cli_args(["attach", "develop", "mobile"]) == ["attach", "develop", "mobile"]
+    assert normalize_cli_args(["launch", "develop"]) == ["launch", "develop"]
+    assert normalize_cli_args([]) == []
+
+
+def test_cli_commands_imported():
+    """Verify all subcommands and command functions are imported in cli.py."""
+    import ws.cli as cli
+
+    assert callable(cli.cmd_attach)
+    assert callable(cli.cmd_open)
+    assert callable(cli.cmd_launch)
+    assert callable(cli.cmd_stop)
+    assert callable(cli.cmd_status)
+
+
+
+
+

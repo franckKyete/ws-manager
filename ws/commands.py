@@ -45,12 +45,29 @@ def cmd_remove(manager: WorkspaceManager, name: str) -> None:
     manager.remove_workspace(name=name)
 
 
-def cmd_open(manager: WorkspaceManager, name: str) -> None:
-    """Execute 'ws open' command."""
-    manager.open_workspace(name=name)
+def cmd_open(
+    manager: WorkspaceManager,
+    name: str,
+    worktree: str | None = None,
+) -> None:
+    """Execute 'ws open' command to open an interactive subshell inside workspace or worktree."""
+    manager.open_workspace(name=name, worktree=worktree)
+
+
+
+def cmd_stop(manager: WorkspaceManager, name: str) -> None:
+    """Execute 'ws stop' command to terminate a running workspace session."""
+    OutputHandler.print_info(f"Stopping services for workspace '[bold cyan]{name}[/bold cyan]'...")
+    stopped = manager.stop_workspace(name)
+    if stopped:
+        OutputHandler.print_success(f"Workspace session '[bold cyan]{name}[/bold cyan]' stopped.")
+    else:
+        OutputHandler.print_warning(f"No active session found for workspace '{name}'.")
+
 
 
 def cmd_status(manager: WorkspaceManager, name: str) -> None:
+
     """Execute 'ws status' command to check git status across worktrees."""
     statuses = manager.status_workspace(name=name)
     console.print(f"[bold cyan]Status for workspace: [yellow]{name}[/yellow][/bold cyan]\n")
@@ -239,15 +256,14 @@ def cmd_env(
                 env_vars=env_vars,
                 explicit_secrets=all_secrets,
             )
-
-
-
 def cmd_launch(
     manager: WorkspaceManager,
     workspace_name: str,
     repos: Sequence[str] | None = None,
     mode: str = "tui",
     attach_repo: str | None = None,
+    daemon: bool = False,
+    switch: bool = False,
 ) -> None:
     """Execute 'ws launch' command to start services concurrently."""
     manager.launch_workspace(
@@ -255,25 +271,88 @@ def cmd_launch(
         repos=repos,
         mode=mode,
         attach_repo=attach_repo,
+        daemon=daemon,
+        switch=switch,
     )
+
 
 
 def cmd_attach(
     manager: WorkspaceManager,
     workspace_name: str,
     repo_name: str | None = None,
+    all_panes: bool = False,
+    mode: str | None = None,
+    switch: bool = False,
 ) -> None:
-    """Interactively attach to a service in the workspace."""
-    manager.launch_workspace(
-        workspace_name=workspace_name,
-        repos=[repo_name] if repo_name else None,
-        mode="attach",
-        attach_repo=repo_name,
-    )
+    """Interactively attach to a running workspace session."""
+    active_engine = manager.get_active_engine(workspace_name)
+    target_engine = mode or active_engine or "tui"
 
+    if active_engine and target_engine != active_engine:
+        if switch:
+            manager.launch_workspace(
+                workspace_name=workspace_name,
+                mode=target_engine,
+                attach_repo=repo_name,
+                switch=True,
+            )
+            return
+        else:
+            OutputHandler.print_error(
+                f"Workspace '{workspace_name}' is currently running in {active_engine}.\n"
+                f"To switch engines, use '--switch' (e.g. 'ws attach {workspace_name} --{target_engine} --switch')."
+            )
+            return
 
+    project_name = manager.config.project_root.name
+    from ws.multiplexer import TmuxLauncher, ZellijLauncher
 
+    if active_engine == "tmux" or (not active_engine and mode == "tmux"):
+        OutputHandler.print_info(
+            f"Attaching to running Tmux window for workspace: [bold cyan]{workspace_name}[/bold cyan] "
+            f"({'all panes' if all_panes else (repo_name or 'fullscreen pane')})"
+        )
+        TmuxLauncher.attach(
+            workspace_name=workspace_name,
+            project_name=project_name,
+            repo_name=repo_name,
+            all_panes=all_panes,
+        )
+        return
 
+    if active_engine == "zellij" or (not active_engine and mode == "zellij"):
+        OutputHandler.print_info(
+            f"Attaching to running Zellij session for workspace: [bold cyan]{workspace_name}[/bold cyan]"
+        )
+        ZellijLauncher.attach(
+            workspace_name=workspace_name,
+            project_name=project_name,
+            repo_name=repo_name,
+            all_panes=all_panes,
+        )
+        return
 
-
-
+    socket_path = manager.get_session_socket_path(workspace_name)
+    try:
+        from ws._native import attach_workspace_session
+        fullscreen = not all_panes
+        OutputHandler.print_info(
+            f"Attaching to running native session for workspace: [bold cyan]{workspace_name}[/bold cyan] "
+            f"({'grid view' if all_panes else (repo_name or 'fullscreen pane')})"
+        )
+        exit_code = attach_workspace_session(
+            workspace_name=workspace_name,
+            socket_path=str(socket_path),
+            initial_focus=repo_name,
+            fullscreen=fullscreen,
+        )
+        if exit_code != 0:
+            logger.info("Native TUI session finished with exit code %d", exit_code)
+    except ImportError:
+        OutputHandler.print_error(
+            "Native TUI engine is not compiled.\n"
+            "Build with 'cargo build --workspace' or run with --stream / --terminal."
+        )
+    except Exception as e:
+        OutputHandler.print_error(f"Failed attaching to session: {e}")

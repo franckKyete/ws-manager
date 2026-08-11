@@ -1,0 +1,27 @@
+[package]
+name = "ws-tui"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module", "abi3-py312"] }
+
+ratatui = "0.26"
+crossterm = { version = "0.27", features = ["event-stream"] }
+tokio = { version = "1.36", features = ["full"] }
+portable-pty = "0.8"
+nix = { version = "0.28", features = ["process", "signal", "term"] }
+regex = "1.10"
+lazy_static = "1.4"
+futures = "0.3"
+ansi-to-tui = "4.0"
+vt100 = { path = "../vt100", package = "fnug-vt100" }
+arboard = { version = "3.4", default-features = false }
+
+base64 = "0.22"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

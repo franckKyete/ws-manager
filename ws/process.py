@@ -24,7 +24,7 @@ PORT_REGEX = re.compile(
 
 
 class VirtualLineBuffer:
-    """Stream-aware terminal line buffer supporting in-place \\r and cursor-up updates."""
+    """Stream-aware terminal line buffer supporting in-place \\r and QR code preservation."""
 
     def __init__(self, max_lines: int = 5000) -> None:
         self.max_lines = max_lines
@@ -32,11 +32,10 @@ class VirtualLineBuffer:
         self.current_line: str = ""
 
     def feed(self, text: str) -> None:
-        """Feed a streaming chunk, handling \\r, \\n, \\x1b[1A (cursor up), and \\x1b[2K (clear line)."""
+        """Feed a streaming chunk, handling \\r, \\n, and in-place progress updates."""
         i = 0
         n = len(text)
         while i < n:
-            # Handle CSI ANSI cursor control sequences
             if text[i] == "\x1b" and i + 1 < n and text[i + 1] == "[":
                 match_end = i + 2
                 while match_end < n and not (
@@ -49,16 +48,13 @@ class VirtualLineBuffer:
                     cmd = text[match_end]
                     seq = text[i : match_end + 1]
 
-                    if cmd == "A":  # Cursor Up (\x1b[1A)
-                        count_str = seq[2:-1]
-                        count = int(count_str) if count_str.isdigit() else 1
-                        for _ in range(count):
-                            if self.lines:
-                                self.current_line = self.lines.pop()
+                    if cmd in ("K", "J", "G", "A"):
+                        # Clear active in-progress line only (never pop committed history)
+                        self.current_line = ""
                         i = match_end + 1
                         continue
-                    elif cmd in ("K", "J"):  # Clear line / clear screen
-                        self.current_line = ""
+                    else:
+                        self.current_line += seq
                         i = match_end + 1
                         continue
 
@@ -78,6 +74,11 @@ class VirtualLineBuffer:
                 self.current_line = ""
                 i += 1
                 continue
+            elif ch in ("\x08", "\x7f"):
+                if self.current_line:
+                    self.current_line = self.current_line[:-1]
+                i += 1
+                continue
             else:
                 self.current_line += ch
                 i += 1
@@ -92,9 +93,10 @@ class VirtualLineBuffer:
         return list(self.lines)
 
     def clear(self) -> None:
-        """Clear all lines and in-progress state."""
+        """Clear all lines."""
         self.lines.clear()
         self.current_line = ""
+
 
 
 @dataclass

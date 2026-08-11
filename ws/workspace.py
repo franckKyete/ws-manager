@@ -343,18 +343,101 @@ class WorkspaceManager:
 
         return WorkspaceMetadata.from_dict(data), ws_dir
 
-    def open_workspace(self, name: str) -> None:
-        """Spawn an interactive subshell inside the workspace directory."""
+    def get_session_socket_path(self, name: str) -> Path:
+        """Return socket path for workspace session daemon."""
+        ws_dir = self._get_workspace_dir(name)
+        return ws_dir / ".ws" / "session.sock"
+
+    def get_active_engine(self, name: str) -> str | None:
+        """Detect which multiplexer backend is currently running for this workspace."""
+        project_name = self.config.project_root.name
+        from ws.multiplexer import TmuxLauncher, ZellijLauncher
+
+        if TmuxLauncher.is_window_running(project_name, name):
+            return "tmux"
+
+        if ZellijLauncher.is_session_running(project_name):
+            return "zellij"
+
+        sock_path = self.get_session_socket_path(name)
+        if sock_path.exists():
+            try:
+                from ws._native import is_session_active
+                if is_session_active(str(sock_path)):
+                    return "tui"
+                else:
+                    sock_path.unlink(missing_ok=True)
+            except ImportError:
+                import socket
+                try:
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                        s.settimeout(0.3)
+                        s.connect(str(sock_path))
+                        return "tui"
+                except (OSError, ConnectionRefusedError):
+                    sock_path.unlink(missing_ok=True)
+        return None
+
+    def is_session_running(self, name: str) -> bool:
+        """Check if background daemon session, tmux window, or zellij session is active."""
+        return self.get_active_engine(name) is not None
+
+
+    def stop_workspace(self, name: str) -> bool:
+        """Stop running background daemon session, tmux window, or zellij session for workspace."""
+        project_name = self.config.project_root.name
+        from ws.multiplexer import TmuxLauncher, ZellijLauncher
+        stopped_any = False
+
+        if TmuxLauncher.is_window_running(project_name, name):
+            TmuxLauncher.kill_workspace(name, project_name)
+            stopped_any = True
+
+        if ZellijLauncher.is_session_running(project_name):
+            ZellijLauncher.kill_workspace(name, project_name)
+            stopped_any = True
+
+        sock_path = self.get_session_socket_path(name)
+        if not sock_path.exists():
+            return stopped_any
+        try:
+            from ws._native import stop_workspace_session
+            stopped = stop_workspace_session(str(sock_path))
+            return stopped or stopped_any
+        except ImportError:
+            if sock_path.exists():
+                sock_path.unlink(missing_ok=True)
+            return True
+
+
+
+
+    def open_workspace(self, name: str, worktree: str | None = None) -> None:
+        """Spawn an interactive subshell inside the workspace or a specific worktree directory."""
         ws_dir = self._get_workspace_dir(name)
         if not ws_dir.exists() or not ws_dir.is_dir():
             raise WorkspaceNotFoundException(f"Workspace '{name}' not found at: {ws_dir}")
 
-        shell = os.environ.get("SHELL", "/bin/bash")
-        OutputHandler.print_info(f"Opening shell inside workspace: [bold cyan]{ws_dir}[/bold cyan]")
+        target_dir = ws_dir
+        if worktree:
+            meta, _ = self.get_workspace_info(name)
+            if worktree in meta.repositories:
+                spec = meta.repositories[worktree]
+                target_dir = ws_dir / spec.path
+            elif (ws_dir / worktree).is_dir():
+                target_dir = ws_dir / worktree
+            else:
+                raise WorkspaceNotFoundException(
+                    f"Worktree '{worktree}' not found in workspace '{name}'. "
+                    f"Available worktrees: {', '.join(meta.repositories.keys())}"
+                )
 
-        # Change working directory and execute shell
-        os.chdir(ws_dir)
+        shell = os.environ.get("SHELL", "/bin/bash")
+        OutputHandler.print_info(f"Opening shell inside: [bold cyan]{target_dir}[/bold cyan]")
+
+        os.chdir(target_dir)
         os.execv(shell, [shell])
+
 
     def status_workspace(self, name: str) -> dict[str, str]:
         """Get git status of all worktrees in a workspace."""
@@ -1012,12 +1095,14 @@ class WorkspaceManager:
         repos: Sequence[str] | None = None,
         mode: str = "summary",
         attach_repo: str | None = None,
+        daemon: bool = False,
+        switch: bool = False,
     ) -> list[tuple[str, str, str, dict[str, str]]]:
-        """Launch workspace services concurrently with TUI, tmux, or terminal window multiplexing.
+        """Launch workspace services concurrently with TUI, daemon, tmux, or terminal window multiplexing.
 
         Returns list of (repo_name, worktree_path_str, launch_command, env_vars).
         """
-        from ws.multiplexer import TerminalLauncher, TmuxLauncher
+        from ws.multiplexer import TerminalLauncher, TmuxLauncher, ZellijLauncher
         from ws.process import ProcessSupervisor
         from ws.tui import WorkspaceTUI
 
@@ -1044,15 +1129,95 @@ class WorkspaceManager:
         if not launch_entries or mode in ("summary", "list"):
             return launch_entries
 
-        # Mode 1: tmux session
-        if mode == "tmux":
-            if TmuxLauncher.launch(workspace_name, launch_entries):
+        # Check cross-engine conflicts / switching
+        active_engine = self.get_active_engine(workspace_name)
+        req_engine = "tui" if mode in ("tui", "daemon") else mode
+        if active_engine and req_engine not in (active_engine, "summary", "list", "attach"):
+            if switch:
+                OutputHandler.print_info(
+                    f"Switching workspace '[bold cyan]{workspace_name}[/bold cyan]' from {active_engine} to {req_engine}..."
+                )
+                self.stop_workspace(workspace_name)
+            else:
+                OutputHandler.print_error(
+                    f"Workspace '{workspace_name}' is already running in {active_engine}.\n"
+                    f"To switch engines, use '--switch' (e.g. 'ws launch {workspace_name} --{req_engine} --switch')."
+                )
                 return launch_entries
 
-        # Mode 2: Separate terminal windows/tabs
+
+        # Mode 0: Detached Background Daemon
+        if daemon or mode == "daemon":
+            log_dir = ws_dir / ".ws" / "logs"
+            sock_path = self.get_session_socket_path(workspace_name)
+            sock_path.parent.mkdir(parents=True, exist_ok=True)
+
+            try:
+                if not self.is_session_running(workspace_name):
+                    if sock_path.exists():
+                        sock_path.unlink(missing_ok=True)
+
+                    daemon_script = (
+                        "import sys, os; "
+                        "from ws._native import ServiceSpec, start_workspace_daemon; "
+                        f"specs = [ServiceSpec(s[0], s[2], s[1], s[3]) for s in {launch_entries!r}]; "
+                        f"start_workspace_daemon({workspace_name!r}, specs, {str(sock_path)!r}, {str(log_dir)!r})"
+                    )
+                    proc = subprocess.Popen(
+                        [sys.executable, "-c", daemon_script],
+                        start_new_session=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                    )
+                    import time
+                    for _ in range(60):
+                        if self.is_session_running(workspace_name):
+                            break
+                        if proc.poll() is not None:
+                            break
+                        time.sleep(0.05)
+
+                OutputHandler.print_success(
+                    f"Workspace daemon active for '{workspace_name}' ({len(launch_entries)} services).\n"
+                    f"Attach anytime using: [bold yellow]ws attach {workspace_name}[/bold yellow] or [bold yellow]ws {workspace_name} attach[/bold yellow]"
+                )
+                return launch_entries
+            except Exception as e:
+                OutputHandler.print_error(f"Failed starting background daemon: {e}")
+                return launch_entries
+
+        project_name = self.config.project_root.name
+
+        # Mode 1: Zellij session
+        if mode == "zellij":
+            if not ZellijLauncher.is_available():
+                OutputHandler.print_error(
+                    "Zellij executable is not found on $PATH.\n"
+                    "Install Zellij using 'cargo install zellij' or via your system package manager."
+                )
+                return launch_entries
+            if ZellijLauncher.launch(workspace_name, launch_entries, project_name=project_name, ws_dir=ws_dir):
+                return launch_entries
+
+
+        # Mode 2: tmux session
+        if mode == "tmux":
+            if not TmuxLauncher.is_available():
+                OutputHandler.print_error(
+                    "tmux executable is not found on $PATH.\n"
+                    "Install tmux via your system package manager (e.g. apt install tmux or brew install tmux)."
+                )
+                return launch_entries
+            if TmuxLauncher.launch(workspace_name, launch_entries, project_name=project_name):
+                return launch_entries
+
+
+        # Mode 3: Separate terminal windows/tabs
         if mode == "terminal":
             if TerminalLauncher.launch(workspace_name, launch_entries):
                 return launch_entries
+
 
         # Mode 3: Single service attach / direct execution
         if mode == "attach" or (attach_repo and len(launch_entries) == 1):
@@ -1068,20 +1233,76 @@ class WorkspaceManager:
         # Mode 4: Interactive Multi-Pane TUI (Default for interactive CLI launch)
         if mode == "tui":
             log_dir = ws_dir / ".ws" / "logs"
-            supervisor = ProcessSupervisor(workspace_name=workspace_name, log_dir=log_dir)
-            for s_name, s_cwd, s_cmd, s_env in launch_entries:
-                supervisor.register_service(s_name, s_cmd, Path(s_cwd), s_env)
+            sock_path = self.get_session_socket_path(workspace_name)
+            sock_path.parent.mkdir(parents=True, exist_ok=True)
 
-            supervisor.start_all()
-            tui = WorkspaceTUI(
-                workspace_name=workspace_name,
-                supervisor=supervisor,
-                initial_service=attach_repo,
-            )
-            tui.run()
-            return launch_entries
+            try:
+                from ws._native import ServiceSpec, attach_workspace_session, start_workspace_daemon
+
+                # If daemon is not running, spawn it in the background
+                if not self.is_session_running(workspace_name):
+                    if sock_path.exists():
+                        sock_path.unlink(missing_ok=True)
+
+                    daemon_script = (
+                        "import sys, os; "
+                        "from ws._native import ServiceSpec, start_workspace_daemon; "
+                        f"specs = [ServiceSpec(s[0], s[2], s[1], s[3]) for s in {launch_entries!r}]; "
+                        f"start_workspace_daemon({workspace_name!r}, specs, {str(sock_path)!r}, {str(log_dir)!r})"
+                    )
+                    proc = subprocess.Popen(
+                        [sys.executable, "-c", daemon_script],
+                        start_new_session=True,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                    )
+                    # Wait for daemon socket to become ready and responsive to Ping
+                    import time
+                    for _ in range(60):
+                        if self.is_session_running(workspace_name):
+                            break
+                        if proc.poll() is not None:
+                            break
+                        time.sleep(0.05)
+
+                if self.is_session_running(workspace_name):
+                    # Attach client TUI directly to the daemon session
+                    exit_code = attach_workspace_session(
+                        workspace_name=workspace_name,
+                        socket_path=str(sock_path),
+                        initial_focus=attach_repo,
+                    )
+
+                    if self.is_session_running(workspace_name):
+                        OutputHandler.print_info(
+                            f"Detached from workspace '[bold cyan]{workspace_name}[/bold cyan]'. Services remain active in background.\n"
+                            f"Re-attach anytime: [bold yellow]ws attach {workspace_name}[/bold yellow] or [bold yellow]ws {workspace_name} attach[/bold yellow]\n"
+                            f"Stop session: [bold red]ws stop {workspace_name}[/bold red]"
+                        )
+                    return launch_entries
+                else:
+                    raise RuntimeError(f"Could not start or connect to session daemon for workspace '{workspace_name}'")
+
+            except ImportError:
+                # Pure-Python fallback if native extension is not compiled
+                supervisor = ProcessSupervisor(workspace_name=workspace_name, log_dir=log_dir)
+                for s_name, s_cwd, s_cmd, s_env in launch_entries:
+                    supervisor.register_service(s_name, s_cmd, Path(s_cwd), s_env)
+
+                supervisor.start_all()
+                tui = WorkspaceTUI(
+                    workspace_name=workspace_name,
+                    supervisor=supervisor,
+                    initial_service=attach_repo,
+                )
+                tui.run()
+                return launch_entries
+
 
         return launch_entries
+
+
 
 
 

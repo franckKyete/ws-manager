@@ -120,18 +120,35 @@ def test_virtual_line_buffer_progress_updates():
     assert "10.0%" not in lines[1]
     assert lines[2] == "LOG Sentry disabled in dev"
 
-    # 2. Vite / Webpack multi-line cursor up updates via \x1b[1A\x1b[2K\r
+    # 2. Expo QR code and bundler progress preservation
     buf2 = VirtualLineBuffer()
-    buf2.feed("Compiling...\n")
-    buf2.feed("Building: 10%\n")
-    buf2.feed("\x1b[1A\x1b[2K\rBuilding: 50%\n")
-    buf2.feed("\x1b[1A\x1b[2K\rBuilding: 100%\n")
-    buf2.feed("Build complete\n")
+    buf2.feed("Starting project at /workspace/develop/Renttik-mobile\n")
+    buf2.feed("Starting Metro Bundler\n")
+    sample_qr = [
+        "\x1b[47m  \x1b[40m                        \x1b[47m  \x1b[0m",
+        "\x1b[47m  \x1b[40m  \x1b[47m███████\x1b[40m  \x1b[47m█\x1b[40m \x1b[47m█\x1b[40m  \x1b[47m███████\x1b[40m  \x1b[47m  \x1b[0m",
+        "\x1b[47m  \x1b[40m  \x1b[47m█\x1b[40m     \x1b[47m█\x1b[40m  \x1b[47m██\x1b[40m    \x1b[47m█\x1b[40m     \x1b[47m█\x1b[40m  \x1b[47m  \x1b[0m",
+        "\x1b[47m  \x1b[40m  \x1b[47m███████\x1b[40m  \x1b[47m█\x1b[40m \x1b[47m█\x1b[40m \x1b[47m█\x1b[40m \x1b[47m███████\x1b[40m  \x1b[47m  \x1b[0m",
+    ]
+    for line in sample_qr:
+        buf2.feed(f"{line}\n")
+    buf2.feed("› Press a │ open Android\n")
+
+    for pct in [81.4, 81.8, 90.0, 99.9]:
+        buf2.feed(f"\rAndroid entry.js {pct}%")
+
+    buf2.feed("\r\x1b[2KAndroid Bundled 471ms (4969 modules)\n")
+    buf2.feed("LOG Sentry disabled in development\n")
 
     lines2 = buf2.get_lines()
-    assert len(lines2) == 3
-    assert lines2[0] == "Compiling..."
-    assert lines2[1] == "Building: 100%"
-    assert lines2[2] == "Build complete"
+    assert len(lines2) == 2 + len(sample_qr) + 1 + 2
+    assert "Starting project" in lines2[0]
+    assert "Starting Metro" in lines2[1]
+    assert "███████" in lines2[3]
+    assert lines2[-2] == "Android Bundled 471ms (4969 modules)"
+    assert lines2[-1] == "LOG Sentry disabled in development"
+
+
+
 
 

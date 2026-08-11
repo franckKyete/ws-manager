@@ -345,6 +345,32 @@ def test_find_config_file_upward_traversal(temp_dir, monkeypatch):
     assert app_cfg.workspaces_dir == project_root.resolve() / "workspaces"
 
 
+def test_session_socket_and_stop_workspace(temp_dir, mock_git, monkeypatch):
+    """Test session socket path resolution and stop_workspace."""
+    bare1 = temp_dir / "repo1.git"
+    bare1.mkdir()
+
+    app_cfg = AppConfig(
+        repositories={"repo1": RepoConfig(name="repo1", bare=bare1, checkout="repo1")},
+        workspaces_dir=temp_dir / "workspaces",
+    )
+
+    manager = WorkspaceManager(config=app_cfg, git_service=mock_git)
+    monkeypatch.setattr(mock_git, "is_bare_repo", lambda path: True)
+    monkeypatch.setattr(mock_git, "branch_exists", lambda bare, br: False)
+    monkeypatch.setattr(mock_git, "create_worktree", lambda bare_path, worktree_path, branch, create_branch: worktree_path.mkdir(parents=True, exist_ok=True))
+
+    spec1 = RepoSpec(name="repo1", branch="feature/test", create=True, path="repo1")
+    manager.create_workspace("session-ws", [spec1])
+
+    sock_path = manager.get_session_socket_path("session-ws")
+    assert sock_path == temp_dir / "workspaces" / "session-ws" / ".ws" / "session.sock"
+
+    assert manager.is_session_running("session-ws") is False
+    assert manager.stop_workspace("session-ws") is False
+
+
+
 
 
 

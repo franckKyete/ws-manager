@@ -8,6 +8,13 @@ build/
 dist/
 *.egg-info/
 .eggs/
+*.so
+*.dylib
+*.dll
+
+# Rust target outputs
+target/
+Cargo.lock
 
 # Virtual Environments
 .venv/
