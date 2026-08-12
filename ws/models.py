@@ -101,11 +101,20 @@ class RepoSpec:
     path: str
     frozen: bool = False
 
+    @property
+    def locked(self) -> bool:
+        return self.frozen
+
+    @locked.setter
+    def locked(self, value: bool) -> None:
+        self.frozen = value
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "branch": self.branch,
             "create": self.create,
             "path": self.path,
+            "locked": self.frozen,
             "frozen": self.frozen,
         }
 
@@ -114,7 +123,7 @@ class RepoSpec:
         branch = data.get("branch")
         create = data.get("create", True)
         path = data.get("path", name)
-        frozen = data.get("frozen", False)
+        frozen = data.get("locked", data.get("frozen", False))
         if not branch:
             raise ValueError(f"Repository specification '{name}' missing required 'branch'")
         return cls(
@@ -124,6 +133,7 @@ class RepoSpec:
             path=str(path),
             frozen=bool(frozen),
         )
+
 
 
 @dataclass

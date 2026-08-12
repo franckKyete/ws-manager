@@ -139,7 +139,7 @@ class OutputHandler:
         running_services: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """Print detailed workspace metadata and running processes in a Rich tree."""
-        tree = Tree(f"[bold cyan]Workspace: [yellow]{metadata.name}[/yellow][/bold cyan]")
+        tree = Tree(f"[bold cyan]Workspace: [yellow]@{metadata.name}[/yellow][/bold cyan]")
         tree.add(f"[bold white]Created:[/bold white] {metadata.created} ({format_relative_time(metadata.created)})")
 
         if active_engine:
@@ -155,7 +155,7 @@ class OutputHandler:
 
         for repo_name, spec in metadata.repositories.items():
             mode_badge = "[green]new[/green]" if spec.create else "[yellow]existing[/yellow]"
-            frozen_badge = " [bold yellow]🔒 FROZEN[/bold yellow]" if spec.frozen else ""
+            locked_badge = " [bold yellow]🔒 LOCKED[/bold yellow]" if (spec.frozen or spec.locked) else ""
 
             svc_info = running_services.get(repo_name)
             if svc_info:
@@ -167,21 +167,22 @@ class OutputHandler:
             else:
                 process_badge = ""
 
-            r_node = repo_branch.add(f"[bold magenta]{repo_name}[/bold magenta] ({mode_badge}){frozen_badge}{process_badge}")
+            r_node = repo_branch.add(f"[bold magenta]%{repo_name}[/bold magenta] ({mode_badge}){locked_badge}{process_badge}")
             r_node.add(f"Branch: [bold white]{spec.branch}[/bold white]")
             r_node.add(f"Worktree Path: [dim]{spec.path}[/dim]")
             if svc_info:
                 r_node.add(f"Process Status: [green]{svc_info.get('status', 'running')}[/green]")
-            if spec.frozen:
-                r_node.add("File Mode: [yellow]Read-only (frozen)[/yellow]")
+            if spec.frozen or spec.locked:
+                r_node.add("File Mode: [yellow]Read-only (locked)[/yellow]")
 
         console.print(
             Panel(
                 tree,
-                title=f"[bold green]Workspace Info: {metadata.name}[/bold green]",
+                title=f"[bold green]Workspace Info: @{metadata.name}[/bold green]",
                 border_style="cyan",
             )
         )
+
 
 
     @staticmethod

@@ -699,8 +699,8 @@ class WorkspaceManager:
             + (" (deleted branch)" if delete_branch else "")
         )
 
-    def freeze_repo(self, workspace_name: str, repo_name: str) -> None:
-        """Freeze a repository in a workspace, marking tracked files read-only."""
+    def lock_repo(self, workspace_name: str, repo_name: str) -> None:
+        """Lock a repository in a workspace, marking tracked files read-only."""
         meta, ws_dir = self.get_workspace_info(workspace_name)
 
         if repo_name not in meta.repositories:
@@ -709,8 +709,8 @@ class WorkspaceManager:
             )
 
         spec = meta.repositories[repo_name]
-        if spec.frozen:
-            OutputHandler.print_info(f"Repository '{repo_name}' is already frozen")
+        if spec.frozen or spec.locked:
+            OutputHandler.print_info(f"Repository '#{repo_name}' is already locked")
             return
 
         worktree_path = ws_dir / spec.path
@@ -719,10 +719,14 @@ class WorkspaceManager:
 
         meta.repositories[repo_name].frozen = True
         self._save_metadata(ws_dir, meta)
-        OutputHandler.print_success(f"Frozen repository '{repo_name}' in workspace '{workspace_name}'")
+        OutputHandler.print_success(f"Locked repository '#{repo_name}' in workspace '@{workspace_name}'")
 
-    def unfreeze_repo(self, workspace_name: str, repo_name: str) -> None:
-        """Unfreeze a repository in a workspace, restoring write permissions on tracked files."""
+    def freeze_repo(self, workspace_name: str, repo_name: str) -> None:
+        """Backward-compatible alias for lock_repo."""
+        return self.lock_repo(workspace_name, repo_name)
+
+    def unlock_repo(self, workspace_name: str, repo_name: str) -> None:
+        """Unlock a repository in a workspace, restoring write permissions on tracked files."""
         meta, ws_dir = self.get_workspace_info(workspace_name)
 
         if repo_name not in meta.repositories:
@@ -731,8 +735,8 @@ class WorkspaceManager:
             )
 
         spec = meta.repositories[repo_name]
-        if not spec.frozen:
-            OutputHandler.print_info(f"Repository '{repo_name}' is not frozen")
+        if not spec.frozen and not spec.locked:
+            OutputHandler.print_info(f"Repository '#{repo_name}' is not locked")
             return
 
         worktree_path = ws_dir / spec.path
@@ -741,7 +745,12 @@ class WorkspaceManager:
 
         meta.repositories[repo_name].frozen = False
         self._save_metadata(ws_dir, meta)
-        OutputHandler.print_success(f"Unfrozen repository '{repo_name}' in workspace '{workspace_name}'")
+        OutputHandler.print_success(f"Unlocked repository '#{repo_name}' in workspace '@{workspace_name}'")
+
+    def unfreeze_repo(self, workspace_name: str, repo_name: str) -> None:
+        """Backward-compatible alias for unlock_repo."""
+        return self.unlock_repo(workspace_name, repo_name)
+
 
     def push_workspace(
         self,

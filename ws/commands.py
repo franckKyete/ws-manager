@@ -12,7 +12,7 @@ logger = logging.getLogger("ws.commands")
 
 
 def cmd_new(manager: WorkspaceManager, name: str, repo_specs: Sequence[RepoSpec], run_setup: bool = False) -> None:
-    """Execute 'ws new' command."""
+    """Execute 'ws create' / 'ws new' command."""
     manager.create_workspace(name=name, repo_specs=repo_specs)
     if run_setup:
         results = manager.setup_workspace(workspace_name=name)
@@ -20,7 +20,7 @@ def cmd_new(manager: WorkspaceManager, name: str, repo_specs: Sequence[RepoSpec]
 
 
 def cmd_create(manager: WorkspaceManager, config_file: Path | str, run_setup: bool = False) -> None:
-    """Execute 'ws create' command using a YAML configuration file."""
+    """Execute 'ws create -f <config.yml>' command using a YAML configuration file."""
     meta = manager.create_workspace_from_config(config_file=config_file)
     if run_setup:
         results = manager.setup_workspace(workspace_name=meta.name)
@@ -48,44 +48,109 @@ def cmd_info(manager: WorkspaceManager, name: str) -> None:
 
 
 
-def cmd_remove(manager: WorkspaceManager, name: str) -> None:
-    """Execute 'ws remove' command."""
+def cmd_delete(manager: WorkspaceManager, name: str) -> None:
+    """Execute 'ws delete' / 'ws rm' command."""
     manager.remove_workspace(name=name)
 
+cmd_remove = cmd_delete
 
-def cmd_open(
+
+def cmd_shell(
     manager: WorkspaceManager,
     name: str,
     worktree: str | None = None,
 ) -> None:
-    """Execute 'ws open' command to open an interactive subshell inside workspace or worktree."""
-    manager.open_workspace(name=name, worktree=worktree)
+    """Execute 'ws shell' / 'ws enter' command to open an interactive subshell inside workspace or worktree."""
+    clean_wt = worktree.lstrip("%+:#$") if worktree else None
+    manager.open_workspace(name=name, worktree=clean_wt)
+
+cmd_enter = cmd_shell
+cmd_open = cmd_shell
 
 
 
 def cmd_stop(manager: WorkspaceManager, name: str) -> None:
     """Execute 'ws stop' command to terminate a running workspace session."""
-    OutputHandler.print_info(f"Stopping services for workspace '[bold cyan]{name}[/bold cyan]'...")
+    OutputHandler.print_info(f"Stopping services for workspace '[bold cyan]@{name}[/bold cyan]'...")
     stopped = manager.stop_workspace(name)
     if stopped:
-        OutputHandler.print_success(f"Workspace session '[bold cyan]{name}[/bold cyan]' stopped.")
+        OutputHandler.print_success(f"Workspace session for '@{name}' terminated.")
     else:
-        OutputHandler.print_warning(f"No active session found for workspace '{name}'.")
+        OutputHandler.print_info(f"No active session found for '@{name}'.")
 
+
+def cmd_restart(
+    manager: WorkspaceManager,
+    workspace_name: str,
+    repos: Sequence[str] | None = None,
+) -> None:
+    """Restart services inside a running daemon session."""
+    sock_path = manager.get_session_socket_path(workspace_name)
+    if not manager.is_session_running(workspace_name):
+        OutputHandler.print_warning(f"No running session for workspace '@{workspace_name}'. Starting...")
+        cmd_launch(manager=manager, workspace_name=workspace_name, repos=repos)
+        return
+
+    target_repos = [r.lstrip("%+:#$") for r in repos] if repos else []
+    if not target_repos:
+        meta, _ = manager.get_workspace_info(workspace_name)
+        target_repos = list(meta.repositories.keys())
+
+    import socket, json
+    for r in target_repos:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(1.0)
+                s.connect(str(sock_path))
+                req = json.dumps({"type": "RestartService", "service": r}) + "\n"
+                s.sendall(req.encode("utf-8"))
+                _ = s.recv(1024)
+                OutputHandler.print_success(f"Restarted service '%{r}' in workspace '@{workspace_name}'")
+        except Exception as e:
+            OutputHandler.print_error(f"Failed restarting service '%{r}': {e}")
+
+
+def cmd_logs(
+    manager: WorkspaceManager,
+    workspace_name: str,
+    repo_name: str | None = None,
+    follow: bool = False,
+    lines: int = 50,
+) -> None:
+    """View logs for workspace services."""
+    ws_dir = manager._get_workspace_dir(workspace_name)
+    log_dir = ws_dir / ".ws" / "logs"
+    if not log_dir.exists():
+        OutputHandler.print_warning(f"No log directory found for workspace '@{workspace_name}'.")
+        return
+
+    clean_repo = repo_name.lstrip("%+:#$") if repo_name else None
+    if clean_repo:
+        target_log = log_dir / f"{clean_repo}.log"
+        if not target_log.exists():
+            OutputHandler.print_error(f"No log file found for service '%{clean_repo}' at {target_log}")
+            return
+        log_files = [target_log]
+    else:
+        log_files = sorted(log_dir.glob("*.log"))
+        if not log_files:
+            OutputHandler.print_info(f"No log files found in '{log_dir}'.")
+            return
+
+    for lf in log_files:
+        OutputHandler.print_info(f"[bold cyan]Log: {lf.name}[/bold cyan]")
+        try:
+            with open(lf, "r", encoding="utf-8", errors="replace") as f:
+                content = f.readlines()
+                for line in content[-lines:]:
+                    console.print(line, end="")
+        except Exception as e:
+            OutputHandler.print_error(f"Error reading {lf}: {e}")
 
 
 def cmd_status(manager: WorkspaceManager, name: str) -> None:
-
-    """Execute 'ws status' command to check git status across worktrees."""
-    statuses = manager.status_workspace(name=name)
-    console.print(f"[bold cyan]Status for workspace: [yellow]{name}[/yellow][/bold cyan]\n")
-    for repo, status in statuses.items():
-        console.print(f"[bold magenta]{repo}[/bold magenta]:")
-        if status.strip():
-            console.print(f"  {status.strip()}")
-        else:
-            console.print("  [dim green]working tree clean[/dim green]")
-        console.print()
+    """Execute 'ws status' command across all repository worktrees in a workspace."""
+    manager.status_workspace(name=name)
 
 
 def cmd_exec(manager: WorkspaceManager, name: str, command: list[str]) -> None:
@@ -123,12 +188,12 @@ def cmd_doctor(manager: WorkspaceManager) -> None:
 
 
 def cmd_init(manager: WorkspaceManager, repo_inputs: Sequence[str]) -> None:
-    """Execute 'ws init' command to initialize project and clone repositories."""
+    """Execute 'ws init' / 'ws project init' command."""
     manager.init_project(repo_inputs=repo_inputs)
 
 
 def cmd_add(manager: WorkspaceManager, repo_input: str) -> None:
-    """Execute 'ws add' command to clone and add a single repository."""
+    """Execute 'ws add' / 'ws project add' command."""
     manager.init_project(repo_inputs=[repo_input])
 
 
@@ -141,52 +206,93 @@ def cmd_antigravity(manager: WorkspaceManager) -> None:
     OutputHandler.print_success("Antigravity engine nominal.")
 
 
-def cmd_workspace_add_repo(
+def cmd_repo_add(
     manager: WorkspaceManager,
     workspace_name: str,
-    repo_name: str,
-    branch: str,
-    create: bool = True,
+    repo_input: str,
+    branch: str | None = None,
+    existing: bool = False,
 ) -> None:
-    """Execute 'ws workspace add-repo' command."""
+    """Execute 'ws repo add @<workspace> %<repo>:[branch]'."""
+    clean_input = repo_input.lstrip("%+:#$")
+    create_mode = not existing
+
+    if ":" in clean_input:
+        parts = clean_input.split(":")
+        r_name = parts[0]
+        r_branch = parts[1] if len(parts) > 1 and parts[1] else None
+        if len(parts) > 2 and parts[2] == "existing":
+            create_mode = False
+        elif len(parts) > 2 and parts[2] == "new":
+            create_mode = True
+    elif "=" in clean_input:
+        parts = clean_input.split("=", 1)
+        r_name = parts[0]
+        r_branch = parts[1]
+        if r_branch.endswith(":existing"):
+            r_branch = r_branch[:-9]
+            create_mode = False
+        elif r_branch.endswith(":new"):
+            r_branch = r_branch[:-4]
+            create_mode = True
+    else:
+        r_name = clean_input
+        r_branch = branch
+
+    if not r_branch:
+        r_branch = workspace_name if not create_mode else f"feature/{workspace_name}"
+
     manager.workspace_add_repo(
         workspace_name=workspace_name,
-        repo_name=repo_name,
-        branch=branch,
-        create=create,
+        repo_name=r_name,
+        branch=r_branch,
+        create=create_mode,
     )
 
+cmd_workspace_add_repo = cmd_repo_add
 
-def cmd_workspace_remove_repo(
+
+def cmd_repo_remove(
     manager: WorkspaceManager,
     workspace_name: str,
     repo_name: str,
     delete_branch: bool = False,
 ) -> None:
-    """Execute 'ws workspace remove-repo' command."""
+    """Execute 'ws repo remove @<workspace> %<repo>'."""
+    clean_repo = repo_name.lstrip("%+:#$")
     manager.workspace_remove_repo(
         workspace_name=workspace_name,
-        repo_name=repo_name,
+        repo_name=clean_repo,
         delete_branch=delete_branch,
     )
 
+cmd_workspace_remove_repo = cmd_repo_remove
 
-def cmd_workspace_freeze(
+
+def cmd_repo_lock(
     manager: WorkspaceManager,
     workspace_name: str,
     repo_name: str,
 ) -> None:
-    """Execute 'ws workspace freeze' command."""
-    manager.freeze_repo(workspace_name=workspace_name, repo_name=repo_name)
+    """Execute 'ws repo lock @<workspace> %<repo>' (alias: 'ws lock')."""
+    clean_repo = repo_name.lstrip("%+:#$")
+    manager.lock_repo(workspace_name=workspace_name, repo_name=clean_repo)
+
+cmd_lock = cmd_repo_lock
+cmd_workspace_freeze = cmd_repo_lock
 
 
-def cmd_workspace_unfreeze(
+def cmd_repo_unlock(
     manager: WorkspaceManager,
     workspace_name: str,
     repo_name: str,
 ) -> None:
-    """Execute 'ws workspace unfreeze' command."""
-    manager.unfreeze_repo(workspace_name=workspace_name, repo_name=repo_name)
+    """Execute 'ws repo unlock @<workspace> %<repo>' (alias: 'ws unlock')."""
+    clean_repo = repo_name.lstrip("%+:#$")
+    manager.unlock_repo(workspace_name=workspace_name, repo_name=clean_repo)
+
+cmd_unlock = cmd_repo_unlock
+cmd_workspace_unfreeze = cmd_repo_unlock
 
 
 def cmd_push(
@@ -380,4 +486,9 @@ def cmd_bridge(manager: WorkspaceManager, workspace_name: str, repo_name: str) -
         run_raw_bridge(str(sock_path), repo_name)
     except Exception as e:
         OutputHandler.print_error(f"Bridge connection error: {e}")
+
+
+cmd_start = cmd_launch
+cmd_run = cmd_launch
+
 

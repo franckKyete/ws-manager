@@ -224,15 +224,18 @@ def test_freeze_and_unfreeze_repo(temp_dir, mock_git, monkeypatch):
     spec1 = RepoSpec(name="repo1", branch="feature/test", create=True, path="repo1")
     manager.create_workspace("freeze-ws", [spec1])
 
-    # Freeze
-    manager.freeze_repo("freeze-ws", "repo1")
+    # Freeze / Lock
+    manager.lock_repo("freeze-ws", "repo1")
     meta, _ = manager.get_workspace_info("freeze-ws")
     assert meta.repositories["repo1"].frozen is True
+    assert meta.repositories["repo1"].locked is True
 
-    # Unfreeze
-    manager.unfreeze_repo("freeze-ws", "repo1")
+    # Unfreeze / Unlock
+    manager.unlock_repo("freeze-ws", "repo1")
     meta, _ = manager.get_workspace_info("freeze-ws")
     assert meta.repositories["repo1"].frozen is False
+    assert meta.repositories["repo1"].locked is False
+
 
 
 def test_push_workspace_skips_frozen(temp_dir, mock_git, monkeypatch):
