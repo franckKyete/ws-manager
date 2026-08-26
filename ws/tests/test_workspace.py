@@ -224,17 +224,28 @@ def test_freeze_and_unfreeze_repo(temp_dir, mock_git, monkeypatch):
     spec1 = RepoSpec(name="repo1", branch="feature/test", create=True, path="repo1")
     manager.create_workspace("freeze-ws", [spec1])
 
+    wt_path = temp_dir / "workspaces" / "freeze-ws" / "repo1"
+    env_file = wt_path / ".env"
+    env_file.write_text("FOO=bar\n")
+
     # Freeze / Lock
     manager.lock_repo("freeze-ws", "repo1")
     meta, _ = manager.get_workspace_info("freeze-ws")
     assert meta.repositories["repo1"].frozen is True
     assert meta.repositories["repo1"].locked is True
 
+    # Simulate .env having become 0444
+    env_file.chmod(0o444)
+    assert env_file.stat().st_mode & 0o200 == 0
+
     # Unfreeze / Unlock
     manager.unlock_repo("freeze-ws", "repo1")
     meta, _ = manager.get_workspace_info("freeze-ws")
     assert meta.repositories["repo1"].frozen is False
     assert meta.repositories["repo1"].locked is False
+    # Verify .env was restored to writable
+    assert env_file.stat().st_mode & 0o200 != 0
+
 
 
 

@@ -9,8 +9,8 @@ This guide walks you through system requirements, installation, initial project 
 - **Operating System**: Linux (Ubuntu, Debian, Fedora, Arch, etc.) or macOS.
 - **Python**: Python 3.10 or higher.
 - **Git**: Git 2.20 or higher (with `git worktree` support).
-- **Rust / Cargo** *(Optional, for building the native terminal engine)*: Rust 1.75+.
-- **Terminal Multiplexers** *(Optional)*:
+- **Rust / Cargo** _(Optional, for building the native terminal engine)_: Rust 1.75+.
+- **Terminal Multiplexers** _(Optional)_:
   - `tmux` 3.0+ (for `ws start --tmux`)
   - `zellij` 0.39+ (for `ws start --zellij`)
 
@@ -35,6 +35,7 @@ pipx install .
 ```
 
 Verify your installation:
+
 ```bash
 ws --version
 ws doctor
@@ -59,12 +60,48 @@ cargo build --workspace
 ```
 
 Run the automated test suite to ensure everything is operational:
+
 ```bash
 python3 -m pytest ws/tests/ -v
 cargo test --workspace
 ```
 
 ---
+
+## ⚡ Shell Autocompletion & Suggestions (Zsh, Bash, Fish)
+
+Enable dynamic tab-completion for subcommands, workspaces (`@<name>`), repositories (`%<repo>`), and flags:
+
+### For Zsh (Recommended)
+
+Add this line to your `~/.zshrc`:
+
+```zsh
+eval "$(ws completion zsh)"
+```
+
+Or install the completion script permanently:
+
+```zsh
+ws completion install
+```
+
+### For Bash
+
+Add this line to your `~/.bashrc`:
+
+```bash
+eval "$(ws completion bash)"
+```
+
+### For Fish
+
+```fish
+ws completion fish > ~/.config/fish/completions/ws.fish
+```
+
+---
+
 
 ## 🎓 3-Minute Tutorial: Your First Workspace
 
@@ -80,10 +117,12 @@ ws project init server=git@github.com:example-org/api-server.git \
 ```
 
 This command:
+
 1. Clones bare repositories into `bares/server.git` and `bares/mobile.git`.
 2. Generates a root `repositories.yml` configuration file.
 
 Inspect the generated `repositories.yml`:
+
 ```yaml
 repositories:
   server:
@@ -116,6 +155,7 @@ ws create @feat-auth %server:main:existing %mobile:feature/auth-ui:new
 ```
 
 Your directory structure now contains lightweight Git worktrees:
+
 ```
 my-polyrepo-project/
 ├── bares/

@@ -295,6 +295,10 @@ class GitService:
         """chmod a-w (freeze) or u+w (unfreeze) on git-tracked files only."""
         tracked_files = self.list_tracked_files(worktree_path)
         for file_path in tracked_files:
+            # Keep runtime env files writable even if tracked in git
+            if readonly and (file_path.name == ".env" or file_path.name.startswith(".env.")):
+                continue
+
             try:
                 mode = file_path.stat().st_mode
                 if readonly:
@@ -306,4 +310,5 @@ class GitService:
                 os.chmod(file_path, new_mode)
             except Exception as e:
                 logger.warning("Failed to change permission for '%s': %s", file_path, e)
+
 

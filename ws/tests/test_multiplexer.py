@@ -95,5 +95,10 @@ def test_cli_switch_flag_parsed():
     assert args_attach.switch is True
 
 
+def test_zellij_is_tab_running():
+    """Test ZellijLauncher.is_tab_running returns False when session not running."""
+    assert ZellijLauncher.is_tab_running("nonexistent-proj", "nonexistent-ws") is False
+
+
 
 

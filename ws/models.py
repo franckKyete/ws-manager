@@ -14,6 +14,7 @@ class RepoConfig:
     bare: Path
     checkout: str
     url: str | None = None
+    port: int | None = None
     env: dict[str, str] = field(default_factory=dict)
     env_file: str = ".env"
     env_example: str = ".env.example"
@@ -29,6 +30,8 @@ class RepoConfig:
         }
         if self.url:
             res["url"] = self.url
+        if self.port:
+            res["port"] = self.port
         if self.env:
             res["env"] = dict(self.env)
         if self.env_file != ".env":
@@ -75,19 +78,30 @@ class RepoConfig:
         copy_files_raw = data.get("copy_files", data.get("files", []))
         copy_files_list = list(copy_files_raw) if isinstance(copy_files_raw, list) else ([copy_files_raw] if copy_files_raw else [])
 
+        port_val = None
+        if data.get("port"):
+            try:
+                port_val = int(data["port"])
+            except (ValueError, TypeError):
+                pass
+
+        launch_val = data.get("launch", data.get("command"))
         return cls(
             name=name,
             bare=Path(bare_val),
             checkout=str(checkout_val),
             url=str(url_val) if url_val else None,
+            port=port_val,
             env=env_dict,
             env_file=str(data.get("env_file", ".env")),
             env_example=str(data.get("env_example", ".env.example")),
             setup=setup_list,
-            launch=str(data["launch"]) if data.get("launch") else None,
+            launch=str(launch_val) if launch_val else None,
             secrets=secrets_list,
             copy_files=copy_files_list,
         )
+
+
 
 
 

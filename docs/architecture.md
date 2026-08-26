@@ -11,7 +11,7 @@ graph TD
     User["👤 Developer (CLI / Subshell)"]
     CLI["🐍 ws CLI (Python)"]
     Config["📄 repositories.yml / workspace.yml"]
-    
+
     subgraph "Git Storage Layer"
         BareStore["📦 Bare Store (bares/*.git)"]
         Worktrees["🌲 Workspaces (@develop, @feat-auth)"]
@@ -36,7 +36,7 @@ graph TD
     CLI --> Config
     CLI --> BareStore
     BareStore --> Worktrees
-    
+
     CLI -->|Spawn / Attach| Daemon
     Daemon --> UnixSock
     Daemon --> PTY
@@ -54,10 +54,12 @@ graph TD
 ## 1. Git Storage Model: Bare Store & Worktrees
 
 Traditional multi-repository management either duplicates clones (`git clone`) or relies on Git submodules. Both approaches suffer from substantial downsides:
+
 - **Duplicate Clones**: Wastes gigabytes of disk space and requires re-cloning for every branch or feature test.
 - **Git Submodules**: Notoriously fragile, hard to branch simultaneously, and painful during merge conflicts.
 
 ### The `ws` Worktree Model
+
 1. **Single Bare Clone (`bares/<repo>.git`)**:
    - Each repository is cloned once with `--bare`.
    - The bare repository holds the complete Git object database and commit graph.
@@ -73,11 +75,13 @@ Traditional multi-repository management either duplicates clones (`git clone`) o
 When services are started with `ws start`, `ws` spawns a detached background supervisor daemon.
 
 ### Key Characteristics:
+
 - **Dedicated Unix Domain Socket**: Bound to `.ws/session.sock` inside the workspace directory.
 - **JSON-RPC Protocol**: Enables instantaneous status queries (`ws info`), log tailing (`ws logs`), service restarts (`ws restart`), and presentation switching (`ws attach`).
 - **Master PTY Allocation**: Each child process is spawned inside a real pseudo-terminal (`openpty`), preserving ANSI colors, cursor positioning, and interactive inputs.
 
 ### Supported IPC Requests:
+
 ```json
 // Example: Query workspace state
 {"type": "GetState"}
@@ -96,6 +100,7 @@ When services are started with `ws start`, `ws` spawns a detached background sup
 The core terminal emulation and buffer engine is written in Rust for sub-millisecond rendering and minimal memory overhead.
 
 ### Components:
+
 - **`crates/vt100`**: Custom headless VT100 and ANSI escape sequence parser. Maintains virtual screen dimensions, cursor coordinates, and text styling attributes in memory.
 - **`crates/ws-tui`**: Interactive terminal user interface built with `ratatui` and `crossterm`.
 - **Lossless Line Ring Buffer (10,000 Lines)**:
@@ -110,6 +115,7 @@ The core terminal emulation and buffer engine is written in Rust for sub-millise
 A unique feature of `ws` is the ability to decouple process execution from the presentation frontend.
 
 ### How it Works:
+
 1. Child processes remain alive inside their Master PTYs under the daemon.
 2. When switching from **Tmux** to **Rust TUI** (or **Zellij**):
    - `ws attach @<workspace> --switch` sends a `SwitchEngine` request to the daemon.
@@ -124,9 +130,42 @@ A unique feature of `ws` is the ability to decouple process execution from the p
 When creating a multi-repository workspace (`ws create @feat %repo1 %repo2`), a network failure or branch conflict on `%repo2` could leave `%repo1` half-initialized.
 
 `ws` includes an **Atomic Rollback Stack**:
+
 - Every filesystem directory creation, branch creation, and worktree checkout registers a compensating undo action.
 - If any step fails, the rollback engine executes the compensation stack in reverse order:
   1. Removes partial worktrees (`git worktree remove --force`).
   2. Deletes newly created Git branches (`git branch -D`).
   3. Deletes partial workspace folders.
 - The project is guaranteed to return to a clean, pristine state with clear error diagnostics.
+
+---
+
+## 6. Workspace-Scoped Service Discovery & Dynamic Port Auto-Healing
+
+When managing microservices across concurrent workspaces, `ws` enforces strict network isolation and collision auto-healing:
+
+```mermaid
+graph TD
+    subgraph "Workspace @develop (Slot 0)"
+        DevServer["%server (Port 8080)"]
+        DevMobile["%mobile (Port 8081)"]
+        DevMobile -.->|"Connects to local server"| DevServer
+    end
+
+    subgraph "Workspace @feat-auth (Slot 1)"
+        AuthServer["%server (Port 8090)"]
+        AuthMobile["%mobile (Port 8091)"]
+        AuthMobile -.->|"Connects to isolated slot 1 server"| AuthServer
+    end
+```
+
+### Key Subsystems:
+
+1. **Multi-Network Host Resolver (`ws/network.py`)**:
+   - Probes the system routing table to discover the host's LAN Wi-Fi IP address (e.g. `192.168.1.45`) without contacting external networks.
+   - Resolves `${SERVICE_URL_LAN:<repo>}` for mobile testing on physical devices.
+2. **Pre-Flight Real-Time Socket Probing**:
+   - On `ws start`, `ws` tests socket binding (`0.0.0.0:<port>`) in real-time.
+   - If an external process seized a port assigned during setup, `ws` automatically allocates the next available free port.
+3. **Just-In-Time (JIT) `.env` Re-Synchronization**:
+   - If any port shifts during launch, `ws` automatically re-synchronizes worktree `.env` files and updates `.ws/services.json` before starting processes.

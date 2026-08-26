@@ -172,6 +172,7 @@ def cmd_sync(manager: WorkspaceManager) -> None:
 
 def cmd_doctor(manager: WorkspaceManager) -> None:
     """Run diagnostics and display report."""
+    from ws.network import get_lan_ip, list_network_interfaces
     results = manager.doctor()
     console.print("[bold cyan]System Diagnostics & Health Check[/bold cyan]\n")
     all_ok = True
@@ -179,8 +180,18 @@ def cmd_doctor(manager: WorkspaceManager) -> None:
         badge = "[bold green]PASS[/bold green]" if ok else "[bold red]FAIL[/bold red]"
         if not ok:
             all_ok = False
-        console.print(f"  {check:<30} : {badge}")
-    console.print()
+        console.print(f"  {check:<32} : {badge}")
+
+    console.print("\n[bold cyan]Network Discovery & Interfaces[/bold cyan]")
+    ifaces = list_network_interfaces()
+    if ifaces:
+        for iface in ifaces:
+            wl_badge = "[green](Wireless Wi-Fi)[/green]" if iface["is_wireless"] else f"({iface['type']})"
+            console.print(f"  Interface: [bold]{iface['name']}[/bold] -> {iface['ip']} {wl_badge}")
+    else:
+        console.print("  No physical network interfaces detected.")
+    console.print(f"  Active LAN IP (Prioritized) : [bold green]{get_lan_ip()}[/bold green]\n")
+
     if all_ok:
         OutputHandler.print_success("All system health checks passed!")
     else:
@@ -332,6 +343,8 @@ def cmd_setup(
     dry_run: bool = False,
     skip_scripts: bool = False,
     verbose: bool = False,
+    interface: str | None = None,
+    lan_ip: str | None = None,
 ) -> None:
     """Execute 'ws setup' command."""
     results = manager.setup_workspace(
@@ -340,6 +353,8 @@ def cmd_setup(
         dry_run=dry_run,
         skip_scripts=skip_scripts,
         verbose=verbose,
+        interface=interface,
+        lan_ip=lan_ip,
     )
     OutputHandler.print_setup_summary(workspace_name=workspace_name, results=results)
 
@@ -350,17 +365,29 @@ def cmd_env(
     workspace_name: str,
     repo_name: str | None = None,
     sync: bool = False,
+    interface: str | None = None,
+    lan_ip: str | None = None,
 ) -> None:
     """Execute 'ws env' command to inspect or sync environment variables."""
     if sync:
         repos = [repo_name] if repo_name else None
-        results = manager.sync_env(workspace_name=workspace_name, repos=repos)
+        results = manager.sync_env(
+            workspace_name=workspace_name,
+            repos=repos,
+            interface=interface,
+            lan_ip=lan_ip,
+        )
         OutputHandler.print_setup_summary(workspace_name=workspace_name, results=results)
     else:
         meta, _ = manager.get_workspace_info(workspace_name)
         target_repos = [repo_name] if repo_name else list(meta.repositories.keys())
         for r in target_repos:
-            env_vars = manager.get_env_vars(workspace_name=workspace_name, repo_name=r)
+            env_vars = manager.get_env_vars(
+                workspace_name=workspace_name,
+                repo_name=r,
+                interface=interface,
+                lan_ip=lan_ip,
+            )
             repo_cfg = manager.config.repositories.get(r)
             repo_secrets = repo_cfg.secrets if repo_cfg else []
             all_secrets = list(set(manager.config.secrets + repo_secrets))
@@ -378,6 +405,8 @@ def cmd_launch(
     attach_repo: str | None = None,
     daemon: bool = False,
     switch: bool = False,
+    interface: str | None = None,
+    lan_ip: str | None = None,
 ) -> None:
     """Execute 'ws launch' command to start services concurrently."""
     manager.launch_workspace(
@@ -387,6 +416,8 @@ def cmd_launch(
         attach_repo=attach_repo,
         daemon=daemon,
         switch=switch,
+        interface=interface,
+        lan_ip=lan_ip,
     )
 
 
@@ -474,21 +505,52 @@ def cmd_attach(
 
 def cmd_bridge(manager: WorkspaceManager, workspace_name: str, repo_name: str) -> None:
     """Execute high-performance raw PTY bridge to background daemon service."""
-    sock_path = manager.get_session_socket_path(workspace_name)
-    if not manager.is_session_running(workspace_name):
+    from ws.cli import clean_workspace, clean_repo
+    clean_ws = clean_workspace(workspace_name)
+    clean_r = clean_repo(repo_name)
+    sock_path = manager.get_session_socket_path(clean_ws)
+    if not manager.is_daemon_active(clean_ws):
         OutputHandler.print_error(
-            f"No active session found for workspace '{workspace_name}'.\n"
-            f"Start services first using: [bold yellow]ws launch {workspace_name}[/bold yellow]"
+            f"No active session found for workspace '{clean_ws}'.\n"
+            f"Start services first using: [bold yellow]ws start @{clean_ws}[/bold yellow]"
         )
         return
     try:
         from ws._native import run_raw_bridge
-        run_raw_bridge(str(sock_path), repo_name)
+        run_raw_bridge(str(sock_path), clean_r)
     except Exception as e:
         OutputHandler.print_error(f"Bridge connection error: {e}")
 
 
+
 cmd_start = cmd_launch
 cmd_run = cmd_launch
+
+
+def cmd_completion(shell: str | None = None, install: bool = False) -> None:
+    """Execute 'ws completion [zsh|bash|fish|install]' command."""
+    from ws.completion import generate_completion_script, install_completion
+    target = (shell or "zsh").lower()
+    if target == "install" or install:
+        ok, msg = install_completion(shell=None)
+        if ok:
+            console.print(f"[bold green]{msg}[/bold green]")
+        else:
+            OutputHandler.print_error(msg)
+    else:
+        try:
+            script = generate_completion_script(target)
+            print(script)
+        except Exception as e:
+            OutputHandler.print_error(str(e))
+
+
+def cmd_internal_complete(query_type: str, args: list[str]) -> None:
+    """Hidden command handler for shell completion hook queries: 'ws _complete <type> [args]'."""
+    from ws.completion import query_completions
+    results = query_completions(query_type, *args)
+    for r in results:
+        print(r)
+
 
 

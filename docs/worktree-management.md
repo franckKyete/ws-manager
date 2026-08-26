@@ -11,27 +11,33 @@ In multi-repository architectures, a single feature often requires synchronized 
 `ws` provides three flexible branching patterns during workspace creation:
 
 ### 1. Unified Feature Branches across All Repositories
+
 ```bash
 ws create @feat-oauth %server %mobile
 ```
+
 - Creates `feature/feat-oauth` in `%server` and `%mobile`.
 - Both worktrees are checked out under `workspaces/@feat-oauth/`.
 
 ---
 
 ### 2. Mixed Mode (Existing Branches + New Branches)
+
 ```bash
 ws create @feat-oauth %server:main:existing %mobile:feature/auth-screen:new
 ```
+
 - `%server` checks out existing `main` without creating a new branch.
 - `%mobile` creates and checks out a new branch `feature/auth-screen`.
 
 ---
 
 ### 3. Full Project Synchronization
+
 ```bash
 ws create @prod-debug --all --existing
 ```
+
 - Checks out existing branches matching `@prod-debug` or default branches across every configured repository.
 
 ---
@@ -41,9 +47,11 @@ ws create @prod-debug --all --existing
 When working on a frontend or mobile feature, you may need a running backend server without wanting to accidentally edit backend code.
 
 ### The Problem with Traditional Worktrees
+
 If you keep a backend repository in your editor workspace, accidental keystrokes or refactoring tools (e.g. IDE rename symbol) can modify backend files unintentionally.
 
 ### The `ws` Locking Solution
+
 `ws lock` sets write permissions on all **Git-tracked files** to read-only (`chmod a-w` via `git ls-files`):
 
 ```bash
@@ -53,13 +61,16 @@ ws lock @develop %server
 ```
 
 ### Why This Is Safe:
+
 - **Git-Tracked Files**: Set to read-only (`r--r--r--`). Your editor will prevent saving edits.
 - **Untracked & Build Files**: Directories such as `node_modules/`, `target/`, `dist/`, `.env`, and build caches **remain writable**.
 - **Services Continue Running**: Build tools and compilers continue generating artifacts without error.
 - **Git Operations Protected**: `ws push` automatically skips locked repositories so you never accidentally push unwanted changes.
 
 ### Unlocking a Worktree
+
 When you need to make changes again:
+
 ```bash
 ws repo unlock @develop %server
 # Or shortcut:
@@ -77,6 +88,7 @@ ws status @develop
 ```
 
 Output:
+
 ```
 ┏━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━┓
 ┃ Repository     ┃ Current Branch    ┃ Working Tree     ┃ Sync Status    ┃
@@ -104,6 +116,7 @@ ws push @develop --remote upstream
 ```
 
 ### Safety Guarantees:
+
 - **Never Auto-Commits**: `ws` never stages or commits uncommitted changes.
 - **Never Force Pushes**: Standard `git push` is executed safely.
 - **Skips Locked Repositories**: Any repository marked `LOCKED` is automatically skipped.
@@ -127,6 +140,7 @@ If a conflict, dirty worktree, or network error occurs in any repository, `ws` d
 You don't need to recreate your workspace to add or remove a repository.
 
 ### Adding a Repository:
+
 ```bash
 # Add a repository with a new branch:
 ws repo add @develop %web:feature/auth-page
@@ -136,6 +150,7 @@ ws repo add @develop %web:main --existing
 ```
 
 ### Removing a Repository:
+
 ```bash
 # Remove worktree from workspace:
 ws repo remove @develop %web

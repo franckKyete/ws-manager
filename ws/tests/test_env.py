@@ -112,6 +112,55 @@ def test_prepare_and_sync_env_file_copy_example(tmp_path):
     assert "CUSTOM_KEY=custom_val" in content  # Appended
 
 
+def test_prepare_and_sync_env_file_with_readonly_example(tmp_path):
+    """Test that copying a read-only .env.example (0444) results in a writable .env file."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+
+    example_file = worktree / ".env.example"
+    example_file.write_text("FOO=bar\n")
+    # Mark example file read-only (0444)
+    example_file.chmod(0o444)
+
+    env_vars = {"FOO": "updated_val"}
+    ok, msg = EnvEngine.prepare_and_sync_env_file(
+        worktree_path=worktree,
+        env_vars=env_vars,
+        env_filename=".env",
+        example_filename=".env.example",
+    )
+
+    assert ok is True
+    target_env = worktree / ".env"
+    assert target_env.exists()
+    assert target_env.stat().st_mode & 0o200 != 0  # User write bit is set
+    assert "FOO=updated_val" in target_env.read_text()
+
+
+def test_prepare_and_sync_env_file_existing_readonly(tmp_path):
+    """Test that updating an existing read-only .env file (0444) restores write permissions and succeeds."""
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+
+    target_env = worktree / ".env"
+    target_env.write_text("OLD_KEY=old_val\n")
+    target_env.chmod(0o444)
+
+    env_vars = {"OLD_KEY": "new_val", "NEW_KEY": "added"}
+    ok, msg = EnvEngine.prepare_and_sync_env_file(
+        worktree_path=worktree,
+        env_vars=env_vars,
+        env_filename=".env",
+    )
+
+    assert ok is True
+    assert target_env.stat().st_mode & 0o200 != 0
+    content = target_env.read_text()
+    assert "OLD_KEY=new_val" in content
+    assert "NEW_KEY=added" in content
+
+
+
 def test_expand_command():
     """Test inline dynamic variable expansion in setup script commands."""
     env_vars = {
@@ -217,5 +266,181 @@ def test_global_script_path_expansion(tmp_path):
     )
     assert str(init_script.resolve()) in expanded
     assert "auth-flow" in expanded
+
+
+def test_service_discovery_template_placeholders():
+    """Test multi-network and cross-service discovery template substitutions."""
+    service_ports = {"server": 8090, "mobile": 8091}
+    lan_ip = "192.168.1.50"
+    public_host = "app.example.com"
+
+    template = (
+        "API=${SERVICE_URL:server} LAN=${SERVICE_URL_LAN:server} "
+        "PUB=${SERVICE_URL_PUBLIC:server} PORT=${SERVICE_PORT:mobile}"
+    )
+
+    res = EnvEngine.resolve_template_string(
+        template_str=template,
+        workspace_name="feat-auth",
+        repo_name="mobile",
+        slot=1,
+        service_ports=service_ports,
+        lan_ip=lan_ip,
+        public_host=public_host,
+    )
+
+    assert "API=http://127.0.0.1:8090" in res
+    assert "LAN=http://192.168.1.50:8090" in res
+    assert "PUB=http://app.example.com:8090" in res
+    assert "PORT=8091" in res
+
+    # When public_host is unset, it should gracefully fall back to lan_ip
+    res_no_pub = EnvEngine.resolve_template_string(
+        template_str="PUB=${SERVICE_URL_PUBLIC:server}",
+        workspace_name="feat-auth",
+        repo_name="mobile",
+        slot=1,
+        service_ports=service_ports,
+        lan_ip=lan_ip,
+        public_host=None,
+    )
+    assert f"PUB=http://{lan_ip}:8090" in res_no_pub
+
+
+
+def test_service_discovery_descriptor_and_env_injection(tmp_path):
+    """Test writing and reading .ws/services.json and .ws/services.env descriptors."""
+    ws_dir = tmp_path / "workspaces" / "develop"
+    ws_dir.mkdir(parents=True)
+
+    service_ports = {"server": 8080, "web": 3000}
+    json_path = EnvEngine.write_service_discovery_files(
+        workspace_dir=ws_dir,
+        workspace_name="develop",
+        slot=0,
+        service_ports=service_ports,
+        public_host="develop.tunnel.org",
+    )
+
+    assert json_path.exists()
+    descriptor = EnvEngine.read_service_discovery_descriptor(ws_dir)
+    assert descriptor is not None
+    assert descriptor["workspace"] == "develop"
+    assert descriptor["slot"] == 0
+    assert descriptor["services"]["server"]["port"] == 8080
+    assert descriptor["services"]["web"]["port"] == 3000
+
+    env_path = ws_dir / ".ws" / "services.env"
+    assert env_path.exists()
+    env_content = env_path.read_text()
+    assert "WS_SERVICE_SERVER_PORT=8080" in env_content
+    assert "WS_SERVICE_WEB_PORT=3000" in env_content
+
+
+def test_network_port_allocation_and_collision_auto_healing(tmp_path):
+    """Test dynamic socket probing and collision auto-healing in ws/network.py."""
+    import socket
+    from ws.models import RepoConfig
+    from ws.network import allocate_workspace_ports, is_port_available
+
+    # Bind a real TCP socket to an available ephemeral port to simulate a collision
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", 0))
+    busy_port = sock.getsockname()[1]
+    sock.listen(1)
+
+    try:
+        repos = {
+            "server": RepoConfig(name="server", bare=tmp_path / "s.git", checkout="s", port=busy_port),
+            "web": RepoConfig(name="web", bare=tmp_path / "w.git", checkout="w", port=busy_port + 10),
+        }
+
+        # Preferred server port is busy_port (which is occupied by sock)
+        allocated, shifted = allocate_workspace_ports(repos, slot=0, recorded_leases={"server": busy_port})
+        # Server port must auto-heal to a different free port
+        assert allocated["server"] != busy_port
+        assert shifted is True
+    finally:
+        sock.close()
+
+
+def test_network_interface_discovery_and_wireless_priority(monkeypatch):
+    """Test get_lan_ip prioritizes Wi-Fi adapter and supports explicit interface/ip selection."""
+    from ws.network import get_lan_ip, list_network_interfaces, is_wireless_interface, is_ethernet_interface
+
+    assert is_wireless_interface("wlan0") is True
+    assert is_wireless_interface("wlp2s0") is True
+    assert is_wireless_interface("wifi0") is True
+    assert is_wireless_interface("eno1") is False
+
+    assert is_ethernet_interface("eno1") is True
+    assert is_ethernet_interface("eth0") is True
+    assert is_ethernet_interface("enp3s0") is True
+    assert is_ethernet_interface("wlan0") is False
+
+    # Test explicit IP override
+    assert get_lan_ip(explicit_ip="192.168.1.100") == "192.168.1.100"
+
+    # Test mocking list_network_interfaces
+    mock_interfaces = [
+        {"name": "eno1", "ip": "10.0.0.1", "type": "ethernet", "is_wireless": False},
+        {"name": "wlan0", "ip": "192.168.24.178", "type": "wireless", "is_wireless": True},
+    ]
+    monkeypatch.setattr("ws.network.list_network_interfaces", lambda: mock_interfaces)
+
+    # 1. Default should pick wireless adapter (wlan0 -> 192.168.24.178)
+    assert get_lan_ip() == "192.168.24.178"
+
+    # 2. Preferred interface 'eno1' should pick ethernet
+    assert get_lan_ip(preferred_interface="eno1") == "10.0.0.1"
+
+    # 3. Preferred interface 'ethernet' / 'eth' should pick ethernet
+    assert get_lan_ip(preferred_interface="ethernet") == "10.0.0.1"
+
+    # 4. Preferred interface 'wifi' / 'wireless' should pick wifi
+    assert get_lan_ip(preferred_interface="wifi") == "192.168.24.178"
+
+    # 5. Environment variable override
+    monkeypatch.setenv("WS_LAN_IP", "172.20.10.5")
+    assert get_lan_ip() == "172.20.10.5"
+
+
+def test_resolve_repo_env_interface_and_ip_override(tmp_path):
+    """Test EnvEngine.resolve_repo_env with interface and lan_ip parameters."""
+    app_cfg = AppConfig(
+        repositories={
+            "mobile": RepoConfig(
+                name="mobile",
+                bare=tmp_path / "mobile.git",
+                checkout="mobile",
+                env={
+                    "API_URL": "${SERVICE_URL_LAN:server}/api",
+                },
+            ),
+            "server": RepoConfig(
+                name="server",
+                bare=tmp_path / "server.git",
+                checkout="server",
+                port=4000,
+            ),
+        },
+        workspaces_dir=tmp_path / "workspaces",
+    )
+
+    # With explicit IP override
+    resolved_ip = EnvEngine.resolve_repo_env(
+        app_cfg,
+        "feature-test",
+        "mobile",
+        slot=1,
+        lan_ip="192.168.50.200",
+    )
+    assert resolved_ip["WS_LAN_IP"] == "192.168.50.200"
+    assert resolved_ip["API_URL"] == "http://192.168.50.200:4010/api"
+    assert resolved_ip["WS_SERVICE_SERVER_URL_LAN"] == "http://192.168.50.200:4010"
+
+
+
 
 

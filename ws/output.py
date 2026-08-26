@@ -172,8 +172,13 @@ class OutputHandler:
             r_node.add(f"Worktree Path: [dim]{spec.path}[/dim]")
             if svc_info:
                 r_node.add(f"Process Status: [green]{svc_info.get('status', 'running')}[/green]")
+                if svc_info.get("url_local"):
+                    r_node.add(f"Local URL: [bold cyan]{svc_info['url_local']}[/bold cyan]")
+                if svc_info.get("url_lan") and not svc_info.get("url_lan", "").startswith("http://127."):
+                    r_node.add(f"LAN Wi-Fi URL: [bold yellow]{svc_info['url_lan']}[/bold yellow]")
             if spec.frozen or spec.locked:
                 r_node.add("File Mode: [yellow]Read-only (locked)[/yellow]")
+
 
         console.print(
             Panel(

@@ -629,11 +629,13 @@ impl AttachedSessionClient {
                         // 1. Interactive Mode
                         if self.mode == UIMode::Interactive {
                             if key.code == KeyCode::Esc
-                                || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('x'))
+                                || (key.modifiers.contains(KeyModifiers::CONTROL)
+                                    && (key.code == KeyCode::Char('x') || key.code == KeyCode::Char('w') || key.code == KeyCode::Char('W')))
                             {
                                 self.mode = UIMode::Navigation;
                                 continue;
                             }
+
 
                             // Clipboard paste in interactive mode (Ctrl+V)
                             if (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('v'))
@@ -691,11 +693,16 @@ impl AttachedSessionClient {
                             let (mut col, mut row) = self.get_cursor(&focused);
 
                             match key.code {
-                                // Exit visual mode / cancel selection
+                                // Exit visual mode / cancel selection (Esc, v, or Ctrl+W)
                                 KeyCode::Esc | KeyCode::Char('v') => {
                                     self.selection = None;
                                     self.mode = UIMode::Navigation;
                                 }
+                                KeyCode::Char('w') | KeyCode::Char('W') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                    self.selection = None;
+                                    self.mode = UIMode::Navigation;
+                                }
+
                                 // Yank / Copy selection
                                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                                     if let Some(ref sel) = self.selection {
@@ -814,6 +821,10 @@ impl AttachedSessionClient {
                             KeyCode::Char('l') | KeyCode::Right => {
                                 col = col.saturating_add(1).min(max_col);
                             }
+                            KeyCode::Char('w') | KeyCode::Char('W') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                self.selection = None;
+                                self.scroll_bottom();
+                            }
                             KeyCode::Char('w') => {
                                 col = col.saturating_add(5).min(max_col);
                             }
@@ -846,6 +857,8 @@ impl AttachedSessionClient {
                                 self.selection = None;
                                 self.scroll_bottom();
                             }
+
+
                             // Enter Vim Visual Selection Mode at current cursor position
                             KeyCode::Char('v') => {
                                 self.mode = UIMode::Visual;

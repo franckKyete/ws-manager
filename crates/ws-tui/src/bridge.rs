@@ -58,10 +58,11 @@ pub fn run_raw_bridge(socket_path: String, service_name: String) -> Result<i32, 
                 if n == 0 {
                     break;
                 }
-                // Check detach key: Ctrl+] (0x1D) or Ctrl+Q (0x11)
-                if n == 1 && (buf[0] == 0x1D || buf[0] == 0x11) {
+                // Check detach key: Ctrl+] (0x1D), Ctrl+Q (0x11), or Ctrl+W (0x17)
+                if n == 1 && (buf[0] == 0x1D || buf[0] == 0x11 || buf[0] == 0x17) {
                     break;
                 }
+
                 if stdin_tx.blocking_send(buf[..n].to_vec()).is_err() {
                     break;
                 }

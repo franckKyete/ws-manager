@@ -12,6 +12,7 @@ from ws.commands import (
     cmd_antigravity,
     cmd_attach,
     cmd_bridge,
+    cmd_completion,
     cmd_create,
     cmd_delete,
     cmd_doctor,
@@ -20,6 +21,7 @@ from ws.commands import (
     cmd_fetch,
     cmd_info,
     cmd_init,
+    cmd_internal_complete,
     cmd_launch,
     cmd_list,
     cmd_logs,
@@ -59,7 +61,9 @@ KNOWN_COMMANDS = {
     "env", "setup", "bridge",
     "repo", "lock", "unlock", "workspace",
     "project", "init", "add", "fetch", "sync", "doctor", "antigravity",
+    "completion", "_complete",
 }
+
 
 
 def clean_workspace(name: str | None) -> str | None:
@@ -435,6 +439,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_start.add_argument("--daemon", "-d", "--background", dest="daemon", action="store_true", help="Launch detached in background daemon")
     p_start.add_argument("--switch", "-s", action="store_true", help="Zero-downtime switch to target presentation engine")
     p_start.add_argument("--mode", "-m", choices=["tui", "zellij", "tmux", "terminal", "stream", "attach", "daemon", "summary", "list"], default=None, help="Multiplexer/UI mode")
+    p_start.add_argument("--interface", "--iface", "--lan-interface", dest="interface", default=None, help="Network interface name (e.g. wlan0, eno1) or type (wifi, ethernet) to populate LAN IP")
+    p_start.add_argument("--ip", "--lan-ip", dest="lan_ip", default=None, help="Explicit host LAN IP address override")
 
     # Command: ws attach @<name> [%repo]
     p_attach = subparsers.add_parser("attach", help="Attach to a running workspace session")
@@ -478,6 +484,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_env.add_argument("name", help="Workspace name (@<name>)")
     p_env.add_argument("repo", nargs="?", default=None, help="Repository name (%%<repo>)")
     p_env.add_argument("--sync", action="store_true", help="Sync resolved environment variables into worktree .env files")
+    p_env.add_argument("--interface", "--iface", "--lan-interface", dest="interface", default=None, help="Network interface name (e.g. wlan0, eno1) or type (wifi, ethernet) to populate LAN IP")
+    p_env.add_argument("--ip", "--lan-ip", dest="lan_ip", default=None, help="Explicit host LAN IP address override")
 
     # Command: ws setup @<name> [%repos...]
     p_setup = subparsers.add_parser("setup", help="Run setup scripts and environment variable sync for a workspace")
@@ -487,6 +495,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument("--repos", "--only", dest="repos_flag", type=str, help="Comma-separated list of repository names to setup")
     p_setup.add_argument("--dry-run", action="store_true", help="Print setup commands without executing them")
     p_setup.add_argument("--skip-scripts", action="store_true", help="Only sync environment variables without running setup scripts")
+    p_setup.add_argument("--interface", "--iface", "--lan-interface", dest="interface", default=None, help="Network interface name (e.g. wlan0, eno1) or type (wifi, ethernet) to populate LAN IP")
+    p_setup.add_argument("--ip", "--lan-ip", dest="lan_ip", default=None, help="Explicit host LAN IP address override")
 
 
 
@@ -516,6 +526,16 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor", help="Run system health checks and diagnostics")
     subparsers.add_parser("antigravity", help="Antigravity AI agent workspace health check")
 
+    # Command: ws completion [zsh|bash|fish|install]
+    p_comp = subparsers.add_parser("completion", help="Generate or install shell completion scripts")
+    p_comp.add_argument("shell", nargs="?", default="zsh", choices=["zsh", "bash", "fish", "install"], help="Shell type: zsh, bash, fish, install (default: zsh)")
+    p_comp.add_argument("--install", action="store_true", help="Install completion script into user shell configuration")
+
+    # Hidden Command: ws _complete <type> [args...]
+    p_int = subparsers.add_parser("_complete", help=argparse.SUPPRESS)
+    p_int.add_argument("query_type", help="Query type")
+    p_int.add_argument("query_args", nargs="*", help="Query arguments")
+
     return parser
 
 
@@ -538,6 +558,15 @@ def main(sys_args: Sequence[str] | None = None) -> int:
         parser.print_help()
         return 0
 
+    # Fast path for completion queries & generation without loading app configs
+    if args.subcommand == "_complete":
+        cmd_internal_complete(args.query_type, getattr(args, "query_args", []))
+        return 0
+
+    if args.subcommand == "completion":
+        cmd_completion(shell=args.shell, install=getattr(args, "install", False))
+        return 0
+
     try:
         allow_empty_config = args.subcommand in ("init", "add", "doctor", "project")
         app_config = ConfigLoader.load_config(
@@ -549,6 +578,7 @@ def main(sys_args: Sequence[str] | None = None) -> int:
 
         # 1. Project commands
         if args.subcommand in ("init", "add", "fetch", "sync", "project"):
+
             if args.subcommand == "project":
                 sub = getattr(args, "proj_subcommand", None)
                 if sub == "init":
@@ -666,6 +696,8 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                 attach_repo=clean_repo(getattr(args, "attach", None)),
                 daemon=getattr(args, "daemon", False),
                 switch=getattr(args, "switch", False),
+                interface=getattr(args, "interface", None),
+                lan_ip=getattr(args, "lan_ip", None),
             )
 
         elif args.subcommand == "attach":
@@ -724,6 +756,8 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                 workspace_name=clean_workspace(args.name),
                 repo_name=clean_repo(args.repo),
                 sync=args.sync,
+                interface=getattr(args, "interface", None),
+                lan_ip=getattr(args, "lan_ip", None),
             )
 
         elif args.subcommand == "setup":
@@ -747,6 +781,8 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                 dry_run=args.dry_run,
                 skip_scripts=args.skip_scripts,
                 verbose=args.verbose,
+                interface=getattr(args, "interface", None),
+                lan_ip=getattr(args, "lan_ip", None),
             )
 
         # 7. Git Collaboration

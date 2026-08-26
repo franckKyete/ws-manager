@@ -121,6 +121,31 @@ def test_cli_commands_imported():
     assert callable(cli.cmd_repo_unlock)
 
 
+def test_parser_network_flags():
+    """Verify --interface and --ip parsing in build_parser for start, env, setup."""
+    from ws.cli import build_parser
+
+    parser = build_parser()
+
+    # 1. ws start @test --interface wlan0 --ip 192.168.1.50
+    args_start = parser.parse_args(["start", "@test", "--interface", "wlan0", "--ip", "192.168.1.50"])
+    assert args_start.subcommand == "start"
+    assert args_start.name == "@test"
+    assert args_start.interface == "wlan0"
+    assert args_start.lan_ip == "192.168.1.50"
+
+    # 2. ws env @test %mobile --iface eno1
+    args_env = parser.parse_args(["env", "@test", "%mobile", "--iface", "eno1"])
+    assert args_env.subcommand == "env"
+    assert args_env.interface == "eno1"
+
+    # 3. ws setup @test --all --lan-ip 10.0.0.99
+    args_setup = parser.parse_args(["setup", "@test", "--all", "--lan-ip", "10.0.0.99"])
+    assert args_setup.subcommand == "setup"
+    assert args_setup.lan_ip == "10.0.0.99"
+
+
+
 
 
 

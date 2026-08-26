@@ -333,21 +333,56 @@ class ZellijLauncher:
             return False
 
     @classmethod
+    def clean_dead_sessions(cls, project_name: str) -> None:
+        """Delete dead or exited sessions so Zellij does not resurrect stale layouts."""
+        if not cls.is_available():
+            return
+        sess = cls.session_name(project_name)
+        try:
+            res = subprocess.run(["zellij", "list-sessions"], capture_output=True, text=True, check=False)
+            for line in res.stdout.splitlines():
+                if sess in line and "EXITED" in line:
+                    subprocess.run(["zellij", "delete-session", "-f", sess], capture_output=True, check=False)
+        except Exception:
+            pass
+
+    @classmethod
+    def is_tab_running(cls, project_name: str, workspace_name: str) -> bool:
+        """Check if workspace tab exists in project Zellij session."""
+        if not cls.is_session_running(project_name):
+            return False
+        sess = cls.session_name(project_name)
+        try:
+            res = subprocess.run(
+                ["zellij", "--session", sess, "action", "query-tab-names"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            for line in res.stdout.splitlines():
+                if line.strip() == workspace_name:
+                    return True
+            return False
+        except Exception:
+            return True
+
+    @classmethod
     def generate_layout_kdl(
         cls,
         workspace_name: str,
         services: Sequence[tuple[str, str, str, dict[str, str]]],
     ) -> str:
         """Generate a Zellij KDL layout file for the workspace services."""
+        ws_bin = shutil.which("ws") or "ws"
         panes_kdl = []
         for s_name, s_cwd, _, _ in services:
             escaped_cwd = s_cwd.replace("\\", "\\\\").replace('"', '\\"')
+            escaped_bin = ws_bin.replace("\\", "\\\\").replace('"', '\\"')
             panes_kdl.append(
-                f'        pane name="{s_name}" cwd="{escaped_cwd}" command="ws" {{\n'
+                f'        pane name="{s_name}" cwd="{escaped_cwd}" command="{escaped_bin}" {{\n'
                 f'            args "bridge" "{workspace_name}" "{s_name}"\n'
                 f'        }}'
             )
-
 
         n_services = len(services)
         if n_services <= 1:
@@ -413,17 +448,22 @@ class ZellijLauncher:
             return False
 
         sess = cls.session_name(project_name)
+        cls.clean_dead_sessions(project_name)
+
         layout_kdl = cls.generate_layout_kdl(workspace_name, services)
         layout_file = ws_dir / ".ws" / "zellij.kdl"
         layout_file.parent.mkdir(parents=True, exist_ok=True)
         layout_file.write_text(layout_kdl, encoding="utf-8")
 
         if not cls.is_session_running(project_name):
-            # Create session with the workspace layout as default layout
-            os.system(f"zellij attach -c {sess} options --default-layout {layout_file}")
+            # Create fresh session with the workspace layout and explicit session name
+            os.system(f"zellij --layout {layout_file} options --session-name {sess}")
         else:
-            # Session already running: add new tab with layout, then attach
-            subprocess.run(["zellij", "--session", sess, "--layout", str(layout_file)], check=False)
+            # If tab already exists in running session, close stale tab first
+            if cls.is_tab_running(project_name, workspace_name):
+                cls.kill_workspace(workspace_name, project_name)
+            # Create new tab with layout in existing session
+            subprocess.run(["zellij", "--session", sess, "action", "new-tab", "--layout", str(layout_file)], check=False)
             if not os.environ.get("ZELLIJ"):
                 os.system(f"zellij attach {sess}")
         return True
@@ -440,33 +480,54 @@ class ZellijLauncher:
         if not cls.is_available():
             return False
         sess = cls.session_name(project_name)
+        cls.clean_dead_sessions(project_name)
         if not cls.is_session_running(project_name):
             layout_file = Path.cwd() / "workspaces" / workspace_name / ".ws" / "zellij.kdl"
             if layout_file.exists():
-                os.system(f"zellij attach -c {sess} options --default-layout {layout_file}")
+                os.system(f"zellij --layout {layout_file} options --session-name {sess}")
             else:
                 os.system(f"zellij attach -c {sess}")
         else:
-            os.system(f"zellij attach {sess}")
+            if not os.environ.get("ZELLIJ"):
+                os.system(f"zellij attach {sess}")
+            else:
+                subprocess.run(["zellij", "--session", sess, "action", "go-to-tab-name", workspace_name], capture_output=True, check=False)
         return True
-
 
 
     @classmethod
     def kill_workspace(cls, workspace_name: str, project_name: str) -> bool:
-        """Kill workspace tab or session."""
+        """Kill workspace tab in project Zellij session."""
         if not cls.is_available() or not cls.is_session_running(project_name):
             return False
-        subprocess.run(["zellij", "action", "close-tab"], check=False)
+        sess = cls.session_name(project_name)
+        try:
+            res = subprocess.run(
+                ["zellij", "--session", sess, "action", "query-tab-names"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            tabs = [t.strip() for t in res.stdout.splitlines() if t.strip()]
+            if len(tabs) <= 1:
+                return cls.kill_session(project_name)
+        except Exception:
+            pass
+
+        subprocess.run(["zellij", "--session", sess, "action", "go-to-tab-name", workspace_name], capture_output=True, check=False)
+        subprocess.run(["zellij", "--session", sess, "action", "close-tab"], capture_output=True, check=False)
         return True
 
     @classmethod
     def kill_session(cls, project_name: str) -> bool:
-        """Kill entire project zellij session."""
+        """Kill and delete entire project zellij session."""
         if not cls.is_available():
             return False
         sess = cls.session_name(project_name)
         res = subprocess.run(["zellij", "kill-session", sess], capture_output=True, check=False)
+        subprocess.run(["zellij", "delete-session", "-f", sess], capture_output=True, check=False)
         return res.returncode == 0
+
+
 
 

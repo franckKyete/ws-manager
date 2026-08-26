@@ -4,6 +4,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 from typing import Callable, Sequence
@@ -348,6 +349,29 @@ class WorkspaceManager:
         ws_dir = self._get_workspace_dir(name)
         return ws_dir / ".ws" / "session.sock"
 
+    def is_daemon_active(self, name: str) -> bool:
+        """Check if the background supervisor daemon is currently active for workspace."""
+        sock_path = self.get_session_socket_path(name)
+        if not sock_path.exists():
+            return False
+        try:
+            from ws._native import is_session_active
+            if is_session_active(str(sock_path)):
+                return True
+            else:
+                sock_path.unlink(missing_ok=True)
+                return False
+        except ImportError:
+            import socket
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                    s.settimeout(0.3)
+                    s.connect(str(sock_path))
+                    return True
+            except (OSError, ConnectionRefusedError):
+                sock_path.unlink(missing_ok=True)
+                return False
+
     def get_active_engine(self, name: str) -> str | None:
         """Detect which multiplexer backend is currently running for this workspace."""
         project_name = self.config.project_root.name
@@ -357,37 +381,28 @@ class WorkspaceManager:
             return "tmux"
 
         if ZellijLauncher.is_session_running(project_name):
-            return "zellij"
+            if ZellijLauncher.is_tab_running(project_name, name):
+                return "zellij"
 
-        sock_path = self.get_session_socket_path(name)
-        if sock_path.exists():
-            try:
-                from ws._native import is_session_active
-                if is_session_active(str(sock_path)):
-                    return "tui"
-                else:
-                    sock_path.unlink(missing_ok=True)
-            except ImportError:
-                import socket
-                try:
-                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-                        s.settimeout(0.3)
-                        s.connect(str(sock_path))
-                        return "tui"
-                except (OSError, ConnectionRefusedError):
-                    sock_path.unlink(missing_ok=True)
+        if self.is_daemon_active(name):
+            return "tui"
+
         return None
 
 
+
     def get_running_services_status(self, name: str) -> dict[str, dict[str, Any]]:
-        """Return live status of running services in the workspace (engine, status, port)."""
+        """Return live status of running services in the workspace (engine, status, port, urls)."""
         active_engine = self.get_active_engine(name)
         if not active_engine:
             return {}
 
         results: dict[str, dict[str, Any]] = {}
-        sock_path = self.get_session_socket_path(name)
+        ws_dir = self._get_workspace_dir(name)
+        descriptor = EnvEngine.read_service_discovery_descriptor(ws_dir)
+        discovery_services = descriptor.get("services", {}) if descriptor else {}
 
+        sock_path = self.get_session_socket_path(name)
         if sock_path.exists():
             import socket, json
             try:
@@ -399,9 +414,14 @@ class WorkspaceManager:
                     resp = json.loads(data.decode("utf-8").strip())
                     if resp.get("type") == "State":
                         for svc in resp.get("services", []):
-                            results[svc["name"]] = {
+                            s_name = svc["name"]
+                            s_disc = discovery_services.get(s_name, {})
+                            results[s_name] = {
                                 "status": svc.get("status", "running"),
-                                "port": svc.get("port", 0),
+                                "port": svc.get("port") or s_disc.get("port", 0),
+                                "url_local": s_disc.get("url_local"),
+                                "url_lan": s_disc.get("url_lan"),
+                                "url_public": s_disc.get("url_public"),
                                 "engine": active_engine,
                             }
                         return results
@@ -413,13 +433,18 @@ class WorkspaceManager:
         if active_engine == "tmux":
             panes = TmuxLauncher.list_panes(project_name, name)
             for p in panes:
+                s_disc = discovery_services.get(p, {})
                 results[p] = {
                     "status": "running",
-                    "port": 0,
+                    "port": s_disc.get("port", 0),
+                    "url_local": s_disc.get("url_local"),
+                    "url_lan": s_disc.get("url_lan"),
+                    "url_public": s_disc.get("url_public"),
                     "engine": "tmux",
                 }
 
         return results
+
 
 
     def is_session_running(self, name: str) -> bool:
@@ -539,6 +564,12 @@ class WorkspaceManager:
 
         ws_root = self.config.workspaces_dir.resolve()
         results["workspaces_dir_exists"] = ws_root.exists()
+
+        # Network interface and LAN IP detection
+        from ws.network import get_lan_ip, list_network_interfaces
+        active_interfaces = list_network_interfaces()
+        detected_ip = get_lan_ip()
+        results["network_interfaces_detected"] = len(active_interfaces) > 0 or detected_ip != "127.0.0.1"
         return results
 
     @staticmethod
@@ -716,6 +747,20 @@ class WorkspaceManager:
         worktree_path = ws_dir / spec.path
         if worktree_path.exists():
             self.git.set_tracked_files_readonly(worktree_path, readonly=True)
+            # Ensure env files remain writable
+            repo_cfg = self.config.repositories.get(repo_name)
+            env_candidates = [".env", ".env.local", ".env.development", ".env.test"]
+            if repo_cfg:
+                env_candidates.append(repo_cfg.env_file)
+            for env_name in set(env_candidates):
+                env_file = worktree_path / env_name
+                if env_file.exists() and env_file.is_file():
+                    try:
+                        mode = env_file.stat().st_mode
+                        if not (mode & stat.S_IWUSR):
+                            os.chmod(env_file, mode | stat.S_IWUSR)
+                    except Exception as e:
+                        logger.debug("Failed ensuring %s is writable: %s", env_file, e)
 
         meta.repositories[repo_name].frozen = True
         self._save_metadata(ws_dir, meta)
@@ -726,7 +771,7 @@ class WorkspaceManager:
         return self.lock_repo(workspace_name, repo_name)
 
     def unlock_repo(self, workspace_name: str, repo_name: str) -> None:
-        """Unlock a repository in a workspace, restoring write permissions on tracked files."""
+        """Unlock a repository in a workspace, restoring write permissions on tracked and untracked env files."""
         meta, ws_dir = self.get_workspace_info(workspace_name)
 
         if repo_name not in meta.repositories:
@@ -735,21 +780,37 @@ class WorkspaceManager:
             )
 
         spec = meta.repositories[repo_name]
-        if not spec.frozen and not spec.locked:
-            OutputHandler.print_info(f"Repository '#{repo_name}' is not locked")
-            return
+        is_already_unlocked = not spec.frozen and not spec.locked
 
         worktree_path = ws_dir / spec.path
         if worktree_path.exists():
             self.git.set_tracked_files_readonly(worktree_path, readonly=False)
+            # Also restore permissions on untracked env files and copied files
+            repo_cfg = self.config.repositories.get(repo_name)
+            env_candidates = [".env", ".env.local", ".env.development", ".env.test"]
+            if repo_cfg:
+                env_candidates.append(repo_cfg.env_file)
+            for env_name in set(env_candidates):
+                env_file = worktree_path / env_name
+                if env_file.exists() and env_file.is_file():
+                    try:
+                        mode = env_file.stat().st_mode
+                        if not (mode & stat.S_IWUSR):
+                            os.chmod(env_file, mode | stat.S_IWUSR)
+                    except Exception as e:
+                        logger.debug("Failed unlocking %s: %s", env_file, e)
 
         meta.repositories[repo_name].frozen = False
         self._save_metadata(ws_dir, meta)
-        OutputHandler.print_success(f"Unlocked repository '#{repo_name}' in workspace '@{workspace_name}'")
+        if is_already_unlocked:
+            OutputHandler.print_success(f"Restored write permissions for repository '#{repo_name}' in workspace '@{workspace_name}'")
+        else:
+            OutputHandler.print_success(f"Unlocked repository '#{repo_name}' in workspace '@{workspace_name}'")
 
     def unfreeze_repo(self, workspace_name: str, repo_name: str) -> None:
         """Backward-compatible alias for unlock_repo."""
         return self.unlock_repo(workspace_name, repo_name)
+
 
 
     def push_workspace(
@@ -893,6 +954,8 @@ class WorkspaceManager:
         dry_run: bool = False,
         skip_scripts: bool = False,
         verbose: bool = False,
+        interface: str | None = None,
+        lan_ip: str | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Run 3-step setup pipeline for repositories in a workspace.
 
@@ -914,12 +977,42 @@ class WorkspaceManager:
         else:
             target_repos = list(meta.repositories.keys())
 
+        from ws.network import allocate_workspace_ports, get_lan_ip
+        slot = EnvEngine.get_workspace_slot(self.config.workspaces_dir, workspace_name)
+        resolved_lan_ip = lan_ip or get_lan_ip(preferred_interface=interface)
+        public_host = (
+            self.config.global_env.get("PUBLIC_HOST")
+            or os.environ.get("WS_PUBLIC_HOST")
+            or os.environ.get("PUBLIC_HOST")
+            or resolved_lan_ip
+        )
+
+        service_ports, _ = allocate_workspace_ports(self.config.repositories, slot=slot)
+        EnvEngine.write_service_discovery_files(
+            workspace_dir=ws_dir,
+            workspace_name=workspace_name,
+            slot=slot,
+            service_ports=service_ports,
+            public_host=public_host,
+            lan_ip=resolved_lan_ip,
+            interface=interface,
+        )
+
         results: dict[str, dict[str, Any]] = {}
 
         # 0. Optional Top-Level Workspace Infrastructure Setup (e.g. create database, start local services)
         if not repos and self.config.setup and not skip_scripts:
             OutputHandler.print_setup_repo_start("WORKSPACE INFRASTRUCTURE", ws_dir)
-            global_vars = EnvEngine.resolve_repo_env(self.config, workspace_name, "")
+            global_vars = EnvEngine.resolve_repo_env(
+                self.config,
+                workspace_name,
+                "",
+                slot=slot,
+                service_ports=service_ports,
+                lan_ip=resolved_lan_ip,
+                public_host=public_host,
+                interface=interface,
+            )
             if verbose:
                 all_global_secrets = list(set(self.config.secrets))
                 OutputHandler.print_env_resolution_details(global_vars, explicit_secrets=all_global_secrets)
@@ -930,9 +1023,15 @@ class WorkspaceManager:
                     global_vars,
                     workspace_name,
                     "",
+                    slot=slot,
                     project_root=self.config.project_root,
                     workspaces_dir=self.config.workspaces_dir,
+                    service_ports=service_ports,
+                    lan_ip=resolved_lan_ip,
+                    public_host=public_host,
+                    interface=interface,
                 )
+
                 if dry_run:
                     OutputHandler.print_setup_step(0, f"[DRY-RUN] {expanded_g_cmd}", "skipped execution", status="info")
                     continue
@@ -1016,8 +1115,18 @@ class WorkspaceManager:
                 else:
                     OutputHandler.print_setup_step(1, "File Copy", file_msg, status="success")
 
-            env_vars = EnvEngine.resolve_repo_env(self.config, workspace_name, r_name)
+            env_vars = EnvEngine.resolve_repo_env(
+                self.config,
+                workspace_name,
+                r_name,
+                slot=slot,
+                service_ports=service_ports,
+                lan_ip=resolved_lan_ip,
+                public_host=public_host,
+                interface=interface,
+            )
             env_ok, env_msg = EnvEngine.prepare_and_sync_env_file(
+
                 worktree_path=wt_path,
                 env_vars=env_vars,
                 env_filename=repo_cfg.env_file,
@@ -1134,13 +1243,33 @@ class WorkspaceManager:
         self,
         workspace_name: str,
         repos: Sequence[str] | None = None,
+        interface: str | None = None,
+        lan_ip: str | None = None,
     ) -> dict[str, dict[str, Any]]:
         """Sync environment variables only without running setup commands."""
-        return self.setup_workspace(workspace_name=workspace_name, repos=repos, skip_scripts=True)
+        return self.setup_workspace(
+            workspace_name=workspace_name,
+            repos=repos,
+            skip_scripts=True,
+            interface=interface,
+            lan_ip=lan_ip,
+        )
 
-    def get_env_vars(self, workspace_name: str, repo_name: str) -> dict[str, str]:
+    def get_env_vars(
+        self,
+        workspace_name: str,
+        repo_name: str,
+        interface: str | None = None,
+        lan_ip: str | None = None,
+    ) -> dict[str, str]:
         """Get resolved environment variables dictionary for a repository."""
-        return EnvEngine.resolve_repo_env(self.config, workspace_name, repo_name)
+        return EnvEngine.resolve_repo_env(
+            self.config,
+            workspace_name,
+            repo_name,
+            interface=interface,
+            lan_ip=lan_ip,
+        )
 
     def launch_workspace(
         self,
@@ -1150,6 +1279,8 @@ class WorkspaceManager:
         attach_repo: str | None = None,
         daemon: bool = False,
         switch: bool = False,
+        interface: str | None = None,
+        lan_ip: str | None = None,
     ) -> list[tuple[str, str, str, dict[str, str]]]:
         """Launch workspace services concurrently with TUI, daemon, tmux, or terminal window multiplexing.
 
@@ -1162,22 +1293,105 @@ class WorkspaceManager:
         meta, ws_dir = self.get_workspace_info(workspace_name)
         target_repos = list(repos) if repos else list(meta.repositories.keys())
 
+        # Pre-flight real-time socket availability check and collision auto-healing
+        from ws.network import allocate_workspace_ports, get_lan_ip
+        slot = EnvEngine.get_workspace_slot(self.config.workspaces_dir, workspace_name)
+
+        descriptor = EnvEngine.read_service_discovery_descriptor(ws_dir)
+        recorded_leases = (
+            {s_k: s_v["port"] for s_k, s_v in descriptor.get("services", {}).items() if "port" in s_v}
+            if descriptor
+            else None
+        )
+
+        # Freshly re-evaluate live LAN IP, Public Host, and bindable ports on each run
+        resolved_lan_ip = lan_ip or get_lan_ip(preferred_interface=interface)
+        public_host = (
+            self.config.global_env.get("PUBLIC_HOST")
+            or os.environ.get("WS_PUBLIC_HOST")
+            or os.environ.get("PUBLIC_HOST")
+            or resolved_lan_ip
+        )
+
+        service_ports, has_shifted = allocate_workspace_ports(
+            self.config.repositories,
+            slot=slot,
+            recorded_leases=recorded_leases,
+        )
+
+        if has_shifted:
+            OutputHandler.print_warning(
+                f"Active socket collision detected for workspace '@{workspace_name}'. "
+                "Dynamically re-allocated free ports and synchronized worktree .env files."
+            )
+
+        # Always re-evaluate and synchronize worktree .env files on each run
+        for r_k in meta.repositories:
+            spec = meta.repositories.get(r_k)
+            repo_cfg = self.config.repositories.get(r_k)
+            if spec and repo_cfg:
+                wt_p = ws_dir / spec.path
+                if wt_p.exists():
+                    r_env = EnvEngine.resolve_repo_env(
+                        self.config,
+                        workspace_name,
+                        r_k,
+                        slot=slot,
+                        service_ports=service_ports,
+                        lan_ip=resolved_lan_ip,
+                        public_host=public_host,
+                        interface=interface,
+                    )
+                    EnvEngine.prepare_and_sync_env_file(
+                        worktree_path=wt_p,
+                        env_vars=r_env,
+                        env_filename=repo_cfg.env_file,
+                        example_filename=repo_cfg.env_example,
+                    )
+
+        # Write / update live service descriptor files (.ws/services.json & .ws/services.env)
+        EnvEngine.write_service_discovery_files(
+            workspace_dir=ws_dir,
+            workspace_name=workspace_name,
+            slot=slot,
+            service_ports=service_ports,
+            public_host=public_host,
+            lan_ip=resolved_lan_ip,
+            interface=interface,
+        )
+
         launch_entries: list[tuple[str, str, str, dict[str, str]]] = []
         for r_name in target_repos:
             spec = meta.repositories.get(r_name)
             repo_cfg = self.config.repositories.get(r_name)
             if spec and repo_cfg and repo_cfg.launch:
                 wt_path = ws_dir / spec.path
-                env_vars = EnvEngine.resolve_repo_env(self.config, workspace_name, r_name)
+                env_vars = EnvEngine.resolve_repo_env(
+                    self.config,
+                    workspace_name,
+                    r_name,
+                    slot=slot,
+                    service_ports=service_ports,
+                    lan_ip=resolved_lan_ip,
+                    public_host=public_host,
+                    interface=interface,
+                )
                 expanded_cmd = EnvEngine.expand_command(
                     repo_cfg.launch,
                     env_vars,
                     workspace_name,
                     r_name,
+                    slot=slot,
                     project_root=self.config.project_root,
                     workspaces_dir=self.config.workspaces_dir,
+                    service_ports=service_ports,
+                    lan_ip=resolved_lan_ip,
+                    public_host=public_host,
+                    interface=interface,
                 )
                 launch_entries.append((r_name, str(wt_path), expanded_cmd, env_vars))
+
+
 
         if not launch_entries or mode in ("summary", "list"):
             return launch_entries
@@ -1205,7 +1419,7 @@ class WorkspaceManager:
         # Helper to ensure background daemon is running to host the live services
         def _ensure_daemon_running():
             sock_path = self.get_session_socket_path(workspace_name)
-            if not self.is_session_running(workspace_name):
+            if not self.is_daemon_active(workspace_name):
                 log_dir = ws_dir / ".ws" / "logs"
                 sock_path.parent.mkdir(parents=True, exist_ok=True)
                 if sock_path.exists():
@@ -1226,11 +1440,12 @@ class WorkspaceManager:
                 )
                 import time
                 for _ in range(60):
-                    if self.is_session_running(workspace_name):
+                    if self.is_daemon_active(workspace_name):
                         break
                     if proc.poll() is not None:
                         break
                     time.sleep(0.05)
+
 
         # Mode 0: Detached Background Daemon
         if daemon or mode == "daemon":

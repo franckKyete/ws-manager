@@ -362,8 +362,8 @@ class WorkspaceTUI:
 
                     # If in Interactive Input Mode, forward keystrokes directly to the service
                     if self.interactive_mode:
-                        # Esc (\x1b) or Ctrl+X (\x18) to exit interactive mode
-                        if ch in ("\x18", "\x1d"):  # Ctrl+X or Ctrl+]
+                        # Esc (\x1b), Ctrl+X (\x18), Ctrl+] (\x1d), or Ctrl+W (\x17) to exit interactive mode
+                        if ch in ("\x18", "\x1d", "\x17"):  # Ctrl+X, Ctrl+], or Ctrl+W
                             self.interactive_mode = False
                             continue
                         elif ch == "\x1b":
@@ -381,12 +381,17 @@ class WorkspaceTUI:
                         continue
 
                     # Normal Navigation Mode
+                    if ch == "\x17":  # Ctrl+W resets scroll offset to live follow
+                        self._scroll_bottom()
+                        continue
+
                     if ch == "\x1b":
                         r2, _, _ = select.select([sys.stdin], [], [], 0.05)
                         if not r2:
                             # Standalone Esc resets scroll offset to live follow
                             self._scroll_bottom()
                             continue
+
 
                         seq = sys.stdin.read(1)
                         if seq == "[":

@@ -30,7 +30,10 @@ def test_process_supervisor_concurrent_execution(tmp_path):
     supervisor.start_all()
 
     # Wait briefly for process execution and log capture
-    time.sleep(0.5)
+    for _ in range(20):
+        if supervisor.services["server"].detected_port and supervisor.services["web"].detected_port:
+            break
+        time.sleep(0.05)
 
     server_svc = supervisor.services["server"]
     web_svc = supervisor.services["web"]
@@ -42,6 +45,7 @@ def test_process_supervisor_concurrent_execution(tmp_path):
     # Verify port sniffing
     assert server_svc.detected_port == 4010
     assert web_svc.detected_port == 3010
+
 
 
     # Verify log capture in memory ring buffer
