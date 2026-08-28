@@ -14,6 +14,7 @@ Welcome to the comprehensive documentation for **`ws`** (Workspace Manager) — 
 | [**🏛️ Architecture & Internals**](architecture.md)           | Deep dive into the Git worktree model, bare repositories store, daemon architecture, Unix socket IPC, and the Rust `_native` vt100 engine. |
 | [**🖥️ Multiplexers & Runtime**](multiplexers-and-runtime.md) | Operating the Interactive TUI, Tmux vertical panes, Zellij split grid, Background Daemon, and **Zero-Downtime Presentation Switching**.    |
 | [**🌲 Worktree & Git Management**](worktree-management.md)   | Worktree lifecycles, branch coordination, tracked file locking (`ws repo lock`), and safe multi-repo push/pull.                            |
+| [**☁️ wshub & Replication**](hub-and-replication.md)         | Centralized project registry, Zero-Git vault secrets, envelope encryption, and cross-machine session resumption.                             |
 | [**🩺 Troubleshooting & Diagnostics**](troubleshooting.md)   | Diagnostic workflows with `ws doctor`, socket debugging, rollback recovery, and common resolutions.                                        |
 
 ---

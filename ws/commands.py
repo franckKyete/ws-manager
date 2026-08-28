@@ -1,5 +1,6 @@
 """Command handler implementations decoupling CLI from WorkspaceManager logic."""
 
+import json
 import logging
 from pathlib import Path
 from typing import Sequence
@@ -551,6 +552,284 @@ def cmd_internal_complete(query_type: str, args: list[str]) -> None:
     results = query_completions(query_type, *args)
     for r in results:
         print(r)
+
+
+# ==================== wshub Command Handlers ====================
+
+def cmd_hub_login(
+    url: str | None = None,
+    token: str | None = None,
+    username: str | None = None,
+    password: str | None = None,
+) -> None:
+    """Execute 'ws hub login' command."""
+    from ws.hub import HubClient
+    import getpass
+
+    client = HubClient(base_url=url)
+    target_url = url or client.base_url
+
+    if token:
+        client.save_session(target_url, token.strip())
+        try:
+            user = client.whoami()
+            OutputHandler.print_success(f"Logged in to [cyan]{target_url}[/cyan] as [bold white]{user.get('username')}[/bold white]")
+        except Exception as e:
+            OutputHandler.print_warning(f"Saved token for {target_url} (Verification note: {e})")
+        return
+
+    # Interactive username / password prompt
+    OutputHandler.print_info(f"Authenticating with wshub at [cyan]{target_url}[/cyan]...")
+    user_input = username or input("Username or Email: ").strip()
+    pass_input = password or getpass.getpass("Password: ")
+
+    try:
+        data = client.login(user_input, pass_input)
+        user = data.get("user", {})
+        OutputHandler.print_success(f"Successfully logged in as [bold green]{user.get('username')}[/bold green] ([dim]{user.get('email')}[/dim])")
+    except Exception as e:
+        OutputHandler.print_error(f"Login failed: {e}")
+
+
+def cmd_hub_whoami() -> None:
+    """Execute 'ws hub whoami' command."""
+    from ws.hub import HubClient
+    client = HubClient()
+    try:
+        user = client.whoami()
+        console.print(f"[bold cyan]wshub Hub Session[/bold cyan]")
+        console.print(f"  Hub Server : [white]{client.base_url}[/white]")
+        console.print(f"  User ID    : [dim]{user.get('id')}[/dim]")
+        console.print(f"  Username   : [bold green]{user.get('username')}[/bold green]")
+        console.print(f"  Email      : [white]{user.get('email')}[/white]")
+    except Exception as e:
+        OutputHandler.print_error(f"Failed retrieving user profile: {e}")
+
+
+def cmd_hub_logout() -> None:
+    """Execute 'ws hub logout' command."""
+    from ws.hub import HubClient
+    client = HubClient()
+    if client.clear_session():
+        OutputHandler.print_success("Logged out of wshub successfully.")
+    else:
+        OutputHandler.print_info("No active wshub session found.")
+
+
+def cmd_hub_clone(manager: WorkspaceManager, project: str, target_dir: str | None = None) -> None:
+    """Execute 'ws hub clone' / 'ws clone' command."""
+    try:
+        dest_dir = manager.clone_from_hub(project_identifier=project, target_dir=target_dir)
+        OutputHandler.print_success(
+            f"\n[bold green]✔ Project cloned successfully into [white]{dest_dir}[/white][/bold green]\n"
+            f"Next steps:\n"
+            f"  cd {dest_dir.name}\n"
+            f"  ws create @develop --all\n"
+            f"  ws start @develop"
+        )
+    except Exception as e:
+        OutputHandler.print_error(f"Clone failed: {e}")
+
+
+def cmd_hub_publish(manager: WorkspaceManager, project: str | None = None, description: str | None = None) -> None:
+    """Execute 'ws hub publish' command."""
+    try:
+        manager.hub_publish(project_identifier=project, description=description)
+    except Exception as e:
+        OutputHandler.print_error(f"Publish failed: {e}")
+
+
+def cmd_hub_push(manager: WorkspaceManager, message: str = "Update configuration", project: str | None = None) -> None:
+    """Execute 'ws hub push' command."""
+    try:
+        manager.hub_push(message=message, project_identifier=project)
+    except Exception as e:
+        OutputHandler.print_error(f"Push failed: {e}")
+
+
+def cmd_hub_pull(manager: WorkspaceManager, project: str | None = None) -> None:
+    """Execute 'ws hub pull' command."""
+    try:
+        manager.hub_pull(project_identifier=project)
+    except Exception as e:
+        OutputHandler.print_error(f"Pull failed: {e}")
+
+
+def cmd_hub_status(manager: WorkspaceManager, project: str | None = None) -> None:
+    """Execute 'ws hub status' command."""
+    from ws.hub import HubClient
+    client = HubClient()
+    namespace, name = manager._get_project_namespace_and_name(project)
+    try:
+        data = client.get_project(namespace, name)
+        latest_rev = data.get("latestRevision", {})
+        console.print(f"[bold cyan]wshub Project Status: {namespace}/{name}[/bold cyan]")
+        console.print(f"  Latest Revision : [bold green]v{latest_rev.get('version')}[/bold green]")
+        console.print(f"  Last Changelog  : [white]{latest_rev.get('changelog')}[/white]")
+        console.print(f"  Updated At      : [dim]{latest_rev.get('createdAt')}[/dim]")
+    except Exception as e:
+        OutputHandler.print_error(f"Status check failed: {e}")
+
+
+def cmd_hub_sync(manager: WorkspaceManager, project: str | None = None) -> None:
+    """Execute 'ws hub sync' command."""
+    cmd_hub_pull(manager, project=project)
+    cmd_hub_secret_pull(manager, project=project)
+
+
+def cmd_hub_state_save(manager: WorkspaceManager, workspace: str, project: str | None = None) -> None:
+    """Execute 'ws hub state save' command."""
+    from ws.cli import clean_workspace
+    clean_ws = clean_workspace(workspace)
+    try:
+        manager.hub_state_save(workspace_name=clean_ws, project_identifier=project)
+    except Exception as e:
+        OutputHandler.print_error(f"Failed saving state: {e}")
+
+
+def cmd_hub_state_restore(manager: WorkspaceManager, workspace: str, project: str | None = None) -> None:
+    """Execute 'ws hub state restore' / 'ws hub resume' command."""
+    from ws.cli import clean_workspace
+    clean_ws = clean_workspace(workspace)
+    try:
+        manager.hub_state_restore(workspace_name=clean_ws, project_identifier=project)
+    except Exception as e:
+        OutputHandler.print_error(f"Failed restoring state: {e}")
+
+
+def cmd_hub_secret_list(manager: WorkspaceManager, project: str | None = None) -> None:
+    """Execute 'ws hub secret list' command."""
+    from ws.hub import HubClient
+    client = HubClient()
+    namespace, name = manager._get_project_namespace_and_name(project)
+    try:
+        secrets = client.list_secrets(namespace, name)
+        if not secrets:
+            OutputHandler.print_info(f"No secrets found for project '{namespace}/{name}'.")
+            return
+
+        from rich.table import Table
+        table = Table(title=f"wshub Secrets Vault ({namespace}/{name})")
+        table.add_column("Key", style="bold cyan")
+        table.add_column("Value (Masked)", style="white")
+        table.add_column("Scope / Repo", style="dim")
+        table.add_column("Updated At", style="dim")
+
+        for s in secrets:
+            val = str(s.get("value", ""))
+            masked = val[:3] + "*" * min(8, max(4, len(val) - 3)) if len(val) > 3 else "****"
+            table.add_row(
+                s.get("key", ""),
+                masked,
+                s.get("repoName") or "global",
+                str(s.get("updatedAt", "")),
+            )
+        console.print(table)
+    except Exception as e:
+        OutputHandler.print_error(f"Failed listing secrets: {e}")
+
+
+def cmd_hub_secret_set(manager: WorkspaceManager, key: str, value: str, repo: str | None = None, project: str | None = None) -> None:
+    """Execute 'ws hub secret set' command."""
+    from ws.hub import HubClient
+    from ws.cli import clean_repo
+    client = HubClient()
+    namespace, name = manager._get_project_namespace_and_name(project)
+    clean_r = clean_repo(repo) if repo else None
+    try:
+        client.set_secret(namespace, name, key=key, value=value, repo_name=clean_r)
+        OutputHandler.print_success(f"Saved secret [bold cyan]{key}[/bold cyan] in wshub vault ({namespace}/{name})")
+    except Exception as e:
+        OutputHandler.print_error(f"Failed setting secret: {e}")
+
+
+def cmd_hub_secret_get(manager: WorkspaceManager, key: str, repo: str | None = None, project: str | None = None) -> None:
+    """Execute 'ws hub secret get' command."""
+    from ws.hub import HubClient
+    from ws.cli import clean_repo
+    client = HubClient()
+    namespace, name = manager._get_project_namespace_and_name(project)
+    clean_r = clean_repo(repo) if repo else None
+    try:
+        val = client.get_secret(namespace, name, key=key, repo_name=clean_r)
+        console.print(f"[bold cyan]{key}[/bold cyan]: {val}")
+    except Exception as e:
+        OutputHandler.print_error(f"Failed retrieving secret: {e}")
+
+
+def cmd_hub_secret_delete(manager: WorkspaceManager, key: str, repo: str | None = None, project: str | None = None) -> None:
+    """Execute 'ws hub secret delete' command."""
+    from ws.hub import HubClient
+    from ws.cli import clean_repo
+    client = HubClient()
+    namespace, name = manager._get_project_namespace_and_name(project)
+    clean_r = clean_repo(repo) if repo else None
+    try:
+        deleted = client.delete_secret(namespace, name, key=key, repo_name=clean_r)
+        if deleted:
+            OutputHandler.print_success(f"Deleted secret '{key}'.")
+        else:
+            OutputHandler.print_warning(f"Secret '{key}' not found.")
+    except Exception as e:
+        OutputHandler.print_error(f"Failed deleting secret: {e}")
+
+
+def cmd_hub_secret_upload(manager: WorkspaceManager, file_path: str, project: str | None = None) -> None:
+    """Execute 'ws hub secret upload' command."""
+    from ws.hub import HubClient
+    client = HubClient()
+    namespace, name = manager._get_project_namespace_and_name(project)
+    p = Path(file_path).resolve()
+    if not p.exists() or not p.is_file():
+        OutputHandler.print_error(f"File '{file_path}' not found.")
+        return
+
+    # Calculate relative path from files/ or project root
+    try:
+        files_dir = (manager.config.project_root / "files").resolve()
+        if p.is_relative_to(files_dir):
+            rel_path = str(p.relative_to(files_dir))
+        else:
+            rel_path = p.name
+    except Exception:
+        rel_path = p.name
+
+    try:
+        with open(p, "rb") as f:
+            content = f.read()
+        with OutputHandler.spinner(f"Uploading and encrypting {rel_path}..."):
+            client.upload_file(namespace, name, rel_file_path=rel_path, content_bytes=content)
+        OutputHandler.print_success(f"Uploaded and encrypted [cyan]{rel_path}[/cyan] ({len(content)} bytes) to wshub vault")
+    except Exception as e:
+        OutputHandler.print_error(f"Upload failed: {e}")
+
+
+def cmd_hub_secret_pull(manager: WorkspaceManager, project: str | None = None) -> None:
+    """Execute 'ws hub secret pull' command."""
+    from ws.hub import HubClient
+    from ws.utils import ensure_directory
+    client = HubClient()
+    namespace, name = manager._get_project_namespace_and_name(project)
+
+    try:
+        # Download files
+        files_list = client.list_files(namespace, name)
+        if files_list:
+            files_dir = manager.config.project_root / "files"
+            ensure_directory(files_dir)
+            for f_info in files_list:
+                rel_path = f_info["filePath"]
+                target_file = files_dir / rel_path
+                ensure_directory(target_file.parent)
+                file_bytes = client.download_file(namespace, name, rel_path)
+                with open(target_file, "wb") as f:
+                    f.write(file_bytes)
+            OutputHandler.print_success(f"Synced {len(files_list)} secret file(s) into files/")
+        else:
+            OutputHandler.print_info("No secret files configured in wshub vault.")
+    except Exception as e:
+        OutputHandler.print_error(f"Failed pulling secret files: {e}")
+
 
 
 

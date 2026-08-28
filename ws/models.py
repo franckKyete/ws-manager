@@ -6,6 +6,36 @@ from pathlib import Path
 from typing import Any
 
 
+def is_secret_val(val: Any) -> bool:
+    """Check if environment value is marked as secret."""
+    if isinstance(val, str):
+        return val.startswith("secret:") or val.startswith("vault:")
+    return False
+
+
+def is_private_val(val: Any) -> bool:
+    """Check if environment value is marked as private / local-only."""
+    if isinstance(val, str):
+        return val.startswith("private:") or val.startswith("local:")
+    return False
+
+
+def clean_env_val(val: Any) -> str:
+    """Strip classification prefixes from environment variable value."""
+    s = str(val)
+    if s.startswith("secret:"):
+        return s[7:]
+    if s.startswith("vault:"):
+        return s[6:]
+    if s.startswith("private:"):
+        return s[8:]
+    if s.startswith("local:"):
+        return s[6:]
+    if s.startswith("public:"):
+        return s[7:]
+    return s
+
+
 @dataclass(frozen=True)
 class RepoConfig:
     """Configuration for a managed repository."""
@@ -16,6 +46,8 @@ class RepoConfig:
     url: str | None = None
     port: int | None = None
     env: dict[str, str] = field(default_factory=dict)
+    secret_env: dict[str, str] = field(default_factory=dict)
+    private_env: dict[str, str] = field(default_factory=dict)
     env_file: str = ".env"
     env_example: str = ".env.example"
     setup: list[str] = field(default_factory=list)
@@ -34,6 +66,10 @@ class RepoConfig:
             res["port"] = self.port
         if self.env:
             res["env"] = dict(self.env)
+        if self.secret_env:
+            res["secret"] = dict(self.secret_env)
+        if self.private_env:
+            res["private"] = dict(self.private_env)
         if self.env_file != ".env":
             res["env_file"] = self.env_file
         if self.env_example != ".env.example":
@@ -56,8 +92,33 @@ class RepoConfig:
         if not bare_val or not checkout_val:
             raise ValueError(f"Repository '{name}' definition must include 'bare' and 'checkout'")
 
+        # 1. Parse env, secret, private blocks and extract prefixed values
         env_raw = data.get("env", {})
-        env_dict = {str(k): str(v) for k, v in env_raw.items()} if isinstance(env_raw, dict) else {}
+        public_env: dict[str, str] = {}
+        secret_env: dict[str, str] = {}
+        private_env: dict[str, str] = {}
+
+        if isinstance(env_raw, dict):
+            for k, v in env_raw.items():
+                k_str = str(k)
+                if is_secret_val(v):
+                    secret_env[k_str] = clean_env_val(v)
+                elif is_private_val(v):
+                    private_env[k_str] = clean_env_val(v)
+                else:
+                    public_env[k_str] = clean_env_val(v)
+
+        # Dedicated secret: / secrets: block
+        secret_block = data.get("secret", data.get("secrets", {}))
+        if isinstance(secret_block, dict):
+            for k, v in secret_block.items():
+                secret_env[str(k)] = clean_env_val(v)
+
+        # Dedicated private: / local_env: block
+        private_block = data.get("private", data.get("local_env", {}))
+        if isinstance(private_block, dict):
+            for k, v in private_block.items():
+                private_env[str(k)] = clean_env_val(v)
 
         setup_raw = data.get("setup", [])
         if isinstance(setup_raw, str):
@@ -92,7 +153,9 @@ class RepoConfig:
             checkout=str(checkout_val),
             url=str(url_val) if url_val else None,
             port=port_val,
-            env=env_dict,
+            env=public_env,
+            secret_env=secret_env,
+            private_env=private_env,
             env_file=str(data.get("env_file", ".env")),
             env_example=str(data.get("env_example", ".env.example")),
             setup=setup_list,
@@ -196,6 +259,8 @@ class AppConfig:
     workspaces_dir: Path = Path("workspaces")
     config_file_path: Path | None = None
     global_env: dict[str, str] = field(default_factory=dict)
+    secret_env: dict[str, str] = field(default_factory=dict)
+    private_env: dict[str, str] = field(default_factory=dict)
     dynamic_env: dict[str, str] = field(default_factory=dict)
     setup: list[str] = field(default_factory=list)
     secrets: list[str] = field(default_factory=list)

@@ -1,5 +1,6 @@
 """Workspace management service and business logic."""
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -1538,6 +1539,396 @@ class WorkspaceManager:
 
 
         return launch_entries
+
+    # ==================== Hub Cloud Operations ====================
+
+    def _get_project_namespace_and_name(self, override_identifier: str | None = None) -> tuple[str, str]:
+        """Resolve (namespace, name) for active project."""
+        from ws.hub import HubClient
+        client = HubClient()
+
+        if override_identifier:
+            return client.parse_project_identifier(override_identifier)
+
+        # Check if project name can be inferred from config or directory name
+        proj_dir_name = self.config.project_root.name
+        clean_name = proj_dir_name.replace("-workspaces", "").replace("_workspaces", "").lower()
+
+        # Try getting whoami username
+        try:
+            user = client.whoami()
+            namespace = user.get("username", "personal")
+        except Exception:
+            namespace = "personal"
+
+        return namespace, clean_name
+
+    def clone_from_hub(self, project_identifier: str, target_dir: Path | str | None = None) -> Path:
+        """Clone project blueprint, bare repositories, and secrets from wshub."""
+        from ws.hub import HubClient
+        from ws.config import ConfigLoader
+
+        client = HubClient()
+        namespace, name = client.parse_project_identifier(project_identifier)
+
+        OutputHandler.print_info(f"Connecting to wshub for [bold cyan]{namespace}/{name}[/bold cyan]...")
+        with OutputHandler.spinner(f"Fetching blueprint for {namespace}/{name}..."):
+            data = client.get_project(namespace, name)
+
+        project = data.get("project", {})
+        latest_rev = data.get("latestRevision")
+        if not latest_rev or not latest_rev.get("blueprintYaml"):
+            raise ConfigException(f"Project '{namespace}/{name}' has no valid blueprint revisions.")
+
+        # Determine target directory
+        if target_dir:
+            dest_dir = Path(target_dir).resolve()
+        else:
+            dest_dir = (Path.cwd() / f"{name}-workspaces").resolve()
+
+        ensure_directory(dest_dir)
+        ensure_directory(dest_dir / "bares")
+        ensure_directory(dest_dir / "workspaces")
+
+        # 1. Write repositories.yml
+        config_path = dest_dir / "repositories.yml"
+        blueprint_content = latest_rev["blueprintYaml"]
+        with open(config_path, "w", encoding="utf-8") as f:
+            f.write(blueprint_content)
+        OutputHandler.print_success(f"Wrote [bold white]{config_path}[/bold white]")
+
+        # 2. Write scripts if any
+        scripts_raw = latest_rev.get("scriptsJson")
+        if scripts_raw:
+            try:
+                scripts_dict = json.loads(scripts_raw)
+                scripts_dir = dest_dir / "scripts"
+                ensure_directory(scripts_dir)
+                for script_name, script_content in scripts_dict.items():
+                    s_file = scripts_dir / script_name
+                    with open(s_file, "w", encoding="utf-8") as f:
+                        f.write(script_content)
+                    try:
+                        s_file.chmod(0o755)
+                    except Exception:
+                        pass
+                OutputHandler.print_success(f"Restored {len(scripts_dict)} automation script(s)")
+            except Exception as e:
+                logger.debug("Failed to write scripts: %e", e)
+
+        # 3. Download sensitive files from hub
+        try:
+            files_list = client.list_files(namespace, name)
+            if files_list:
+                files_dir = dest_dir / "files"
+                ensure_directory(files_dir)
+                for f_info in files_list:
+                    rel_path = f_info["filePath"]
+                    target_file = files_dir / rel_path
+                    ensure_directory(target_file.parent)
+                    file_bytes = client.download_file(namespace, name, rel_path)
+                    with open(target_file, "wb") as f:
+                        f.write(file_bytes)
+                OutputHandler.print_success(f"Downloaded {len(files_list)} secret file(s) from vault")
+        except Exception as e:
+            logger.debug("No files downloaded or error: %e", e)
+
+        # 3.5. Fetch decrypted secrets from vault and re-hydrate local secret blocks
+        try:
+            secrets_list = client.list_secrets(namespace, name)
+            if secrets_list:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    cfg_data = yaml.safe_load(f) or {}
+
+                for s_item in secrets_list:
+                    s_key = s_item.get("key")
+                    s_val = s_item.get("value")
+                    s_repo = s_item.get("repoName")
+                    if not s_key or not s_val:
+                        continue
+
+                    if not s_repo or s_repo == "global":
+                        if "secret" not in cfg_data or not isinstance(cfg_data["secret"], dict):
+                            cfg_data["secret"] = {}
+                        cfg_data["secret"][s_key] = s_val
+                    else:
+                        repos_data = cfg_data.get("repositories", {})
+                        if s_repo in repos_data and isinstance(repos_data[s_repo], dict):
+                            if "secret" not in repos_data[s_repo] or not isinstance(repos_data[s_repo]["secret"], dict):
+                                repos_data[s_repo]["secret"] = {}
+                            repos_data[s_repo]["secret"][s_key] = s_val
+
+                with open(config_path, "w", encoding="utf-8") as f:
+                    yaml.dump(cfg_data, f, sort_keys=False, default_flow_style=False)
+                OutputHandler.print_success(f"Restored {len(secrets_list)} secret(s) from vault into local config")
+        except Exception as e:
+            logger.debug("Failed restoring secrets from vault: %e", e)
+
+        # 4. Clone all bare repositories
+        loaded_cfg = ConfigLoader.load_config(config_path=config_path, workspaces_dir=dest_dir / "workspaces")
+        for r_name, repo_cfg in loaded_cfg.repositories.items():
+            if not repo_cfg.url:
+                OutputHandler.print_warning(f"Skipping {r_name}: no Git URL configured in blueprint")
+                continue
+
+            bare_path = dest_dir / repo_cfg.bare
+            ensure_directory(bare_path.parent)
+
+            if not self.git.is_bare_repo(bare_path):
+                OutputHandler.print_info(f"Cloning bare repository [bold cyan]{r_name}[/bold cyan] from [dim]{repo_cfg.url}[/dim]...")
+                with OutputHandler.spinner(f"Cloning {r_name} into {bare_path.name}..."):
+                    self.git.clone_bare(url=repo_cfg.url, target_bare_path=bare_path)
+                OutputHandler.print_success(f"Cloned [cyan]{bare_path.name}[/cyan]")
+            else:
+                OutputHandler.print_info(f"Using existing bare repo [cyan]{bare_path.name}[/cyan]")
+
+        return dest_dir
+
+    def hub_publish(self, project_identifier: str | None = None, description: str | None = None) -> dict[str, Any]:
+        """Publish local workspace project definition, encrypted vault secrets, and sensitive files to wshub."""
+        from ws.hub import HubClient
+        from ws.config import ConfigLoader
+        client = HubClient()
+        namespace, name = self._get_project_namespace_and_name(project_identifier)
+
+        config_file = self.config.config_file_path or (self.config.project_root / "repositories.yml")
+        if not config_file.exists():
+            raise ConfigException("No 'repositories.yml' found in project root to publish.")
+
+        # Classify assets into sanitized blueprint, vault secrets, sensitive files, and private vars
+        sanitized_yaml, extracted_secrets, files_to_upload, private_count = ConfigLoader.classify_project_assets(self.config)
+
+        # Collect scripts
+        scripts_dict: dict[str, str] = {}
+        scripts_dir = self.config.project_root / "scripts"
+        if scripts_dir.exists() and scripts_dir.is_dir():
+            for s_path in scripts_dir.glob("*"):
+                if s_path.is_file():
+                    try:
+                        with open(s_path, "r", encoding="utf-8") as sf:
+                            scripts_dict[s_path.name] = sf.read()
+                    except Exception:
+                        pass
+
+        scripts_json = json.dumps(scripts_dict) if scripts_dict else None
+
+        OutputHandler.print_info(f"Publishing project [bold cyan]{namespace}/{name}[/bold cyan] to wshub...")
+        with OutputHandler.spinner(f"Registering project blueprint {namespace}/{name}..."):
+            result = client.create_project(
+                namespace=namespace,
+                name=name,
+                blueprint_yaml=sanitized_yaml,
+                description=description,
+                scripts_json=scripts_json,
+                changelog="Initial publish from local workspace",
+            )
+        OutputHandler.print_success(f"Published project [bold green]{namespace}/{name}[/bold green] (Revision v1)")
+
+        # 1. Sync Vault Secrets
+        total_secrets = 0
+        if extracted_secrets:
+            with OutputHandler.spinner("Encrypting and storing secrets in wshub vault..."):
+                for scope, sec_dict in extracted_secrets.items():
+                    repo_param = None if scope == "global" else scope
+                    client.set_secrets_bulk(namespace, name, sec_dict, repo_name=repo_param)
+                    total_secrets += len(sec_dict)
+            OutputHandler.print_success(f"🔒 Stored and encrypted [bold cyan]{total_secrets}[/bold cyan] secret(s) in Vault")
+
+        # 2. Sync Sensitive Files
+        if files_to_upload:
+            with OutputHandler.spinner(f"Encrypting and uploading {len(files_to_upload)} file(s)..."):
+                for f_path in files_to_upload:
+                    try:
+                        rel_path = str(f_path.relative_to(self.config.project_root))
+                    except ValueError:
+                        rel_path = f_path.name
+                    with open(f_path, "rb") as f:
+                        file_bytes = f.read()
+                    client.upload_file(namespace, name, rel_file_path=rel_path, content_bytes=file_bytes)
+            OutputHandler.print_success(f"📁 Encrypted and uploaded [bold cyan]{len(files_to_upload)}[/bold cyan] sensitive file(s)")
+
+        # 3. Report private vars omitted
+        if private_count > 0:
+            OutputHandler.print_info(f"🚫 Skipped [dim]{private_count}[/dim] private variable(s) (kept local)")
+
+        return result
+
+    def hub_push(self, message: str = "Update configuration", project_identifier: str | None = None) -> dict[str, Any]:
+        """Push local project blueprint changes, secrets, and files to wshub as a new revision."""
+        from ws.hub import HubClient
+        from ws.config import ConfigLoader
+        client = HubClient()
+        namespace, name = self._get_project_namespace_and_name(project_identifier)
+
+        config_file = self.config.config_file_path or (self.config.project_root / "repositories.yml")
+        if not config_file.exists():
+            raise ConfigException("No 'repositories.yml' found in project root.")
+
+        sanitized_yaml, extracted_secrets, files_to_upload, private_count = ConfigLoader.classify_project_assets(self.config)
+
+        scripts_dict: dict[str, str] = {}
+        scripts_dir = self.config.project_root / "scripts"
+        if scripts_dir.exists() and scripts_dir.is_dir():
+            for s_path in scripts_dir.glob("*"):
+                if s_path.is_file():
+                    try:
+                        with open(s_path, "r", encoding="utf-8") as sf:
+                            scripts_dict[s_path.name] = sf.read()
+                    except Exception:
+                        pass
+        scripts_json = json.dumps(scripts_dict) if scripts_dict else None
+
+        with OutputHandler.spinner(f"Pushing revision to {namespace}/{name}..."):
+            result = client.push_revision(
+                namespace=namespace,
+                name=name,
+                blueprint_yaml=sanitized_yaml,
+                scripts_json=scripts_json,
+                changelog=message,
+            )
+        version = result.get("revision", {}).get("version", "?")
+        OutputHandler.print_success(f"Pushed revision [bold green]v{version}[/bold green] to [cyan]{namespace}/{name}[/cyan]")
+
+        # 1. Update Vault Secrets
+        total_secrets = 0
+        if extracted_secrets:
+            with OutputHandler.spinner("Updating encrypted secrets in vault..."):
+                for scope, sec_dict in extracted_secrets.items():
+                    repo_param = None if scope == "global" else scope
+                    client.set_secrets_bulk(namespace, name, sec_dict, repo_name=repo_param)
+                    total_secrets += len(sec_dict)
+            OutputHandler.print_success(f"🔒 Synced [bold cyan]{total_secrets}[/bold cyan] secret(s) in Vault")
+
+        # 2. Update Files
+        if files_to_upload:
+            with OutputHandler.spinner(f"Uploading {len(files_to_upload)} file(s)..."):
+                for f_path in files_to_upload:
+                    try:
+                        rel_path = str(f_path.relative_to(self.config.project_root))
+                    except ValueError:
+                        rel_path = f_path.name
+                    with open(f_path, "rb") as f:
+                        file_bytes = f.read()
+                    client.upload_file(namespace, name, rel_file_path=rel_path, content_bytes=file_bytes)
+            OutputHandler.print_success(f"📁 Synced [bold cyan]{len(files_to_upload)}[/bold cyan] sensitive file(s)")
+
+        if private_count > 0:
+            OutputHandler.print_info(f"🚫 Skipped [dim]{private_count}[/dim] private variable(s) (kept local)")
+
+        return result
+
+    def hub_pull(self, project_identifier: str | None = None) -> dict[str, Any]:
+        """Pull latest blueprint and bare repositories from wshub."""
+        from ws.hub import HubClient
+        client = HubClient()
+        namespace, name = self._get_project_namespace_and_name(project_identifier)
+
+        with OutputHandler.spinner(f"Fetching latest blueprint from {namespace}/{name}..."):
+            data = client.get_project(namespace, name)
+
+        latest_rev = data.get("latestRevision")
+        if not latest_rev:
+            raise ConfigException(f"Project '{namespace}/{name}' has no revisions.")
+
+        config_file = self.config.config_file_path or (self.config.project_root / "repositories.yml")
+        with open(config_file, "w", encoding="utf-8") as f:
+            f.write(latest_rev["blueprintYaml"])
+        OutputHandler.print_success(f"Updated [bold white]{config_file.name}[/bold white] to revision v{latest_rev['version']}")
+
+        # Merge vault secrets and restore local private variables
+        try:
+            secrets_list = client.list_secrets(namespace, name)
+            with open(config_file, "r", encoding="utf-8") as f:
+                cfg_data = yaml.safe_load(f) or {}
+
+            for s_item in secrets_list:
+                s_key = s_item.get("key")
+                s_val = s_item.get("value")
+                s_repo = s_item.get("repoName")
+                if not s_key or not s_val:
+                    continue
+                if not s_repo or s_repo == "global":
+                    if "secret" not in cfg_data or not isinstance(cfg_data["secret"], dict):
+                        cfg_data["secret"] = {}
+                    cfg_data["secret"][s_key] = s_val
+                else:
+                    repos_data = cfg_data.get("repositories", {})
+                    if s_repo in repos_data and isinstance(repos_data[s_repo], dict):
+                        if "secret" not in repos_data[s_repo] or not isinstance(repos_data[s_repo]["secret"], dict):
+                            repos_data[s_repo]["secret"] = {}
+                        repos_data[s_repo]["secret"][s_key] = s_val
+
+            if self.config.private_env:
+                if "private" not in cfg_data or not isinstance(cfg_data["private"], dict):
+                    cfg_data["private"] = {}
+                for pk, pv in self.config.private_env.items():
+                    cfg_data["private"][pk] = pv
+
+            for r_name, r_cfg in self.config.repositories.items():
+                if r_cfg.private_env:
+                    repos_data = cfg_data.get("repositories", {})
+                    if r_name in repos_data and isinstance(repos_data[r_name], dict):
+                        if "private" not in repos_data[r_name] or not isinstance(repos_data[r_name]["private"], dict):
+                            repos_data[r_name]["private"] = {}
+                        for pk, pv in r_cfg.private_env.items():
+                            repos_data[r_name]["private"][pk] = pv
+
+            with open(config_file, "w", encoding="utf-8") as f:
+                yaml.dump(cfg_data, f, sort_keys=False, default_flow_style=False)
+        except Exception as e:
+            logger.debug("Error merging secrets and private vars during pull: %e", e)
+
+        # Clone any missing bare repos
+        from ws.config import ConfigLoader
+        reloaded_cfg = ConfigLoader.load_config(config_path=config_file)
+        for r_name, r_cfg in reloaded_cfg.repositories.items():
+            bare_path = r_cfg.bare.resolve() if r_cfg.bare.is_absolute() else (self.config.project_root / r_cfg.bare).resolve()
+            if not self.git.is_bare_repo(bare_path) and r_cfg.url:
+                OutputHandler.print_info(f"Cloning newly added bare repo [cyan]{r_name}[/cyan]...")
+                with OutputHandler.spinner(f"Cloning {r_name}..."):
+                    self.git.clone_bare(url=r_cfg.url, target_bare_path=bare_path)
+                OutputHandler.print_success(f"Cloned [cyan]{bare_path.name}[/cyan]")
+
+        return data
+
+    def hub_state_save(self, workspace_name: str, project_identifier: str | None = None) -> dict[str, Any]:
+        """Save active workspace state (branches, locks, local env) to wshub."""
+        from ws.hub import HubClient
+        client = HubClient()
+        namespace, name = self._get_project_namespace_and_name(project_identifier)
+
+        meta, ws_dir = self.get_workspace_info(workspace_name)
+        state_dict = meta.to_dict()
+
+        with OutputHandler.spinner(f"Saving state for @{meta.name} to wshub..."):
+            result = client.save_workspace_state(
+                namespace=namespace,
+                name=name,
+                workspace_name=meta.name,
+                state_dict=state_dict,
+            )
+        OutputHandler.print_success(f"Saved workspace state [bold cyan]@{meta.name}[/bold cyan] to [cyan]{namespace}/{name}[/cyan]")
+        return result
+
+    def hub_state_restore(self, workspace_name: str, project_identifier: str | None = None) -> None:
+        """Restore workspace state on another machine."""
+        from ws.hub import HubClient
+        client = HubClient()
+        namespace, name = self._get_project_namespace_and_name(project_identifier)
+
+        with OutputHandler.spinner(f"Fetching state for @{workspace_name} from wshub..."):
+            state_dict = client.get_workspace_state(namespace, name, workspace_name)
+
+        if not state_dict or "name" not in state_dict:
+            raise ConfigException(f"No saved state found for workspace '{workspace_name}' on wshub.")
+
+        meta = WorkspaceMetadata.from_dict(state_dict)
+        repo_specs = list(meta.repositories.values())
+
+        OutputHandler.print_info(f"Recreating workspace [bold cyan]@{meta.name}[/bold cyan] from hub state...")
+        self.create_workspace(name=meta.name, repo_specs=repo_specs)
+        OutputHandler.print_success(f"Restored workspace [bold green]@{meta.name}[/bold green] successfully")
+
 
 
 

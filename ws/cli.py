@@ -45,6 +45,23 @@ from ws.commands import (
     cmd_workspace_freeze,
     cmd_workspace_remove_repo,
     cmd_workspace_unfreeze,
+    cmd_hub_login,
+    cmd_hub_whoami,
+    cmd_hub_logout,
+    cmd_hub_clone,
+    cmd_hub_publish,
+    cmd_hub_push,
+    cmd_hub_pull,
+    cmd_hub_status,
+    cmd_hub_sync,
+    cmd_hub_state_save,
+    cmd_hub_state_restore,
+    cmd_hub_secret_list,
+    cmd_hub_secret_set,
+    cmd_hub_secret_get,
+    cmd_hub_secret_delete,
+    cmd_hub_secret_upload,
+    cmd_hub_secret_pull,
 )
 from ws.config import ConfigLoader
 from ws.exceptions import WSException
@@ -62,6 +79,7 @@ KNOWN_COMMANDS = {
     "repo", "lock", "unlock", "workspace",
     "project", "init", "add", "fetch", "sync", "doctor", "antigravity",
     "completion", "_complete",
+    "hub", "clone",
 }
 
 
@@ -526,6 +544,100 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("doctor", help="Run system health checks and diagnostics")
     subparsers.add_parser("antigravity", help="Antigravity AI agent workspace health check")
 
+    # ==================== 6. wshub Cloud Integration ====================
+    # Command: ws hub <login|whoami|logout|clone|publish|push|pull|status|sync|state|secret>
+    p_hub = subparsers.add_parser("hub", help="Collaborate, clone, publish, sync, and manage secrets with wshub")
+    hub_subparsers = p_hub.add_subparsers(dest="hub_subcommand", title="hub actions", metavar="ACTION")
+
+    # ws hub login
+    p_hub_login = hub_subparsers.add_parser("login", help="Authenticate with wshub")
+    p_hub_login.add_argument("--url", help="wshub server URL (default: http://127.0.0.1:8787)")
+    p_hub_login.add_argument("--token", help="Personal Access Token")
+    p_hub_login.add_argument("-u", "--username", help="Username or email")
+    p_hub_login.add_argument("-p", "--password", help="Password")
+
+    # ws hub whoami
+    hub_subparsers.add_parser("whoami", help="Display active wshub user profile and session")
+
+    # ws hub logout
+    hub_subparsers.add_parser("logout", help="Log out and clear saved wshub credentials")
+
+    # ws hub clone <org/project> [target_dir]
+    p_hub_clone = hub_subparsers.add_parser("clone", help="Clone and replicate a project from wshub")
+    p_hub_clone.add_argument("project", help="Project identifier (e.g. 'org/project' or 'project')")
+    p_hub_clone.add_argument("target_dir", nargs="?", help="Target directory path (optional)")
+
+    # ws hub publish [org/project]
+    p_hub_pub = hub_subparsers.add_parser("publish", help="Publish local workspace project definition to wshub")
+    p_hub_pub.add_argument("project", nargs="?", help="Project identifier (e.g. 'org/project')")
+    p_hub_pub.add_argument("-d", "--description", help="Project description")
+
+    # ws hub push
+    p_hub_push = hub_subparsers.add_parser("push", help="Push updated project blueprint to wshub (creates new revision)")
+    p_hub_push.add_argument("-m", "--message", default="Update configuration", help="Revision changelog message")
+    p_hub_push.add_argument("--project", help="Override project identifier")
+
+    # ws hub pull
+    p_hub_pull = hub_subparsers.add_parser("pull", help="Pull latest project blueprint and clone new bare repos from wshub")
+    p_hub_pull.add_argument("--project", help="Override project identifier")
+
+    # ws hub status
+    p_hub_status = hub_subparsers.add_parser("status", help="Check project revision status against wshub")
+    p_hub_status.add_argument("--project", help="Override project identifier")
+
+    # ws hub sync
+    p_hub_sync = hub_subparsers.add_parser("sync", help="Synchronize project blueprint, bare repos, and secrets from wshub")
+    p_hub_sync.add_argument("--project", help="Override project identifier")
+
+    # ws hub state <save|restore>
+    p_hub_state = hub_subparsers.add_parser("state", help="Manage cross-machine workspace session state")
+    hub_state_sub = p_hub_state.add_subparsers(dest="hub_state_subcommand", metavar="STATE_ACTION")
+    p_state_save = hub_state_sub.add_parser("save", help="Save workspace state (branches, locks, local env) to wshub")
+    p_state_save.add_argument("workspace", help="Workspace name (@name)")
+    p_state_save.add_argument("--project", help="Override project identifier")
+    p_state_restore = hub_state_sub.add_parser("restore", help="Restore workspace state from wshub on this machine")
+    p_state_restore.add_argument("workspace", help="Workspace name (@name)")
+    p_state_restore.add_argument("--project", help="Override project identifier")
+
+    # ws hub resume @<workspace>
+    p_hub_resume = hub_subparsers.add_parser("resume", help="Restore workspace state from wshub on this machine")
+    p_hub_resume.add_argument("workspace", help="Workspace name (@name)")
+    p_hub_resume.add_argument("--project", help="Override project identifier")
+
+    # ws hub secret <list|set|get|delete|upload|pull>
+    p_hub_sec = hub_subparsers.add_parser("secret", help="Manage zero-Git encrypted secrets in wshub vault")
+    hub_sec_sub = p_hub_sec.add_subparsers(dest="hub_sec_subcommand", metavar="SECRET_ACTION")
+    p_sec_list = hub_sec_sub.add_parser("list", help="List project secrets in vault")
+    p_sec_list.add_argument("--project", help="Override project identifier")
+
+    p_sec_set = hub_sec_sub.add_parser("set", help="Set an encrypted secret in wshub vault")
+    p_sec_set.add_argument("key", help="Secret key name")
+    p_sec_set.add_argument("value", help="Secret value")
+    p_sec_set.add_argument("--repo", help="Optional repository scope (e.g. 'server')")
+    p_sec_set.add_argument("--project", help="Override project identifier")
+
+    p_sec_get = hub_sec_sub.add_parser("get", help="Get a secret value from wshub vault")
+    p_sec_get.add_argument("key", help="Secret key name")
+    p_sec_get.add_argument("--repo", help="Optional repository scope")
+    p_sec_get.add_argument("--project", help="Override project identifier")
+
+    p_sec_del = hub_sec_sub.add_parser("delete", help="Delete a secret from wshub vault")
+    p_sec_del.add_argument("key", help="Secret key name")
+    p_sec_del.add_argument("--repo", help="Optional repository scope")
+    p_sec_del.add_argument("--project", help="Override project identifier")
+
+    p_sec_upload = hub_sec_sub.add_parser("upload", help="Upload and encrypt a sensitive file (.pem, .json) to wshub vault")
+    p_sec_upload.add_argument("file_path", help="Local file path to upload")
+    p_sec_upload.add_argument("--project", help="Override project identifier")
+
+    p_sec_pull = hub_sec_sub.add_parser("pull", help="Download and decrypt sensitive files into local files/ directory")
+    p_sec_pull.add_argument("--project", help="Override project identifier")
+
+    # Top-level shortcut: ws clone <org/project> [target_dir]
+    p_top_clone = subparsers.add_parser("clone", help="Clone and replicate a project from wshub")
+    p_top_clone.add_argument("project", help="Project identifier (e.g. 'org/project' or 'project')")
+    p_top_clone.add_argument("target_dir", nargs="?", help="Target directory path (optional)")
+
     # Command: ws completion [zsh|bash|fish|install]
     p_comp = subparsers.add_parser("completion", help="Generate or install shell completion scripts")
     p_comp.add_argument("shell", nargs="?", default="zsh", choices=["zsh", "bash", "fish", "install"], help="Shell type: zsh, bash, fish, install (default: zsh)")
@@ -568,7 +680,7 @@ def main(sys_args: Sequence[str] | None = None) -> int:
         return 0
 
     try:
-        allow_empty_config = args.subcommand in ("init", "add", "doctor", "project")
+        allow_empty_config = args.subcommand in ("init", "add", "doctor", "project", "hub", "clone")
         app_config = ConfigLoader.load_config(
             config_path=args.config,
             workspaces_dir=args.workspaces_dir,
@@ -819,6 +931,69 @@ def main(sys_args: Sequence[str] | None = None) -> int:
 
         elif args.subcommand == "antigravity":
             cmd_antigravity(manager=manager)
+
+        # ==================== wshub Commands ====================
+        elif args.subcommand == "clone":
+            cmd_hub_clone(manager=manager, project=args.project, target_dir=getattr(args, "target_dir", None))
+
+        elif args.subcommand == "hub":
+            hub_action = getattr(args, "hub_subcommand", None)
+            if not hub_action:
+                p_hub.print_help()
+                return 0
+
+            if hub_action == "login":
+                cmd_hub_login(
+                    url=getattr(args, "url", None),
+                    token=getattr(args, "token", None),
+                    username=getattr(args, "username", None),
+                    password=getattr(args, "password", None),
+                )
+            elif hub_action == "whoami":
+                cmd_hub_whoami()
+            elif hub_action == "logout":
+                cmd_hub_logout()
+            elif hub_action == "clone":
+                cmd_hub_clone(manager=manager, project=args.project, target_dir=getattr(args, "target_dir", None))
+            elif hub_action == "publish":
+                cmd_hub_publish(manager=manager, project=getattr(args, "project", None), description=getattr(args, "description", None))
+            elif hub_action == "push":
+                cmd_hub_push(manager=manager, message=args.message, project=getattr(args, "project", None))
+            elif hub_action == "pull":
+                cmd_hub_pull(manager=manager, project=getattr(args, "project", None))
+            elif hub_action == "status":
+                cmd_hub_status(manager=manager, project=getattr(args, "project", None))
+            elif hub_action == "sync":
+                cmd_hub_sync(manager=manager, project=getattr(args, "project", None))
+            elif hub_action in ("state", "resume"):
+                state_action = getattr(args, "hub_state_subcommand", None)
+                if hub_action == "resume" or state_action == "restore":
+                    cmd_hub_state_restore(manager=manager, workspace=args.workspace, project=getattr(args, "project", None))
+                elif state_action == "save":
+                    cmd_hub_state_save(manager=manager, workspace=args.workspace, project=getattr(args, "project", None))
+                else:
+                    OutputHandler.print_error("Please specify a state action: save or restore")
+                    return 1
+            elif hub_action == "secret":
+                sec_action = getattr(args, "hub_sec_subcommand", None)
+                proj = getattr(args, "project", None)
+                if sec_action == "list":
+                    cmd_hub_secret_list(manager=manager, project=proj)
+                elif sec_action == "set":
+                    cmd_hub_secret_set(manager=manager, key=args.key, value=args.value, repo=getattr(args, "repo", None), project=proj)
+                elif sec_action == "get":
+                    cmd_hub_secret_get(manager=manager, key=args.key, repo=getattr(args, "repo", None), project=proj)
+                elif sec_action == "delete":
+                    cmd_hub_secret_delete(manager=manager, key=args.key, repo=getattr(args, "repo", None), project=proj)
+                elif sec_action == "upload":
+                    cmd_hub_secret_upload(manager=manager, file_path=args.file_path, project=proj)
+                elif sec_action == "pull":
+                    cmd_hub_secret_pull(manager=manager, project=proj)
+                else:
+                    OutputHandler.print_error("Please specify a secret action: list, set, get, delete, upload, pull")
+                    return 1
+            else:
+                p_hub.print_help()
 
         else:
             parser.print_help()

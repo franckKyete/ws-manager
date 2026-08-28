@@ -6,7 +6,13 @@ from typing import Any
 import yaml
 
 from ws.exceptions import ConfigException
-from ws.models import AppConfig, RepoConfig
+from ws.models import (
+    AppConfig,
+    RepoConfig,
+    clean_env_val,
+    is_private_val,
+    is_secret_val,
+)
 
 logger = logging.getLogger("ws.config")
 
@@ -81,8 +87,33 @@ class ConfigLoader:
                         except Exception as e:
                             raise ConfigException(f"Invalid repository configuration for '{name}': {e}") from e
 
+            # Parse global env, secret, private blocks
             env_raw = data.get("env", {})
-            global_env = {str(k): str(v) for k, v in env_raw.items()} if isinstance(env_raw, dict) else {}
+            global_env: dict[str, str] = {}
+            global_secret_env: dict[str, str] = {}
+            global_private_env: dict[str, str] = {}
+
+            if isinstance(env_raw, dict):
+                for k, v in env_raw.items():
+                    k_str = str(k)
+                    if is_secret_val(v):
+                        global_secret_env[k_str] = clean_env_val(v)
+                    elif is_private_val(v):
+                        global_private_env[k_str] = clean_env_val(v)
+                    else:
+                        global_env[k_str] = clean_env_val(v)
+
+            # Dedicated secret: / secrets: block
+            secret_block = data.get("secret", data.get("secrets", {}))
+            if isinstance(secret_block, dict):
+                for k, v in secret_block.items():
+                    global_secret_env[str(k)] = clean_env_val(v)
+
+            # Dedicated private: / local_env: block
+            private_block = data.get("private", data.get("local_env", {}))
+            if isinstance(private_block, dict):
+                for k, v in private_block.items():
+                    global_private_env[str(k)] = clean_env_val(v)
 
             dyn_raw = data.get("dynamic_env", {})
             dynamic_env = {str(k): str(v) for k, v in dyn_raw.items()} if isinstance(dyn_raw, dict) else {}
@@ -107,6 +138,8 @@ class ConfigLoader:
             global_copy_files = list(copy_files_raw) if isinstance(copy_files_raw, list) else ([copy_files_raw] if copy_files_raw else [])
         else:
             global_env = {}
+            global_secret_env = {}
+            global_private_env = {}
             dynamic_env = {}
             global_setup = []
             global_secrets = []
@@ -145,13 +178,95 @@ class ConfigLoader:
             workspaces_dir=ws_dir_path,
             config_file_path=file_path,
             global_env=global_env,
+            secret_env=global_secret_env,
+            private_env=global_private_env,
             dynamic_env=dynamic_env,
             setup=global_setup,
             secrets=global_secrets,
             copy_files=global_copy_files,
         )
 
+    @classmethod
+    def classify_project_assets(
+        cls,
+        app_config: AppConfig,
+    ) -> tuple[str, dict[str, dict[str, str]], list[Path], int]:
+        """Classify and sanitize project assets for wshub synchronization.
 
+        Returns:
+            - sanitized_blueprint_yaml: Public YAML with secrets as placeholders and private vars omitted.
+            - extracted_secrets: Dict mapping scope ('global' or repo_name) to secret key/value pairs.
+            - files_to_upload: List of Path objects to encrypt and upload to vault.
+            - private_vars_count: Number of private variables omitted.
+        """
+        extracted_secrets: dict[str, dict[str, str]] = {}
+        private_vars_count = 0
+
+        # 1. Global secrets & private
+        if app_config.secret_env:
+            extracted_secrets["global"] = dict(app_config.secret_env)
+        private_vars_count += len(app_config.private_env)
+
+        # 2. Repo-level secrets & private
+        sanitized_repos: dict[str, Any] = {}
+        for r_name, r_cfg in app_config.repositories.items():
+            r_dict = r_cfg.to_dict()
+            # Remove private and secret from plain dict
+            r_dict.pop("private", None)
+            r_dict.pop("secret", None)
+
+            if r_cfg.secret_env:
+                extracted_secrets[r_name] = dict(r_cfg.secret_env)
+                # In blueprint, mark secret keys with placeholder "secret"
+                r_dict_env = dict(r_dict.get("env", {}))
+                for s_key in r_cfg.secret_env:
+                    r_dict_env[s_key] = "secret"
+                r_dict["env"] = r_dict_env
+
+            private_vars_count += len(r_cfg.private_env)
+            sanitized_repos[r_name] = r_dict
+
+        # 3. Build sanitized blueprint data structure
+        sanitized_data: dict[str, Any] = {}
+        if app_config.global_env or app_config.secret_env:
+            sanitized_env = dict(app_config.global_env)
+            for s_key in app_config.secret_env:
+                sanitized_env[s_key] = "secret"
+            sanitized_data["env"] = sanitized_env
+
+        if app_config.dynamic_env:
+            sanitized_data["dynamic_env"] = dict(app_config.dynamic_env)
+        if app_config.setup:
+            sanitized_data["setup"] = list(app_config.setup)
+        if app_config.copy_files:
+            sanitized_data["copy_files"] = list(app_config.copy_files)
+
+        sanitized_data["repositories"] = sanitized_repos
+        sanitized_yaml = yaml.dump(sanitized_data, sort_keys=False, default_flow_style=False)
+
+        # 4. Collect sensitive files to encrypt & upload
+        files_to_upload: list[Path] = []
+        files_dir = app_config.project_root / "files"
+        if files_dir.exists() and files_dir.is_dir():
+            for f_path in files_dir.rglob("*"):
+                if f_path.is_file():
+                    files_to_upload.append(f_path)
+
+        # Check explicit copy_files references
+        for cf in app_config.copy_files:
+            if isinstance(cf, dict) and "from" in cf:
+                src_p = app_config.project_root / cf["from"]
+                if src_p.exists() and src_p.is_file() and src_p not in files_to_upload:
+                    files_to_upload.append(src_p)
+
+        for r_cfg in app_config.repositories.values():
+            for cf in r_cfg.copy_files:
+                if isinstance(cf, dict) and "from" in cf:
+                    src_p = app_config.project_root / cf["from"]
+                    if src_p.exists() and src_p.is_file() and src_p not in files_to_upload:
+                        files_to_upload.append(src_p)
+
+        return sanitized_yaml, extracted_secrets, files_to_upload, private_vars_count
 
     @classmethod
     def save_config(cls, repositories: dict[str, RepoConfig], config_path: Path | str | None = None) -> Path:
