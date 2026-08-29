@@ -239,5 +239,53 @@ repositories:
     # 2. Verify set_secrets_bulk was called for global and server secrets
     assert mock_set_secrets_bulk.call_count == 2
 
-    # 3. Verify file upload was called for private.pem
+    # 3. Verify file upload was called for private.pem with clean relative path
     mock_upload_file.assert_called_once()
+    assert mock_upload_file.call_args.kwargs["rel_file_path"] == "private.pem"
+
+
+@patch("ws.hub.HubClient.get_project")
+@patch("ws.hub.HubClient.list_files")
+@patch("ws.hub.HubClient.download_file")
+@patch("ws.hub.HubClient.list_secrets")
+@patch("ws.git.GitService.clone_bare")
+def test_clone_from_hub_extracts_files_without_nesting(
+    mock_clone_bare,
+    mock_list_secrets,
+    mock_download_file,
+    mock_list_files,
+    mock_get_project,
+    tmp_path,
+):
+    """Test clone_from_hub downloads vault files to files/ without double nesting."""
+    target_dir = tmp_path / "cloned-project"
+    app_cfg = AppConfig(
+        repositories={},
+        workspaces_dir=tmp_path / "workspaces",
+    )
+    manager = WorkspaceManager(config=app_cfg)
+
+    mock_get_project.return_value = {
+        "project": {"name": "sample-project"},
+        "latestRevision": {
+            "version": 1,
+            "blueprintYaml": "repositories:\n  server:\n    bare: bares/server.git\n    checkout: server\n    url: https://example.com/server.git\n",
+            "scriptsJson": None,
+        },
+    }
+    # Test both prefix formats (files/cert.pem and direct key.pem)
+    mock_list_files.return_value = [
+        {"filePath": "files/service-account.json"},
+        {"filePath": "private.pem"},
+    ]
+    mock_download_file.side_effect = lambda ns, name, path: b"DUMMY_CERT_CONTENT"
+    mock_list_secrets.return_value = []
+
+    res_dir = manager.clone_from_hub("org/sample-project", target_dir=target_dir)
+
+    # Verify both files are directly placed under target_dir / files /
+    assert (target_dir / "files" / "service-account.json").exists()
+    assert (target_dir / "files" / "private.pem").exists()
+    # Ensure double nesting does not exist
+    assert not (target_dir / "files" / "files").exists()
+

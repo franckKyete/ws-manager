@@ -1625,7 +1625,8 @@ class WorkspaceManager:
                 ensure_directory(files_dir)
                 for f_info in files_list:
                     rel_path = f_info["filePath"]
-                    target_file = files_dir / rel_path
+                    clean_rel = rel_path[6:] if (rel_path.startswith("files/") or rel_path.startswith("files\\")) else rel_path
+                    target_file = files_dir / clean_rel
                     ensure_directory(target_file.parent)
                     file_bytes = client.download_file(namespace, name, rel_path)
                     with open(target_file, "wb") as f:
@@ -1738,9 +1739,16 @@ class WorkspaceManager:
         # 2. Sync Sensitive Files
         if files_to_upload:
             with OutputHandler.spinner(f"Encrypting and uploading {len(files_to_upload)} file(s)..."):
+                files_dir = (self.config.project_root / "files").resolve()
                 for f_path in files_to_upload:
                     try:
-                        rel_path = str(f_path.relative_to(self.config.project_root))
+                        resolved_f = f_path.resolve()
+                        if resolved_f.is_relative_to(files_dir):
+                            rel_path = str(resolved_f.relative_to(files_dir))
+                        else:
+                            rel_path = str(resolved_f.relative_to(self.config.project_root.resolve()))
+                            if rel_path.startswith("files/") or rel_path.startswith("files\\"):
+                                rel_path = rel_path[6:]
                     except ValueError:
                         rel_path = f_path.name
                     with open(f_path, "rb") as f:

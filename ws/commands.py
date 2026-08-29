@@ -819,7 +819,8 @@ def cmd_hub_secret_pull(manager: WorkspaceManager, project: str | None = None) -
             ensure_directory(files_dir)
             for f_info in files_list:
                 rel_path = f_info["filePath"]
-                target_file = files_dir / rel_path
+                clean_rel = rel_path[6:] if (rel_path.startswith("files/") or rel_path.startswith("files\\")) else rel_path
+                target_file = files_dir / clean_rel
                 ensure_directory(target_file.parent)
                 file_bytes = client.download_file(namespace, name, rel_path)
                 with open(target_file, "wb") as f:
