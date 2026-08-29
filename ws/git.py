@@ -311,4 +311,62 @@ class GitService:
             except Exception as e:
                 logger.warning("Failed to change permission for '%s': %s", file_path, e)
 
+    def get_uncommitted_diff(self, worktree_path: Path) -> str:
+        """Get unified diff of all uncommitted (staged + unstaged) changes in worktree."""
+        if not worktree_path.exists():
+            return ""
+        res_head = self._run(["rev-parse", "--verify", "HEAD"], cwd=worktree_path, check=False)
+        if res_head.returncode == 0:
+            res = self._run(["diff", "--binary", "HEAD"], cwd=worktree_path, check=False)
+        else:
+            res = self._run(["diff", "--binary"], cwd=worktree_path, check=False)
+        return res.stdout if res.returncode == 0 else ""
+
+    def get_untracked_files(self, worktree_path: Path) -> list[str]:
+        """Return relative paths of untracked files (excluding gitignored)."""
+        if not worktree_path.exists():
+            return []
+        res = self._run(["ls-files", "--others", "--exclude-standard"], cwd=worktree_path, check=False)
+        if res.returncode != 0:
+            return []
+        files = []
+        for line in res.stdout.splitlines():
+            line = line.strip()
+            if line:
+                if line == ".env" or line.startswith(".env."):
+                    continue
+                files.append(line)
+        return files
+
+    def apply_patch(self, worktree_path: Path, patch_content: str) -> bool:
+        """Apply unified diff patch to worktree."""
+        if not worktree_path.exists() or not patch_content.strip():
+            return True
+        cmd = ["apply", "--whitespace=nowarn", "--allow-empty", "-"]
+        try:
+            res = subprocess.run(
+                ["git"] + cmd,
+                input=patch_content,
+                cwd=worktree_path,
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+            )
+            if res.returncode != 0:
+                res_3way = subprocess.run(
+                    ["git", "apply", "--3way", "--whitespace=nowarn", "-"],
+                    input=patch_content,
+                    cwd=worktree_path,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                )
+                if res_3way.returncode != 0:
+                    logger.warning("Git apply patch failed in '%s': %s", worktree_path, res.stderr.strip() or res_3way.stderr.strip())
+                    return False
+            return True
+        except Exception as e:
+            logger.warning("Failed to apply patch in '%s': %s", worktree_path, e)
+            return False
+
 

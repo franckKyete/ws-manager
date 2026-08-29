@@ -120,6 +120,8 @@ class HubClient:
                 )
             headers["Authorization"] = f"Bearer {self.token}"
 
+        if isinstance(data, dict):
+            data = {k: v for k, v in data.items() if v is not None}
         body_bytes = json.dumps(data).encode("utf-8") if data is not None else None
         req = urllib.request.Request(url, data=body_bytes, headers=headers, method=method)
 
@@ -133,7 +135,16 @@ class HubClient:
             err_body = e.read().decode("utf-8", errors="replace")
             try:
                 err_json = json.loads(err_body)
-                msg = err_json.get("message", f"HTTP {e.code}: {e.reason}")
+                # Check for Zod error issues: { error: { issues: [ { path, message } ] } } or { message }
+                if "error" in err_json and isinstance(err_json["error"], dict) and "issues" in err_json["error"]:
+                    issue_msgs = []
+                    for issue in err_json["error"]["issues"]:
+                        path_str = ".".join(str(p) for p in issue.get("path", []))
+                        msg_str = issue.get("message", "validation error")
+                        issue_msgs.append(f"{path_str}: {msg_str}" if path_str else msg_str)
+                    msg = f"Validation Error ({', '.join(issue_msgs)})"
+                else:
+                    msg = err_json.get("message", f"HTTP {e.code}: {e.reason}")
                 details = err_json.get("details", {})
             except Exception:
                 msg = f"HTTP {e.code}: {e.reason} ({err_body})"

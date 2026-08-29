@@ -592,17 +592,20 @@ def build_parser() -> argparse.ArgumentParser:
     # ws hub state <save|restore>
     p_hub_state = hub_subparsers.add_parser("state", help="Manage cross-machine workspace session state")
     hub_state_sub = p_hub_state.add_subparsers(dest="hub_state_subcommand", metavar="STATE_ACTION")
-    p_state_save = hub_state_sub.add_parser("save", help="Save workspace state (branches, locks, local env) to wshub")
+    p_state_save = hub_state_sub.add_parser("save", help="Save workspace state (branches, locks, local env, WIP) to wshub")
     p_state_save.add_argument("workspace", help="Workspace name (@name)")
     p_state_save.add_argument("--project", help="Override project identifier")
+    p_state_save.add_argument("--no-wip", action="store_true", help="Skip capturing uncommitted WIP changes")
     p_state_restore = hub_state_sub.add_parser("restore", help="Restore workspace state from wshub on this machine")
     p_state_restore.add_argument("workspace", help="Workspace name (@name)")
     p_state_restore.add_argument("--project", help="Override project identifier")
+    p_state_restore.add_argument("--no-wip", action="store_true", help="Skip applying uncommitted WIP changes")
 
     # ws hub resume @<workspace>
     p_hub_resume = hub_subparsers.add_parser("resume", help="Restore workspace state from wshub on this machine")
     p_hub_resume.add_argument("workspace", help="Workspace name (@name)")
     p_hub_resume.add_argument("--project", help="Override project identifier")
+    p_hub_resume.add_argument("--no-wip", action="store_true", help="Skip applying uncommitted WIP changes")
 
     # ws hub secret <list|set|get|delete|upload|pull>
     p_hub_sec = hub_subparsers.add_parser("secret", help="Manage zero-Git encrypted secrets in wshub vault")
@@ -967,10 +970,11 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                 cmd_hub_sync(manager=manager, project=getattr(args, "project", None))
             elif hub_action in ("state", "resume"):
                 state_action = getattr(args, "hub_state_subcommand", None)
+                no_wip = getattr(args, "no_wip", False)
                 if hub_action == "resume" or state_action == "restore":
-                    cmd_hub_state_restore(manager=manager, workspace=args.workspace, project=getattr(args, "project", None))
+                    cmd_hub_state_restore(manager=manager, workspace=args.workspace, project=getattr(args, "project", None), no_wip=no_wip)
                 elif state_action == "save":
-                    cmd_hub_state_save(manager=manager, workspace=args.workspace, project=getattr(args, "project", None))
+                    cmd_hub_state_save(manager=manager, workspace=args.workspace, project=getattr(args, "project", None), no_wip=no_wip)
                 else:
                     OutputHandler.print_error("Please specify a state action: save or restore")
                     return 1

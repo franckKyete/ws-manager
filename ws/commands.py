@@ -677,22 +677,22 @@ def cmd_hub_sync(manager: WorkspaceManager, project: str | None = None) -> None:
     cmd_hub_secret_pull(manager, project=project)
 
 
-def cmd_hub_state_save(manager: WorkspaceManager, workspace: str, project: str | None = None) -> None:
+def cmd_hub_state_save(manager: WorkspaceManager, workspace: str, project: str | None = None, no_wip: bool = False) -> None:
     """Execute 'ws hub state save' command."""
     from ws.cli import clean_workspace
     clean_ws = clean_workspace(workspace)
     try:
-        manager.hub_state_save(workspace_name=clean_ws, project_identifier=project)
+        manager.hub_state_save(workspace_name=clean_ws, project_identifier=project, include_wip=not no_wip)
     except Exception as e:
         OutputHandler.print_error(f"Failed saving state: {e}")
 
 
-def cmd_hub_state_restore(manager: WorkspaceManager, workspace: str, project: str | None = None) -> None:
+def cmd_hub_state_restore(manager: WorkspaceManager, workspace: str, project: str | None = None, no_wip: bool = False) -> None:
     """Execute 'ws hub state restore' / 'ws hub resume' command."""
     from ws.cli import clean_workspace
     clean_ws = clean_workspace(workspace)
     try:
-        manager.hub_state_restore(workspace_name=clean_ws, project_identifier=project)
+        manager.hub_state_restore(workspace_name=clean_ws, project_identifier=project, apply_wip=not no_wip)
     except Exception as e:
         OutputHandler.print_error(f"Failed restoring state: {e}")
 

@@ -1,5 +1,6 @@
 """Workspace management service and business logic."""
 
+import base64
 import json
 import logging
 import os
@@ -1891,14 +1892,51 @@ class WorkspaceManager:
 
         return data
 
-    def hub_state_save(self, workspace_name: str, project_identifier: str | None = None) -> dict[str, Any]:
-        """Save active workspace state (branches, locks, local env) to wshub."""
+    def hub_state_save(
+        self,
+        workspace_name: str,
+        project_identifier: str | None = None,
+        include_wip: bool = True,
+    ) -> dict[str, Any]:
+        """Save active workspace state (branches, locks, local env, and uncommitted WIP) to wshub."""
         from ws.hub import HubClient
         client = HubClient()
         namespace, name = self._get_project_namespace_and_name(project_identifier)
 
         meta, ws_dir = self.get_workspace_info(workspace_name)
         state_dict = meta.to_dict()
+
+        wip_summary: list[tuple[str, int, int]] = []
+        if include_wip:
+            wip_dict: dict[str, Any] = {}
+            for r_name, spec in meta.repositories.items():
+                wt_path = ws_dir / spec.path
+                if not wt_path.exists():
+                    continue
+
+                diff = self.git.get_uncommitted_diff(wt_path)
+                untracked_files = self.git.get_untracked_files(wt_path)
+                untracked_contents: dict[str, str] = {}
+
+                for rel_p in untracked_files:
+                    file_p = wt_path / rel_p
+                    if file_p.is_file():
+                        try:
+                            encoded = base64.b64encode(file_p.read_bytes()).decode("ascii")
+                            untracked_contents[rel_p] = encoded
+                        except Exception as e:
+                            logger.warning("Could not read untracked file '%s': %s", file_p, e)
+
+                if diff.strip() or untracked_contents:
+                    diff_file_count = len([line for line in diff.splitlines() if line.startswith("diff --git")])
+                    wip_dict[r_name] = {
+                        "diff": diff,
+                        "untracked": untracked_contents,
+                    }
+                    wip_summary.append((r_name, diff_file_count, len(untracked_contents)))
+
+            if wip_dict:
+                state_dict["wip"] = wip_dict
 
         with OutputHandler.spinner(f"Saving state for @{meta.name} to wshub..."):
             result = client.save_workspace_state(
@@ -1908,9 +1946,21 @@ class WorkspaceManager:
                 state_dict=state_dict,
             )
         OutputHandler.print_success(f"Saved workspace state [bold cyan]@{meta.name}[/bold cyan] to [cyan]{namespace}/{name}[/cyan]")
+        for r_name, mod_cnt, untr_cnt in wip_summary:
+            parts = []
+            if mod_cnt > 0:
+                parts.append(f"{mod_cnt} modified file{'s' if mod_cnt != 1 else ''}")
+            if untr_cnt > 0:
+                parts.append(f"{untr_cnt} untracked file{'s' if untr_cnt != 1 else ''}")
+            OutputHandler.print_info(f"  🔒 Captured uncommitted work in [cyan]%{r_name}[/cyan] ({', '.join(parts)})")
         return result
 
-    def hub_state_restore(self, workspace_name: str, project_identifier: str | None = None) -> None:
+    def hub_state_restore(
+        self,
+        workspace_name: str,
+        project_identifier: str | None = None,
+        apply_wip: bool = True,
+    ) -> None:
         """Restore workspace state on another machine."""
         from ws.hub import HubClient
         client = HubClient()
@@ -1927,6 +1977,37 @@ class WorkspaceManager:
 
         OutputHandler.print_info(f"Recreating workspace [bold cyan]@{meta.name}[/bold cyan] from hub state...")
         self.create_workspace(name=meta.name, repo_specs=repo_specs)
+
+        # Restore uncommitted WIP if present
+        wip_data = state_dict.get("wip", {})
+        if apply_wip and isinstance(wip_data, dict) and wip_data:
+            _, ws_dir = self.get_workspace_info(meta.name)
+            for r_name, r_wip in wip_data.items():
+                if not isinstance(r_wip, dict):
+                    continue
+                spec = meta.repositories.get(r_name)
+                wt_path = ws_dir / (spec.path if spec else r_name)
+                if not wt_path.exists():
+                    continue
+
+                # 1. Restore untracked files
+                untracked_dict = r_wip.get("untracked", {})
+                if isinstance(untracked_dict, dict):
+                    for rel_p, b64_content in untracked_dict.items():
+                        try:
+                            file_dest = wt_path / rel_p
+                            file_dest.parent.mkdir(parents=True, exist_ok=True)
+                            file_dest.write_bytes(base64.b64decode(b64_content.encode("ascii")))
+                        except Exception as e:
+                            logger.warning("Failed to restore untracked file '%s': %s", rel_p, e)
+
+                # 2. Apply git diff patch
+                diff_patch = r_wip.get("diff", "")
+                if isinstance(diff_patch, str) and diff_patch.strip():
+                    self.git.apply_patch(wt_path, diff_patch)
+
+                OutputHandler.print_success(f"Restored uncommitted work in [cyan]%{r_name}[/cyan]")
+
         OutputHandler.print_success(f"Restored workspace [bold green]@{meta.name}[/bold green] successfully")
 
 

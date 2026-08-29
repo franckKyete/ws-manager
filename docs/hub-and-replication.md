@@ -84,12 +84,33 @@ ws hub secret list
 ws hub secret pull
 ```
 
-### 5. Resuming Work from Another Machine
+### 5. Resuming Work from Another Machine (Automatic WIP Sync)
+
+`ws hub state save` automatically captures both your checked-out branch topology and any **uncommitted work** (modified tracked files, staged changes, and new untracked files):
 
 ```bash
-# Machine A (before leaving):
+# 🖥️ Machine A (before leaving):
+# Automatically snapshots branches AND uncommitted edits in all repositories
 ws hub state save @feature-checkout
 
-# Machine B (at home/office):
+# Output:
+# ✔ Saved workspace state @feature-checkout to kyete/renttik
+# ℹ 🔒 Captured uncommitted work in %server (2 modified files, 1 untracked file)
+
+# 💻 Machine B (at home/office):
+# Re-provisions worktrees, branches, and re-applies all uncommitted edits
 ws hub resume @feature-checkout
+
+# Output:
+# ℹ Recreating workspace @feature-checkout from hub state...
+# ✔ Creating workspace feature-checkout
+# ✔ Restored uncommitted work in %server
+# ✔ Restored workspace @feature-checkout successfully
+```
+
+#### Skipping Uncommitted Work
+If you only want to sync the branch references without uncommitted code:
+```bash
+ws hub state save @develop --no-wip
+ws hub resume @develop --no-wip
 ```
