@@ -77,9 +77,48 @@ repositories:
 
 | Field           | Type                    | Description                                                                                 |
 | :-------------- | :---------------------- | :------------------------------------------------------------------------------------------ |
-| `env`           | `dict[str, str]`        | Global environment variables injected into all workspace commands, subshells, and services. |
+| `env`           | `dict[str, str]`        | Global public environment variables synchronized in blueprint revisions.                    |
+| `secret`        | `dict[str, str]`        | Global sensitive secrets encrypted with AES-256-GCM in wshub Vault.                         |
+| `private`       | `dict[str, str]`        | Global host-specific variables that **never leave the local machine**.                      |
 | `setup.scripts` | `list[ScriptSpec]`      | Global setup scripts executed in the workspace root directory.                              |
 | `repositories`  | `dict[str, RepoConfig]` | Map of repository definitions keyed by repository alias (`server`, `mobile`, etc.).         |
+
+---
+
+### Environment Variable Tiers & Scoping
+
+`ws` supports three tiers of environment variables to guarantee Zero-Git secrets and local machine isolation:
+
+1. **`public` (Default in `env:`)**: Standard non-sensitive configuration (ports, URLs, feature flags) synchronized in plaintext blueprint revisions.
+2. **`secret` (in `secret:` block or `secret:<value>` prefix)**: Sensitive credentials (tokens, passwords, API keys) automatically stripped from the public blueprint, encrypted with **AES-256-GCM** in the wshub Vault, and re-hydrated on clone/sync.
+3. **`private` (in `private:` block or `private:<value>` prefix)**: Developer-only or machine-specific overrides (local tool paths, hardware IPs) that **never leave the local machine**.
+
+#### Example Syntax
+
+```yaml
+# 1. Block notation
+env:
+  NODE_ENV: development
+  LOG_LEVEL: debug
+
+secret:
+  JWT_SECRET: super_secure_token
+  STRIPE_KEY: sk_live_12345
+
+private:
+  DEV_TOOL_PATH: /opt/custom/bin
+  LOCAL_HARDWARE_IP: 192.168.1.50
+
+# 2. Inline prefix notation (shorthand)
+repositories:
+  server:
+    bare: bares/server.git
+    checkout: server
+    env:
+      PORT: "8080"
+      DATABASE_PASSWORD: "secret:postgres_super_pass"  # Encrypted in Vault
+      DEBUG_CACHE: "private:/tmp/my-server-cache"       # Stays local only
+```
 
 ---
 
