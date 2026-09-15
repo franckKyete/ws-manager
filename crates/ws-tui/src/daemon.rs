@@ -86,6 +86,8 @@ pub struct ServiceInfo {
     pub name: String,
     pub status: String,
     pub port: u16,
+    #[serde(default)]
+    pub ports: Vec<u16>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -352,10 +354,12 @@ impl SessionDaemon {
                 Err(_) => "Running".to_string(),
             };
             let port = s.detected_port.load(Ordering::Relaxed) as u16;
+            let ports = if port > 0 { vec![port] } else { Vec::new() };
             svcs.push(ServiceInfo {
                 name: name.clone(),
                 status: status_str,
                 port,
+                ports,
             });
         }
         svcs
@@ -1219,7 +1223,10 @@ impl AttachedSessionClient {
         };
 
         let port_str = if let Some(info) = svc_info {
-            if info.port > 0 {
+            if info.ports.len() > 1 {
+                let formatted = info.ports.iter().map(|p| format!(":{}", p)).collect::<Vec<_>>().join(", ");
+                format!(" ports {} ", formatted)
+            } else if info.port > 0 {
                 format!(" http://localhost:{} ", info.port)
             } else {
                 String::new()

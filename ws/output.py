@@ -159,8 +159,19 @@ class OutputHandler:
 
             svc_info = running_services.get(repo_name)
             if svc_info:
-                port = svc_info.get("port", 0)
-                port_text = f" (port [bold cyan]:{port}[/bold cyan])" if port > 0 else ""
+                ports_val = svc_info.get("ports")
+                ports_list: list[int] = []
+                if isinstance(ports_val, dict):
+                    ports_list = [int(p) for p in ports_val.values() if p]
+                elif isinstance(ports_val, (list, tuple)):
+                    ports_list = [int(p) for p in ports_val if p]
+                
+                if len(ports_list) > 1:
+                    ports_formatted = ", ".join(f":{p}" for p in ports_list)
+                    port_text = f" (ports [bold cyan]{ports_formatted}[/bold cyan])"
+                else:
+                    port = ports_list[0] if ports_list else svc_info.get("port", 0)
+                    port_text = f" (port [bold cyan]:{port}[/bold cyan])" if port > 0 else ""
                 process_badge = f" [bold green]● RUNNING{port_text}[/bold green]"
             elif active_engine:
                 process_badge = " [dim]○ stopped[/dim]"
@@ -172,10 +183,20 @@ class OutputHandler:
             r_node.add(f"Worktree Path: [dim]{spec.path}[/dim]")
             if svc_info:
                 r_node.add(f"Process Status: [green]{svc_info.get('status', 'running')}[/green]")
-                if svc_info.get("url_local"):
-                    r_node.add(f"Local URL: [bold cyan]{svc_info['url_local']}[/bold cyan]")
-                if svc_info.get("url_lan") and not svc_info.get("url_lan", "").startswith("http://127."):
-                    r_node.add(f"LAN Wi-Fi URL: [bold yellow]{svc_info['url_lan']}[/bold yellow]")
+                urls_map = svc_info.get("urls")
+                if isinstance(urls_map, dict) and len(urls_map) > 1:
+                    for u_label, u_info in urls_map.items():
+                        lbl_suffix = f" ({u_label})" if u_label != "default" else ""
+                        if isinstance(u_info, dict):
+                            if u_info.get("url_local"):
+                                r_node.add(f"Local URL{lbl_suffix}: [bold cyan]{u_info['url_local']}[/bold cyan]")
+                            if u_info.get("url_lan") and not u_info.get("url_lan", "").startswith("http://127."):
+                                r_node.add(f"LAN Wi-Fi URL{lbl_suffix}: [bold yellow]{u_info['url_lan']}[/bold yellow]")
+                else:
+                    if svc_info.get("url_local"):
+                        r_node.add(f"Local URL: [bold cyan]{svc_info['url_local']}[/bold cyan]")
+                    if svc_info.get("url_lan") and not svc_info.get("url_lan", "").startswith("http://127."):
+                        r_node.add(f"LAN Wi-Fi URL: [bold yellow]{svc_info['url_lan']}[/bold yellow]")
             if spec.frozen or spec.locked:
                 r_node.add("File Mode: [yellow]Read-only (locked)[/yellow]")
 

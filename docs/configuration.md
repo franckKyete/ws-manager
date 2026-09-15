@@ -83,18 +83,17 @@ repositories:
 
 ---
 
-### `RepoConfig` Fields
-
-| Field              | Type                 | Required | Description                                                                                        |
-| :----------------- | :------------------- | :------- | :------------------------------------------------------------------------------------------------- |
-| `bare`             | `string`             | **Yes**  | Relative or absolute path to the bare Git repository (e.g. `bares/server.git`).                    |
-| `checkout`         | `string`             | **Yes**  | Subdirectory name where the worktree is checked out inside each workspace (e.g. `Renttik-server`). |
-| `command`          | `string`             | No       | Service launch command (e.g. `npm run dev`, `cargo run`).                                          |
-| `port`             | `integer`            | No       | Network port the service listens on (used in `ws info` inspection and process health monitoring).  |
-| `depends_on`       | `list[str]`          | No       | List of service aliases that must start before this service.                                       |
-| `setup.copy_files` | `list[FileCopySpec]` | No       | File copy specifications to execute during `ws setup` or workspace creation.                       |
-| `setup.env`        | `dict[str, str]`     | No       | Environment variables specific to this repository worktree.                                        |
-| `setup.scripts`    | `list[ScriptSpec]`   | No       | Setup commands executed sequentially inside the repository worktree directory.                     |
+| Field              | Type                              | Required | Description                                                                                        |
+| :----------------- | :-------------------------------- | :------- | :------------------------------------------------------------------------------------------------- |
+| `bare`             | `string`                          | **Yes**  | Relative or absolute path to the bare Git repository (e.g. `bares/server.git`).                    |
+| `checkout`         | `string`                          | **Yes**  | Subdirectory name where the worktree is checked out inside each workspace (e.g. `Renttik-server`). |
+| `command`          | `string`                          | No       | Service launch command (e.g. `npm run dev`, `cargo run`).                                          |
+| `port`             | `integer`                         | No       | Primary base network port the service listens on (used as default port in discovery and status).   |
+| `ports`            | `list[int]` or `dict[str, int]`   | No       | Multiple base network ports (e.g. `[8080, 8081]` or `{http: 8080, ws: 8081, metrics: 9090}`).     |
+| `depends_on`       | `list[str]`                       | No       | List of service aliases that must start before this service.                                       |
+| `setup.copy_files` | `list[FileCopySpec]`              | No       | File copy specifications to execute during `ws setup` or workspace creation.                       |
+| `setup.env`        | `dict[str, str]`                  | No       | Environment variables specific to this repository worktree.                                        |
+| `setup.scripts`    | `list[ScriptSpec]`                | No       | Setup commands executed sequentially inside the repository worktree directory.                     |
 
 ---
 
@@ -122,12 +121,20 @@ repositories:
 
 Services running in the same workspace can reference sibling services without hardcoding ports or IP addresses:
 
-| Placeholder                    | Target Scope        | Example Value (Slot 1)           | Best For                                               |
-| :----------------------------- | :------------------ | :------------------------------- | :----------------------------------------------------- |
-| `${SERVICE_PORT:server}`       | Dynamic Port        | `8090`                           | Injecting target port into configs or CLI flags.       |
-| `${SERVICE_URL:server}`        | Localhost URL       | `http://127.0.0.1:8090`          | Local intra-machine communication (web ➔ API).         |
-| `${SERVICE_URL_LAN:server}`    | LAN Wi-Fi URL       | `http://192.168.1.45:8090`       | Physical mobile devices (Expo/React Native on phones). |
-| `${SERVICE_URL_PUBLIC:server}` | Public / Tunnel URL | `https://myproject.loca.lt:8090` | External webhooks, OAuth callbacks, remote staging.    |
+| Placeholder                         | Target Scope        | Example Value (Slot 1)           | Best For                                               |
+| :---------------------------------- | :------------------ | :------------------------------- | :----------------------------------------------------- |
+| `${SERVICE_PORT:server}`            | Primary Dynamic Port| `8090`                           | Injecting target primary port into configs / flags.    |
+| `${SERVICE_PORT:server:ws}`         | Named Sub-Port      | `8091`                           | Referencing a specific named port of a multi-port svc. |
+| `${SERVICE_PORTS:server}`           | All Ports (List)    | `8090,8091`                      | Comma-separated list of all allocated ports.           |
+| `${SERVICE_URL:server}`             | Localhost URL       | `http://127.0.0.1:8090`          | Local intra-machine communication (web ➔ API).         |
+| `${SERVICE_URL:server:ws}`          | Localhost Sub-Port  | `http://127.0.0.1:8091`          | Local URL targeting specific sub-port endpoint.        |
+| `${SERVICE_URL_LAN:server}`         | LAN Wi-Fi URL       | `http://192.168.1.45:8090`       | Physical mobile devices (Expo/React Native on phones). |
+| `${SERVICE_URL_LAN:server:ws}`      | LAN Wi-Fi Sub-Port  | `http://192.168.1.45:8091`       | Physical mobile devices connecting to sub-port.        |
+| `${SERVICE_URL_PUBLIC:server}`      | Public / Tunnel URL | `https://myproject.loca.lt:8090` | External webhooks, OAuth callbacks, remote staging.    |
+| `${SERVICE_URL_PUBLIC:server:ws}`   | Public Sub-Port URL | `https://myproject.loca.lt:8091` | External webhooks targeting specific sub-port.         |
+
+> [!NOTE]
+> Configured ports are **Base Ports**. At runtime, `ws` automatically computes slot offsets (`base_port + slot * 10`) and conducts real-time TCP socket probing to auto-heal any collisions before launching services. Discovery placeholders always resolve to the **actual live allocated ports**.
 
 ### Concrete Cross-Service Example
 
@@ -136,21 +143,23 @@ repositories:
   server:
     bare: bares/server.git
     checkout: server
-    port: 8080
-    command: npm run dev -- --port ${PORT:8080}
+    ports:
+      http: 8080
+      ws: 8081
+    command: npm run dev -- --http-port ${SERVICE_PORT:server:http} --ws-port ${SERVICE_PORT:server:ws}
 
   mobile:
     bare: bares/mobile.git
     checkout: mobile
-    port: 8081
-    command: npx expo start --port ${PORT:8081}
+    port: 8082
+    command: npx expo start --port ${PORT:8082}
     depends_on:
       - server
     setup:
       env:
-        # Physical phone automatically talks to the backend over Wi-Fi:
-        EXPO_PUBLIC_API_URL: "${SERVICE_URL_LAN:server}"
-        EXPO_PUBLIC_LOCAL_API_URL: "${SERVICE_URL:server}"
+        # Physical phone automatically talks to backend API & WebSocket over Wi-Fi:
+        EXPO_PUBLIC_API_URL: "${SERVICE_URL_LAN:server:http}"
+        EXPO_PUBLIC_WS_URL: "${SERVICE_URL_LAN:server:ws}"
 ```
 
 ---
@@ -162,9 +171,13 @@ When `ws` launches any service or interactive subshell (`ws shell @name %repo`),
 - `WS_WORKSPACE`: Active workspace name (`feat-auth`).
 - `WS_SLOT`: Workspace integer slot (`1`).
 - `WS_LAN_IP`: Host LAN IP (`192.168.1.45`).
-- `WS_SERVICE_<NAME>_PORT`: Resolved port of target service (e.g. `WS_SERVICE_SERVER_PORT=8090`).
+- `WS_SERVICE_<NAME>_PORT`: Resolved primary port (e.g. `WS_SERVICE_SERVER_PORT=8090`).
+- `WS_SERVICE_<NAME>_PORTS`: Comma-separated list of all allocated ports (e.g. `WS_SERVICE_SERVER_PORTS=8090,8091`).
+- `WS_SERVICE_<NAME>_PORT_<SUBPORT>`: Specific sub-port (e.g. `WS_SERVICE_SERVER_PORT_WS=8091`).
 - `WS_SERVICE_<NAME>_URL`: Base localhost URL (e.g. `WS_SERVICE_SERVER_URL=http://127.0.0.1:8090`).
+- `WS_SERVICE_<NAME>_URL_<SUBPORT>`: Sub-port localhost URL (e.g. `WS_SERVICE_SERVER_URL_WS=http://127.0.0.1:8091`).
 - `WS_SERVICE_<NAME>_URL_LAN`: Base LAN URL (e.g. `WS_SERVICE_SERVER_URL_LAN=http://192.168.1.45:8090`).
+- `WS_SERVICE_<NAME>_URL_LAN_<SUBPORT>`: Sub-port LAN URL (e.g. `WS_SERVICE_SERVER_URL_LAN_WS=http://192.168.1.45:8091`).
 
 ---
 
@@ -200,9 +213,28 @@ On startup, `ws` writes a machine-readable discovery descriptor to `workspaces/@
   "services": {
     "server": {
       "port": 8090,
+      "ports": {
+        "http": 8090,
+        "ws": 8091
+      },
+      "url": "http://127.0.0.1:8090",
       "url_local": "http://127.0.0.1:8090",
       "url_lan": "http://192.168.1.45:8090",
       "url_public": "https://myproject.loca.lt:8090",
+      "urls": {
+        "http": {
+          "port": 8090,
+          "url_local": "http://127.0.0.1:8090",
+          "url_lan": "http://192.168.1.45:8090",
+          "url_public": "https://myproject.loca.lt:8090"
+        },
+        "ws": {
+          "port": 8091,
+          "url_local": "http://127.0.0.1:8091",
+          "url_lan": "http://192.168.1.45:8091",
+          "url_public": "https://myproject.loca.lt:8091"
+        }
+      },
       "status": "running"
     }
   }
