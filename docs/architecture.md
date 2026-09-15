@@ -163,9 +163,10 @@ graph TD
 
 1. **Multi-Network Host Resolver (`ws/network.py`)**:
    - Probes the system routing table to discover the host's LAN Wi-Fi IP address (e.g. `192.168.1.45`) without contacting external networks.
-   - Resolves `${SERVICE_URL_LAN:<repo>}` for mobile testing on physical devices.
-2. **Pre-Flight Real-Time Socket Probing**:
-   - On `ws start`, `ws` tests socket binding (`0.0.0.0:<port>`) in real-time.
-   - If an external process seized a port assigned during setup, `ws` automatically allocates the next available free port.
+   - Resolves `${SERVICE_URL_LAN:<repo>}` and `${SERVICE_URL_LAN:<repo>:<subport>}` for mobile testing on physical devices.
+2. **Multi-Port Allocation & Pre-Flight Real-Time Socket Probing**:
+   - For every service, `ws` inspects all declared base ports (`port` or `ports: {http: 8080, ws: 8081}`) and computes deterministic workspace slot offsets (`base_port + slot * 10`).
+   - On `ws start` and `ws setup`, `ws` tests socket binding (`0.0.0.0:<port>`) in real-time across all service ports.
+   - If an external process seized a port assigned during setup, `ws` automatically allocates the next available free port without colliding with other services in the workspace.
 3. **Just-In-Time (JIT) `.env` Re-Synchronization**:
-   - If any port shifts during launch, `ws` automatically re-synchronizes worktree `.env` files and updates `.ws/services.json` before starting processes.
+   - If any port shifts during launch, `ws` automatically re-synchronizes worktree `.env` files and updates `.ws/services.json` and `.ws/services.env` before starting processes.

@@ -441,6 +441,225 @@ def test_resolve_repo_env_interface_and_ip_override(tmp_path):
     assert resolved_ip["WS_SERVICE_SERVER_URL_LAN"] == "http://192.168.50.200:4010"
 
 
+def test_repo_config_multi_ports_parsing(tmp_path):
+    """Test RepoConfig parsing with various single-port and multi-port configurations."""
+    # 1. Named dictionary of ports
+    cfg1 = RepoConfig.from_dict("server", {
+        "bare": str(tmp_path / "server.git"),
+        "checkout": "server",
+        "ports": {
+            "http": 8080,
+            "ws": 8081,
+            "metrics": 9090,
+        },
+    })
+    assert cfg1.port == 8080
+    assert cfg1.ports == {"http": 8080, "ws": 8081, "metrics": 9090}
+    assert cfg1.ports_list == [8080, 8081, 9090]
+    dict1 = cfg1.to_dict()
+    assert dict1["ports"] == {"http": 8080, "ws": 8081, "metrics": 9090}
+    assert dict1["port"] == 8080
+
+    # 2. List of ports
+    cfg2 = RepoConfig.from_dict("server", {
+        "bare": str(tmp_path / "server.git"),
+        "checkout": "server",
+        "ports": [3000, 3001],
+    })
+    assert cfg2.port == 3000
+    assert cfg2.ports == {"default": 3000, "port_1": 3001}
+    assert cfg2.ports_list == [3000, 3001]
+
+    # 3. Hybrid configuration
+    cfg3 = RepoConfig.from_dict("server", {
+        "bare": str(tmp_path / "server.git"),
+        "checkout": "server",
+        "port": 8000,
+        "ports": {"ws": 8001},
+    })
+    assert cfg3.port == 8000
+    assert cfg3.ports == {"default": 8000, "ws": 8001}
+    assert cfg3.ports_list == [8000, 8001]
+
+    # 4. Legacy single port
+    cfg4 = RepoConfig.from_dict("server", {
+        "bare": str(tmp_path / "server.git"),
+        "checkout": "server",
+        "port": 5000,
+    })
+    assert cfg4.port == 5000
+    assert cfg4.ports == {"default": 5000}
+    assert cfg4.ports_list == [5000]
+
+
+def test_multi_port_allocation_and_collision_auto_healing(tmp_path):
+    """Test allocate_workspace_ports with multi-port service and socket collision."""
+    import socket
+    from ws.network import allocate_workspace_ports
+
+    repos = {
+        "server": RepoConfig(
+            name="server",
+            bare=tmp_path / "server.git",
+            checkout="server",
+            ports={"http": 28080, "ws": 28081},
+        ),
+        "mobile": RepoConfig(
+            name="mobile",
+            bare=tmp_path / "mobile.git",
+            checkout="mobile",
+            port=19000,
+        ),
+    }
+
+    # Slot 0 allocation
+    allocated_s0, shifted_s0 = allocate_workspace_ports(repos, slot=0)
+    assert allocated_s0["server"] == 28080
+    assert allocated_s0["server:http"] == 28080
+    assert allocated_s0["server:ws"] == 28081
+    assert allocated_s0["mobile"] == 19000
+    assert shifted_s0 is False
+
+    # Slot 1 allocation (+10 offset)
+    allocated_s1, shifted_s1 = allocate_workspace_ports(repos, slot=1)
+    assert allocated_s1["server"] == 28090
+    assert allocated_s1["server:http"] == 28090
+    assert allocated_s1["server:ws"] == 28091
+    assert allocated_s1["mobile"] == 19010
+
+    # Collision test on a sub-port
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("0.0.0.0", 0))
+    busy_port = sock.getsockname()[1]
+    sock.listen(1)
+
+    try:
+        collide_repos = {
+            "api": RepoConfig(
+                name="api",
+                bare=tmp_path / "api.git",
+                checkout="api",
+                ports={"http": busy_port, "ws": busy_port + 1},
+            )
+        }
+        alloc, shifted = allocate_workspace_ports(
+            collide_repos,
+            slot=0,
+            recorded_leases={"api": {"http": busy_port, "ws": busy_port + 1}},
+        )
+        assert alloc["api:http"] != busy_port
+        assert alloc["api:ws"] == busy_port + 1 or alloc["api:ws"] != alloc["api:http"]
+        assert shifted is True
+    finally:
+        sock.close()
+
+
+def test_multi_port_template_string_and_discovery(tmp_path):
+    """Test template placeholder expansion and service discovery files for multi-port services."""
+    service_ports = {
+        "server": 8090,
+        "server:http": 8090,
+        "server:ws": 8091,
+        "server:metrics": 9090,
+        "mobile": 8092,
+    }
+
+    template = (
+        "HTTP=${SERVICE_PORT:server:http} "
+        "WS=${SERVICE_PORT:server:ws} "
+        "ALL=${SERVICE_PORTS:server} "
+        "DEF=${SERVICE_PORT:server} "
+        "URL_WS=${SERVICE_URL_LAN:server:ws} "
+        "URL_HTTP=${SERVICE_URL:server:http} "
+        "PUB_WS=${SERVICE_URL_PUBLIC:server:ws}"
+    )
+
+    resolved = EnvEngine.resolve_template_string(
+        template,
+        workspace_name="feat-auth",
+        repo_name="mobile",
+        slot=1,
+        service_ports=service_ports,
+        lan_ip="192.168.1.50",
+        public_host="myhost.tunnel.org",
+    )
+
+    assert "HTTP=8090" in resolved
+    assert "WS=8091" in resolved
+    assert "ALL=8090,8091,9090" in resolved
+    assert "DEF=8090" in resolved
+    assert "URL_WS=http://192.168.1.50:8091" in resolved
+    assert "URL_HTTP=http://127.0.0.1:8090" in resolved
+    assert "PUB_WS=http://myhost.tunnel.org:8091" in resolved
+
+    # Test writing and reading service discovery files
+    ws_dir = tmp_path / "workspaces" / "feat-auth"
+    ws_dir.mkdir(parents=True)
+
+    json_path = EnvEngine.write_service_discovery_files(
+        workspace_dir=ws_dir,
+        workspace_name="feat-auth",
+        slot=1,
+        service_ports=service_ports,
+        lan_ip="192.168.1.50",
+        public_host="myhost.tunnel.org",
+    )
+
+    assert json_path.exists()
+    descriptor = EnvEngine.read_service_discovery_descriptor(ws_dir)
+    assert descriptor is not None
+    srv_data = descriptor["services"]["server"]
+    assert srv_data["port"] == 8090
+    assert srv_data["ports"] == {"http": 8090, "ws": 8091, "metrics": 9090}
+    assert srv_data["urls"]["ws"]["port"] == 8091
+    assert srv_data["urls"]["ws"]["url_lan"] == "http://192.168.1.50:8091"
+
+    env_path = ws_dir / ".ws" / "services.env"
+    assert env_path.exists()
+    env_content = env_path.read_text()
+    assert "WS_SERVICE_SERVER_PORT=8090" in env_content
+    assert "WS_SERVICE_SERVER_PORTS=8090,8091,9090" in env_content
+    assert "WS_SERVICE_SERVER_PORT_WS=8091" in env_content
+    assert "WS_SERVICE_SERVER_URL_WS=http://127.0.0.1:8091" in env_content
+    assert "WS_SERVICE_SERVER_URL_LAN_WS=http://192.168.1.50:8091" in env_content
+    assert "WS_SERVICE_SERVER_PORT_METRICS=9090" in env_content
+
+
+def test_is_port_available_detects_ipv4_and_ipv6_listeners():
+    """Verify is_port_available accurately detects ports occupied by IPv4 and IPv6 listeners."""
+    import socket
+    from ws.network import is_port_available
+
+    # 1. Test IPv4 listener detection (127.0.0.1)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s4:
+        s4.bind(("127.0.0.1", 0))
+        s4.listen(1)
+        port4 = s4.getsockname()[1]
+        assert is_port_available(port4) is False
+
+    # 2. Test IPv6 listener detection (::1) if supported
+    if socket.has_ipv6:
+        try:
+            with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s6:
+                s6.bind(("::1", 0))
+                s6.listen(1)
+                port6 = s6.getsockname()[1]
+                assert is_port_available(port6) is False
+        except OSError:
+            pass
+
+    # 3. Test that an unbound port reports available
+    # Allocate a temporary port and close it to get a free port number
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as free_sock:
+        free_sock.bind(("127.0.0.1", 0))
+        free_port = free_sock.getsockname()[1]
+    # Once closed, it should be available
+    assert is_port_available(free_port) is True
+
+
+
+
 
 
 

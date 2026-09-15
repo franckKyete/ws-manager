@@ -116,6 +116,7 @@ class ManagedService:
     start_time: float = field(default_factory=time.time)
     line_buffer: VirtualLineBuffer = field(default_factory=VirtualLineBuffer)
     detected_port: int | None = None
+    detected_ports: list[int] = field(default_factory=list)
     log_file: Path | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -330,13 +331,15 @@ class ProcessSupervisor:
                         line = raw.decode("utf-8", errors="replace")
 
                         # Port sniffing
-                        if not service.detected_port:
-                            match = PORT_REGEX.search(line)
-                            if match:
-                                for g in match.groups():
-                                    if g and g.isdigit() and int(g) > 80:
-                                        service.detected_port = int(g)
-                                        break
+                        match = PORT_REGEX.search(line)
+                        if match:
+                            for g in match.groups():
+                                if g and g.isdigit() and int(g) > 80:
+                                    p_val = int(g)
+                                    if p_val not in service.detected_ports:
+                                        service.detected_ports.append(p_val)
+                                    if not service.detected_port:
+                                        service.detected_port = p_val
 
                         with service.lock:
                             service.line_buffer.feed(line)
@@ -359,13 +362,15 @@ class ProcessSupervisor:
                             break
 
                         # Port sniffing
-                        if not service.detected_port:
-                            match = PORT_REGEX.search(line)
-                            if match:
-                                for g in match.groups():
-                                    if g and g.isdigit() and int(g) > 80:
-                                        service.detected_port = int(g)
-                                        break
+                        match = PORT_REGEX.search(line)
+                        if match:
+                            for g in match.groups():
+                                if g and g.isdigit() and int(g) > 80:
+                                    p_val = int(g)
+                                    if p_val not in service.detected_ports:
+                                        service.detected_ports.append(p_val)
+                                    if not service.detected_port:
+                                        service.detected_port = p_val
 
                         with service.lock:
                             service.line_buffer.feed(line)

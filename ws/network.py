@@ -212,17 +212,69 @@ def get_lan_ip(preferred_interface: str | None = None, explicit_ip: str | None =
 
 
 def is_port_available(port: int, host: str = "0.0.0.0") -> bool:
-    """Check if a TCP port is currently free and bindable on the specified interface."""
+    """Check if a TCP port is currently free and bindable across IPv4 and IPv6 interfaces.
+
+    Performs active connection tests to catch running services and clean socket binding
+    and listening checks without SO_REUSEADDR to prevent false availability reporting.
+    """
     if port <= 0 or port > 65535:
         return False
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    import errno
+
+    # 1. Active connection probes to detect listening services (e.g. on 127.0.0.1 or ::1)
+    targets_to_probe: list[tuple[int, str]] = []
+    if host in ("0.0.0.0", "127.0.0.1", "localhost", ""):
+        targets_to_probe.append((socket.AF_INET, "127.0.0.1"))
+        if socket.has_ipv6:
+            targets_to_probe.append((socket.AF_INET6, "::1"))
+    elif host == "::":
+        if socket.has_ipv6:
+            targets_to_probe.append((socket.AF_INET6, "::1"))
+        targets_to_probe.append((socket.AF_INET, "127.0.0.1"))
+    else:
+        af = socket.AF_INET6 if ":" in host else socket.AF_INET
+        targets_to_probe.append((af, host))
+
+    for family, ip in targets_to_probe:
         try:
-            s.bind((host, port))
-            return True
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.05)
+                if probe.connect_ex((ip, port)) == 0:
+                    return False
+        except (OSError, socket.error):
+            pass
+
+    # 2. IPv4 Bind & Listen probe (without SO_REUSEADDR)
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind((host if host not in ("::", "") else "0.0.0.0", port))
+            s.listen(1)
+    except OSError:
+        return False
+
+    # If checking 0.0.0.0, also verify 127.0.0.1 bind
+    if host in ("0.0.0.0", ""):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", port))
+                s.listen(1)
         except OSError:
             return False
+
+    # 3. IPv6 Bind & Listen probe (if IPv6 supported)
+    if socket.has_ipv6 and host in ("0.0.0.0", "::", "127.0.0.1", "localhost", ""):
+        try:
+            with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s6:
+                s6.bind(("::1", port))
+                s6.listen(1)
+        except OSError as e:
+            if getattr(e, "errno", None) in (errno.EADDRINUSE, errno.EACCES):
+                return False
+        except Exception:
+            pass
+
+    return True
 
 
 def find_available_port(
@@ -259,42 +311,86 @@ def compute_preferred_service_port(base_port: int, slot: int, repo_index: int = 
 def allocate_workspace_ports(
     repositories: Mapping[str, Any],
     slot: int = 0,
-    recorded_leases: dict[str, int] | None = None,
+    recorded_leases: dict[str, Any] | None = None,
 ) -> tuple[dict[str, int], bool]:
     """Allocate non-conflicting, verified bindable ports for all services in a workspace.
 
+    Supports both single-port and multi-port service configurations.
+
     Returns:
-        tuple[dict[repo_name, allocated_port], bool shifted]
+        tuple[dict[key, allocated_port], bool shifted]
+        Dictionary contains primary ports (e.g. 'server'), named sub-ports (e.g. 'server:http', 'server:ws'),
+        and indexed sub-ports (e.g. 'server:0', 'server:1').
         shifted is True if any port differed from recorded_leases due to collision auto-healing.
     """
     allocated: dict[str, int] = {}
     used_ports: set[int] = set()
     recorded = recorded_leases or {}
     has_shifted = False
+    global_port_idx = 0
 
     sorted_repos = sorted(repositories.keys())
-    for idx, r_name in enumerate(sorted_repos):
+    for r_name in sorted_repos:
         repo_cfg = repositories[r_name]
-        base_port = getattr(repo_cfg, "port", None) or 0
-        preferred = recorded.get(r_name) or compute_preferred_service_port(base_port, slot, idx)
 
-        # Probe candidate port for availability
-        live_port = find_available_port(
-            preferred_port=preferred,
-            max_attempts=50,
-            exclude_ports=used_ports,
-        )
+        # Extract ports configuration
+        ports_dict: dict[str, int] = {}
+        if hasattr(repo_cfg, "ports") and isinstance(repo_cfg.ports, dict) and repo_cfg.ports:
+            ports_dict = dict(repo_cfg.ports)
+        elif isinstance(repo_cfg, dict) and isinstance(repo_cfg.get("ports"), dict) and repo_cfg.get("ports"):
+            ports_dict = {str(k): int(v) for k, v in repo_cfg["ports"].items()}
+        elif hasattr(repo_cfg, "ports") and isinstance(repo_cfg.ports, list) and repo_cfg.ports:
+            ports_dict = {"default" if i == 0 else f"port_{i}": int(v) for i, v in enumerate(repo_cfg.ports)}
+        elif isinstance(repo_cfg, dict) and isinstance(repo_cfg.get("ports"), list) and repo_cfg.get("ports"):
+            ports_dict = {"default" if i == 0 else f"port_{i}": int(v) for i, v in enumerate(repo_cfg["ports"])}
 
-        if recorded.get(r_name) and live_port != recorded[r_name]:
-            has_shifted = True
-            logger.info(
-                "Service '%s' port shifted from %d to %d due to active socket collision.",
-                r_name,
-                recorded[r_name],
-                live_port,
+        base_port = getattr(repo_cfg, "port", None) if not isinstance(repo_cfg, dict) else repo_cfg.get("port")
+        if base_port is not None and "default" not in ports_dict and not ports_dict:
+            ports_dict["default"] = int(base_port)
+        elif not ports_dict:
+            ports_dict["default"] = int(base_port or 0)
+
+        # Iterate over all defined sub-ports for this repo
+        repo_allocated_ports: list[tuple[str, int]] = []
+        for sub_idx, (port_label, b_port) in enumerate(ports_dict.items()):
+            # Check recorded leases
+            rec_port = None
+            if isinstance(recorded.get(r_name), dict):
+                rec_port = recorded[r_name].get(port_label)
+            elif f"{r_name}:{port_label}" in recorded:
+                rec_port = recorded[f"{r_name}:{port_label}"]
+            elif sub_idx == 0 and isinstance(recorded.get(r_name), int):
+                rec_port = recorded[r_name]
+
+            preferred = rec_port or compute_preferred_service_port(b_port, slot, global_port_idx)
+            global_port_idx += 1
+
+            # Probe candidate port for availability
+            live_port = find_available_port(
+                preferred_port=preferred,
+                max_attempts=50,
+                exclude_ports=used_ports,
             )
 
-        allocated[r_name] = live_port
-        used_ports.add(live_port)
+            if rec_port and live_port != rec_port:
+                has_shifted = True
+                logger.info(
+                    "Service '%s' (port '%s') shifted from %d to %d due to active socket collision.",
+                    r_name,
+                    port_label,
+                    rec_port,
+                    live_port,
+                )
+
+            used_ports.add(live_port)
+            repo_allocated_ports.append((port_label, live_port))
+
+            # Store aliases
+            allocated[f"{r_name}:{port_label}"] = live_port
+            allocated[f"{r_name}:{sub_idx}"] = live_port
+
+        # Primary port is the first allocated port
+        if repo_allocated_ports:
+            allocated[r_name] = repo_allocated_ports[0][1]
 
     return allocated, has_shifted
