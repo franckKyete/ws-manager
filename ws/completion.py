@@ -467,7 +467,7 @@ _ws() {
     esac
 }
 
-_ws "$@"
+compdef _ws ws 2>/dev/null || true
 """
 
 

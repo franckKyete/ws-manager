@@ -45,6 +45,7 @@ class RepoConfig:
     checkout: str
     url: str | None = None
     port: int | None = None
+    ports: dict[str, int] = field(default_factory=dict)
     env: dict[str, str] = field(default_factory=dict)
     secret_env: dict[str, str] = field(default_factory=dict)
     private_env: dict[str, str] = field(default_factory=dict)
@@ -55,6 +56,15 @@ class RepoConfig:
     secrets: list[str] = field(default_factory=list)
     copy_files: list[Any] = field(default_factory=list)
 
+    @property
+    def ports_list(self) -> list[int]:
+        """Return list of all configured base ports in deterministic order."""
+        if self.ports:
+            return list(self.ports.values())
+        if self.port is not None:
+            return [self.port]
+        return []
+
     def to_dict(self) -> dict[str, Any]:
         res: dict[str, Any] = {
             "bare": str(self.bare),
@@ -64,6 +74,8 @@ class RepoConfig:
             res["url"] = self.url
         if self.port:
             res["port"] = self.port
+        if self.ports:
+            res["ports"] = dict(self.ports)
         if self.env:
             res["env"] = dict(self.env)
         if self.secret_env:
@@ -139,12 +151,40 @@ class RepoConfig:
         copy_files_raw = data.get("copy_files", data.get("files", []))
         copy_files_list = list(copy_files_raw) if isinstance(copy_files_raw, list) else ([copy_files_raw] if copy_files_raw else [])
 
-        port_val = None
-        if data.get("port"):
+        ports_dict: dict[str, int] = {}
+        ports_raw = data.get("ports")
+        if isinstance(ports_raw, dict):
+            for k, v in ports_raw.items():
+                try:
+                    ports_dict[str(k)] = int(v)
+                except (ValueError, TypeError):
+                    pass
+        elif isinstance(ports_raw, list):
+            for idx, v in enumerate(ports_raw):
+                try:
+                    p_val = int(v)
+                    k_name = "default" if idx == 0 else f"port_{idx}"
+                    ports_dict[k_name] = p_val
+                except (ValueError, TypeError):
+                    pass
+        elif isinstance(ports_raw, (int, str)):
             try:
-                port_val = int(data["port"])
+                ports_dict["default"] = int(ports_raw)
             except (ValueError, TypeError):
                 pass
+
+        port_val = None
+        if data.get("port") is not None:
+            try:
+                port_val = int(data["port"])
+                if "default" not in ports_dict and not ports_dict:
+                    ports_dict["default"] = port_val
+                elif "default" not in ports_dict:
+                    ports_dict = {"default": port_val, **ports_dict}
+            except (ValueError, TypeError):
+                pass
+        elif ports_dict:
+            port_val = next(iter(ports_dict.values()))
 
         launch_val = data.get("launch", data.get("command"))
         return cls(
@@ -153,6 +193,7 @@ class RepoConfig:
             checkout=str(checkout_val),
             url=str(url_val) if url_val else None,
             port=port_val,
+            ports=ports_dict,
             env=public_env,
             secret_env=secret_env,
             private_env=private_env,

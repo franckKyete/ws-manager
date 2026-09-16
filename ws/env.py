@@ -92,50 +92,86 @@ class EnvEngine:
                 result = result.replace("${WORKTREE_DIR}", str(wt_path))
                 result = result.replace("${WT_DIR}", str(wt_path))
 
-        # 3. Dynamic service discovery placeholders (${SERVICE_PORT:<name>}, ${SERVICE_URL:<name>}, etc.)
+        # 3. Dynamic service discovery placeholders (${SERVICE_PORT:<name>}, ${SERVICE_PORTS:<name>}, ${SERVICE_URL:<name>}, etc.)
         ports_map = service_ports or {}
 
-        # Pattern: ${SERVICE_PORT:repo_name}
-        svc_port_pattern = re.compile(r"\$\{SERVICE_PORT:([a-zA-Z0-9_-]+)\}")
+        # Pattern: ${SERVICE_PORTS:repo_name} -> comma-separated string of all allocated ports
+        svc_ports_pattern = re.compile(r"\$\{SERVICE_PORTS:([a-zA-Z0-9_-]+)\}")
+        def svc_ports_repl(m: re.Match) -> str:
+            target_svc = m.group(1)
+            found_ports: list[str] = []
+            # Collect named sub-ports in priority
+            sub_keys = [k for k in ports_map if k.startswith(f"{target_svc}:") and not k.split(":", 1)[1].isdigit()]
+            if not sub_keys:
+                sub_keys = [k for k in ports_map if k.startswith(f"{target_svc}:")]
+            if sub_keys:
+                for k in sub_keys:
+                    p_str = str(ports_map[k])
+                    if p_str not in found_ports:
+                        found_ports.append(p_str)
+            elif target_svc in ports_map:
+                found_ports.append(str(ports_map[target_svc]))
+            else:
+                found_ports.append(str(compute_preferred_service_port(0, slot)))
+            return ",".join(found_ports)
+        result = svc_ports_pattern.sub(svc_ports_repl, result)
+
+        # Pattern: ${SERVICE_PORT:repo_name} or ${SERVICE_PORT:repo_name:subport}
+        svc_port_pattern = re.compile(r"\$\{SERVICE_PORT:([a-zA-Z0-9_-]+)(?::([a-zA-Z0-9_-]+))?\}")
         def svc_port_repl(m: re.Match) -> str:
             target_svc = m.group(1)
+            sub_key = m.group(2)
+            if sub_key and f"{target_svc}:{sub_key}" in ports_map:
+                return str(ports_map[f"{target_svc}:{sub_key}"])
             if target_svc in ports_map:
                 return str(ports_map[target_svc])
             return str(compute_preferred_service_port(0, slot))
         result = svc_port_pattern.sub(svc_port_repl, result)
 
-        # Pattern: ${SERVICE_URL_LAN:repo_name}
-        svc_url_lan_pattern = re.compile(r"\$\{SERVICE_URL_LAN:([a-zA-Z0-9_-]+)\}")
+        # Pattern: ${SERVICE_URL_LAN:repo_name} or ${SERVICE_URL_LAN:repo_name:subport}
+        svc_url_lan_pattern = re.compile(r"\$\{SERVICE_URL_LAN:([a-zA-Z0-9_-]+)(?::([a-zA-Z0-9_-]+))?\}")
         def svc_url_lan_repl(m: re.Match) -> str:
             target_svc = m.group(1)
-            port_val = ports_map.get(target_svc, compute_preferred_service_port(0, slot))
+            sub_key = m.group(2)
+            if sub_key and f"{target_svc}:{sub_key}" in ports_map:
+                port_val = ports_map[f"{target_svc}:{sub_key}"]
+            else:
+                port_val = ports_map.get(target_svc, compute_preferred_service_port(0, slot))
             return f"http://{resolved_lan_ip}:{port_val}"
         result = svc_url_lan_pattern.sub(svc_url_lan_repl, result)
 
-        # Pattern: ${SERVICE_URL_PUBLIC:repo_name}
-        svc_url_public_pattern = re.compile(r"\$\{SERVICE_URL_PUBLIC:([a-zA-Z0-9_-]+)\}")
+        # Pattern: ${SERVICE_URL_PUBLIC:repo_name} or ${SERVICE_URL_PUBLIC:repo_name:subport}
+        svc_url_public_pattern = re.compile(r"\$\{SERVICE_URL_PUBLIC:([a-zA-Z0-9_-]+)(?::([a-zA-Z0-9_-]+))?\}")
         def svc_url_public_repl(m: re.Match) -> str:
             target_svc = m.group(1)
-            port_val = ports_map.get(target_svc, compute_preferred_service_port(0, slot))
+            sub_key = m.group(2)
+            if sub_key and f"{target_svc}:{sub_key}" in ports_map:
+                port_val = ports_map[f"{target_svc}:{sub_key}"]
+            else:
+                port_val = ports_map.get(target_svc, compute_preferred_service_port(0, slot))
             scheme = "https" if "https://" in resolved_public_host else "http"
             clean_host = resolved_public_host.replace("https://", "").replace("http://", "")
             return f"{scheme}://{clean_host}:{port_val}"
         result = svc_url_public_pattern.sub(svc_url_public_repl, result)
 
-        # Pattern: ${SERVICE_URL:repo_name} / ${SERVICE_URL_LOCAL:repo_name}
-        svc_url_pattern = re.compile(r"\$\{SERVICE_URL(_LOCAL)?:([a-zA-Z0-9_-]+)\}")
+        # Pattern: ${SERVICE_URL:repo_name} or ${SERVICE_URL:repo_name:subport}
+        svc_url_pattern = re.compile(r"\$\{SERVICE_URL(_LOCAL)?:([a-zA-Z0-9_-]+)(?::([a-zA-Z0-9_-]+))?\}")
         def svc_url_repl(m: re.Match) -> str:
             target_svc = m.group(2)
-            port_val = ports_map.get(target_svc, compute_preferred_service_port(0, slot))
+            sub_key = m.group(3)
+            if sub_key and f"{target_svc}:{sub_key}" in ports_map:
+                port_val = ports_map[f"{target_svc}:{sub_key}"]
+            else:
+                port_val = ports_map.get(target_svc, compute_preferred_service_port(0, slot))
             return f"http://127.0.0.1:{port_val}"
         result = svc_url_pattern.sub(svc_url_repl, result)
 
         # Pattern: ${SERVICE_HOST_LAN:repo_name}
-        result = re.sub(r"\$\{SERVICE_HOST_LAN:([a-zA-Z0-9_-]+)\}", resolved_lan_ip, result)
+        result = re.sub(r"\$\{SERVICE_HOST_LAN:([a-zA-Z0-9_-]+)(?::[a-zA-Z0-9_-]+)?\}", resolved_lan_ip, result)
         # Pattern: ${SERVICE_HOST_PUBLIC:repo_name}
-        result = re.sub(r"\$\{SERVICE_HOST_PUBLIC:([a-zA-Z0-9_-]+)\}", resolved_public_host, result)
+        result = re.sub(r"\$\{SERVICE_HOST_PUBLIC:([a-zA-Z0-9_-]+)(?::[a-zA-Z0-9_-]+)?\}", resolved_public_host, result)
         # Pattern: ${SERVICE_HOST:repo_name} / ${SERVICE_HOST_LOCAL:repo_name}
-        result = re.sub(r"\$\{SERVICE_HOST(_LOCAL)?:([a-zA-Z0-9_-]+)\}", "127.0.0.1", result)
+        result = re.sub(r"\$\{SERVICE_HOST(_LOCAL)?:([a-zA-Z0-9_-]+)(?::[a-zA-Z0-9_-]+)?\}", "127.0.0.1", result)
 
         # 4. Dynamic port offset: ${PORT:3000} -> 3000 + slot * 10
         port_pattern = re.compile(r"\$\{PORT:(\d+)\}")
@@ -240,31 +276,83 @@ class EnvEngine:
             f"WS_PUBLIC_HOST={pub_host}\n\n",
         ]
 
-        for s_name, s_port in sorted(service_ports.items()):
-            s_upper = s_name.upper().replace("-", "_")
-            url_local = f"http://127.0.0.1:{s_port}"
-            url_lan = f"http://{resolved_lan_ip}:{s_port}"
-            url_pub = f"http://{pub_host}:{s_port}"
+        base_services = [k for k in sorted(service_ports.keys()) if ":" not in k]
+        if not base_services and service_ports:
+            base_services = sorted(set(k.split(":")[0] for k in service_ports.keys()))
+
+        for s_name in base_services:
+            primary_port = service_ports.get(s_name, 0)
+            sub_ports: dict[str, int] = {}
+            named_sub_keys = [k for k in service_ports if k.startswith(f"{s_name}:") and not k.split(":", 1)[1].isdigit()]
+            if named_sub_keys:
+                for k in named_sub_keys:
+                    sub_label = k.split(":", 1)[1]
+                    sub_ports[sub_label] = service_ports[k]
+            else:
+                indexed_sub_keys = [k for k in service_ports if k.startswith(f"{s_name}:")]
+                if indexed_sub_keys:
+                    for k in indexed_sub_keys:
+                        sub_label = k.split(":", 1)[1]
+                        sub_ports[sub_label] = service_ports[k]
+                elif primary_port > 0:
+                    sub_ports["default"] = primary_port
+
+            if "default" not in sub_ports and primary_port > 0 and len(sub_ports) == 1:
+                sub_ports["default"] = primary_port
+
+            urls_data: dict[str, dict[str, Any]] = {}
+            all_ports_list: list[str] = []
+            for p_label, p_val in sub_ports.items():
+                p_str = str(p_val)
+                if p_str not in all_ports_list:
+                    all_ports_list.append(p_str)
+                urls_data[p_label] = {
+                    "port": p_val,
+                    "url_local": f"http://127.0.0.1:{p_val}",
+                    "url_lan": f"http://{resolved_lan_ip}:{p_val}",
+                    "url_public": f"http://{pub_host}:{p_val}",
+                }
+
+            if not all_ports_list and primary_port > 0:
+                all_ports_list.append(str(primary_port))
+
+            url_local = f"http://127.0.0.1:{primary_port}"
+            url_lan = f"http://{resolved_lan_ip}:{primary_port}"
+            url_pub = f"http://{pub_host}:{primary_port}"
 
             services_data[s_name] = {
-                "port": s_port,
+                "port": primary_port,
+                "ports": sub_ports,
                 "url": url_local,
                 "url_local": url_local,
                 "url_lan": url_lan,
                 "url_public": url_pub,
+                "urls": urls_data,
                 "host_local": "127.0.0.1",
                 "host_lan": resolved_lan_ip,
                 "host_public": pub_host,
                 "pid": running_pids.get(s_name),
             }
 
-            env_lines.append(f"WS_SERVICE_{s_upper}_PORT={s_port}\n")
+            s_upper = s_name.upper().replace("-", "_")
+            env_lines.append(f"WS_SERVICE_{s_upper}_PORT={primary_port}\n")
+            env_lines.append(f"WS_SERVICE_{s_upper}_PORTS={','.join(all_ports_list)}\n")
             env_lines.append(f"WS_SERVICE_{s_upper}_URL={url_local}\n")
             env_lines.append(f"WS_SERVICE_{s_upper}_URL_LOCAL={url_local}\n")
             env_lines.append(f"WS_SERVICE_{s_upper}_URL_LAN={url_lan}\n")
             env_lines.append(f"WS_SERVICE_{s_upper}_URL_PUBLIC={url_pub}\n")
             env_lines.append(f"WS_SERVICE_{s_upper}_HOST=127.0.0.1\n")
-            env_lines.append(f"WS_SERVICE_{s_upper}_HOST_LAN={resolved_lan_ip}\n\n")
+            env_lines.append(f"WS_SERVICE_{s_upper}_HOST_LAN={resolved_lan_ip}\n")
+
+            for p_label, p_val in sub_ports.items():
+                if p_label != "default":
+                    lbl_upper = p_label.upper().replace("-", "_")
+                    env_lines.append(f"WS_SERVICE_{s_upper}_PORT_{lbl_upper}={p_val}\n")
+                    env_lines.append(f"WS_SERVICE_{s_upper}_URL_{lbl_upper}=http://127.0.0.1:{p_val}\n")
+                    env_lines.append(f"WS_SERVICE_{s_upper}_URL_LOCAL_{lbl_upper}=http://127.0.0.1:{p_val}\n")
+                    env_lines.append(f"WS_SERVICE_{s_upper}_URL_LAN_{lbl_upper}=http://{resolved_lan_ip}:{p_val}\n")
+                    env_lines.append(f"WS_SERVICE_{s_upper}_URL_PUBLIC_{lbl_upper}=http://{pub_host}:{p_val}\n")
+            env_lines.append("\n")
 
         json_path = ws_meta_dir / "services.json"
         descriptor = {
@@ -431,7 +519,13 @@ class EnvEngine:
             if ws_dir:
                 descriptor = cls.read_service_discovery_descriptor(ws_dir / workspace_name)
             if descriptor and "services" in descriptor:
-                ports_map = {s_k: s_v["port"] for s_k, s_v in descriptor["services"].items() if "port" in s_v}
+                ports_map = {}
+                for s_k, s_v in descriptor["services"].items():
+                    if "port" in s_v:
+                        ports_map[s_k] = s_v["port"]
+                    if "ports" in s_v and isinstance(s_v["ports"], dict):
+                        for p_k, p_v in s_v["ports"].items():
+                            ports_map[f"{s_k}:{p_k}"] = p_v
             else:
                 ports_map, _ = allocate_workspace_ports(app_config.repositories, slot)
 
@@ -442,16 +536,46 @@ class EnvEngine:
         merged["WS_PUBLIC_HOST"] = resolved_public_host
 
         # Auto-inject all sibling services' discovery variables
-        for s_k, s_port in sorted(ports_map.items()):
-            s_upper = s_k.upper().replace("-", "_")
-            merged[f"WS_SERVICE_{s_upper}_PORT"] = str(s_port)
-            merged[f"WS_SERVICE_{s_upper}_URL"] = f"http://127.0.0.1:{s_port}"
-            merged[f"WS_SERVICE_{s_upper}_URL_LOCAL"] = f"http://127.0.0.1:{s_port}"
-            merged[f"WS_SERVICE_{s_upper}_URL_LAN"] = f"http://{resolved_lan_ip}:{s_port}"
-            merged[f"WS_SERVICE_{s_upper}_URL_PUBLIC"] = f"http://{resolved_public_host}:{s_port}"
+        base_services = [k for k in sorted(ports_map.keys()) if ":" not in k]
+        for s_name in base_services:
+            primary_port = ports_map[s_name]
+            s_upper = s_name.upper().replace("-", "_")
+
+            sub_ports: dict[str, int] = {}
+            named_sub_keys = [k for k in ports_map if k.startswith(f"{s_name}:") and not k.split(":", 1)[1].isdigit()]
+            if named_sub_keys:
+                for k in named_sub_keys:
+                    sub_ports[k.split(":", 1)[1]] = ports_map[k]
+            else:
+                indexed_sub_keys = [k for k in ports_map if k.startswith(f"{s_name}:")]
+                if indexed_sub_keys:
+                    for k in indexed_sub_keys:
+                        sub_ports[k.split(":", 1)[1]] = ports_map[k]
+                elif primary_port > 0:
+                    sub_ports["default"] = primary_port
+
+            all_ports_list = [str(p) for p in sub_ports.values()]
+            if not all_ports_list and primary_port > 0:
+                all_ports_list.append(str(primary_port))
+
+            merged[f"WS_SERVICE_{s_upper}_PORT"] = str(primary_port)
+            merged[f"WS_SERVICE_{s_upper}_PORTS"] = ",".join(all_ports_list)
+            merged[f"WS_SERVICE_{s_upper}_URL"] = f"http://127.0.0.1:{primary_port}"
+            merged[f"WS_SERVICE_{s_upper}_URL_LOCAL"] = f"http://127.0.0.1:{primary_port}"
+            merged[f"WS_SERVICE_{s_upper}_URL_LAN"] = f"http://{resolved_lan_ip}:{primary_port}"
+            merged[f"WS_SERVICE_{s_upper}_URL_PUBLIC"] = f"http://{resolved_public_host}:{primary_port}"
             merged[f"WS_SERVICE_{s_upper}_HOST"] = "127.0.0.1"
             merged[f"WS_SERVICE_{s_upper}_HOST_LAN"] = resolved_lan_ip
             merged[f"WS_SERVICE_{s_upper}_HOST_PUBLIC"] = resolved_public_host
+
+            for p_label, p_val in sub_ports.items():
+                if p_label != "default":
+                    lbl_upper = p_label.upper().replace("-", "_")
+                    merged[f"WS_SERVICE_{s_upper}_PORT_{lbl_upper}"] = str(p_val)
+                    merged[f"WS_SERVICE_{s_upper}_URL_{lbl_upper}"] = f"http://127.0.0.1:{p_val}"
+                    merged[f"WS_SERVICE_{s_upper}_URL_LOCAL_{lbl_upper}"] = f"http://127.0.0.1:{p_val}"
+                    merged[f"WS_SERVICE_{s_upper}_URL_LAN_{lbl_upper}"] = f"http://{resolved_lan_ip}:{p_val}"
+                    merged[f"WS_SERVICE_{s_upper}_URL_PUBLIC_{lbl_upper}"] = f"http://{resolved_public_host}:{p_val}"
 
         # 1. Top-level global environment store (public, secret, private)
         all_global_env = {}

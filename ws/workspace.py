@@ -421,9 +421,11 @@ class WorkspaceManager:
                             results[s_name] = {
                                 "status": svc.get("status", "running"),
                                 "port": svc.get("port") or s_disc.get("port", 0),
+                                "ports": svc.get("ports") or s_disc.get("ports", {}),
                                 "url_local": s_disc.get("url_local"),
                                 "url_lan": s_disc.get("url_lan"),
                                 "url_public": s_disc.get("url_public"),
+                                "urls": s_disc.get("urls", {}),
                                 "engine": active_engine,
                             }
                         return results
@@ -439,9 +441,11 @@ class WorkspaceManager:
                 results[p] = {
                     "status": "running",
                     "port": s_disc.get("port", 0),
+                    "ports": s_disc.get("ports", {}),
                     "url_local": s_disc.get("url_local"),
                     "url_lan": s_disc.get("url_lan"),
                     "url_public": s_disc.get("url_public"),
+                    "urls": s_disc.get("urls", {}),
                     "engine": "tmux",
                 }
 

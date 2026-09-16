@@ -20,6 +20,7 @@ def test_generate_completion_scripts():
     assert "_ws_workspaces" in zsh_script
     assert "_ws_repositories" in zsh_script
     assert "start|launch|run" in zsh_script
+    assert "compdef _ws ws" in zsh_script
 
     bash_script = generate_completion_script("bash")
     assert "complete -F _ws_completion ws" in bash_script

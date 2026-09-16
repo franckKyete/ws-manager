@@ -272,6 +272,7 @@ class WorkspaceTUI:
             status = service.status
             exit_code = service.exit_code
             port = service.detected_port
+            ports = list(service.detected_ports)
 
         # Status badge
         if status == "running":
@@ -283,7 +284,13 @@ class WorkspaceTUI:
         else:
             status_badge = f"[bold red]✘ FAILED (exit {exit_code or 1})[/bold red]"
 
-        port_str = f" [bold magenta]http://localhost:{port}[/bold magenta]" if port else ""
+        if len(ports) > 1:
+            port_formatted = ", ".join(f":{p}" for p in ports)
+            port_str = f" [bold magenta]ports {port_formatted}[/bold magenta]"
+        elif port:
+            port_str = f" [bold magenta]http://localhost:{port}[/bold magenta]"
+        else:
+            port_str = ""
 
         # Calculate exact number of visible log lines inside inner box
         usable_lines_count = max(1, (height - 2) if height else 15)
