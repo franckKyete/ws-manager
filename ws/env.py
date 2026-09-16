@@ -577,8 +577,13 @@ class EnvEngine:
                     merged[f"WS_SERVICE_{s_upper}_URL_LAN_{lbl_upper}"] = f"http://{resolved_lan_ip}:{p_val}"
                     merged[f"WS_SERVICE_{s_upper}_URL_PUBLIC_{lbl_upper}"] = f"http://{resolved_public_host}:{p_val}"
 
-        # 1. Top-level global environment store
-        for k, v in app_config.global_env.items():
+        # 1. Top-level global environment store (public, secret, private)
+        all_global_env = {}
+        all_global_env.update(app_config.global_env)
+        all_global_env.update(app_config.secret_env)
+        all_global_env.update(app_config.private_env)
+
+        for k, v in all_global_env.items():
             merged[k] = cls.resolve_template_string(
                 v,
                 workspace_name,
@@ -607,11 +612,15 @@ class EnvEngine:
                 interface=interface,
             )
 
-
-        # 3. Repository-scoped environment overrides
+        # 3. Repository-scoped environment overrides (public, secret, private)
         if repo_name in app_config.repositories:
             repo_cfg = app_config.repositories[repo_name]
-            for k, v in repo_cfg.env.items():
+            all_repo_env = {}
+            all_repo_env.update(repo_cfg.env)
+            all_repo_env.update(repo_cfg.secret_env)
+            all_repo_env.update(repo_cfg.private_env)
+
+            for k, v in all_repo_env.items():
                 merged[k] = cls.resolve_template_string(
                     v,
                     workspace_name,

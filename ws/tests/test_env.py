@@ -406,8 +406,9 @@ def test_network_interface_discovery_and_wireless_priority(monkeypatch):
     assert get_lan_ip() == "172.20.10.5"
 
 
-def test_resolve_repo_env_interface_and_ip_override(tmp_path):
+def test_resolve_repo_env_interface_and_ip_override(tmp_path, monkeypatch):
     """Test EnvEngine.resolve_repo_env with interface and lan_ip parameters."""
+    monkeypatch.setattr("ws.network.is_port_available", lambda port, host="0.0.0.0": True)
     app_cfg = AppConfig(
         repositories={
             "mobile": RepoConfig(

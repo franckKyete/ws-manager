@@ -266,6 +266,8 @@ _ws_commands() {
         'fetch:Fetch updates across all bare repositories'
         'sync:Prune stale worktrees and sync repository refs'
         'doctor:Run system diagnostics and health checks'
+        'hub:Collaborate, clone, publish, sync, and manage secrets with wshub'
+        'clone:Clone and replicate a project from wshub'
         'completion:Generate or install shell completion scripts'
     )
     _describe -t commands 'command' commands
@@ -482,7 +484,7 @@ _ws_completion() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="create new list ls info delete rm remove status exec push pull start launch run attach stop kill restart logs bridge shell enter open env setup repo lock unlock project init add fetch sync doctor completion"
+    local commands="create new list ls info delete rm remove status exec push pull start launch run attach stop kill restart logs bridge shell enter open env setup repo lock unlock project init add fetch sync doctor hub clone completion"
 
     # Top-level command completion
     if [[ $cword -eq 1 ]]; then
