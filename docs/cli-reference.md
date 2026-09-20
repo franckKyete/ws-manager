@@ -583,7 +583,94 @@ ws completion bash
 ---
 
 
-## 6. Universal Inverted Syntax
+---
+
+## 6. wshub Cloud Collaboration & Replication
+
+### `ws hub login`
+Authenticates with the `wshub` server and saves an encrypted session token in `~/.config/ws/hub.yml`.
+
+```bash
+ws hub login [--url <url>] [--token <pat_token>] [-u <username>] [-p <password>]
+```
+
+### `ws hub whoami`
+Displays the currently authenticated wshub user profile and active server.
+
+```bash
+ws hub whoami
+```
+
+### `ws hub clone` / `ws clone`
+Clones project blueprint, downloads secret files from the vault, and clones all bare repositories in one command.
+
+```bash
+ws clone <org/project> [target_dir]
+ws hub clone <org/project> [target_dir]
+```
+
+### `ws hub publish`
+Publishes a local workspace project blueprint (`repositories.yml`) and automation scripts to wshub.
+
+```bash
+ws hub publish [<org/project>] [-d <description>]
+```
+
+### `ws hub push`
+Pushes local project configuration updates as a new linear blueprint revision.
+
+```bash
+ws hub push [-m <changelog_message>]
+```
+
+### `ws hub pull`
+Pulls the latest blueprint from wshub and clones any newly added bare repositories.
+
+```bash
+ws hub pull
+```
+
+### `ws hub sync`
+Synchronizes project blueprint, clones missing bare repositories, and updates vault secrets/files in one step.
+
+```bash
+ws hub sync
+```
+
+### `ws hub state save` & `ws hub resume`
+Snapshots active workspace branches, locks, and local configuration for cross-machine resumption.
+
+```bash
+# Save workspace state to hub
+ws hub state save @develop
+
+# Re-hydrate exact workspace state on another machine
+ws hub resume @develop
+```
+
+### `ws hub secret`
+Manages zero-Git encrypted project secrets and sensitive files (`.pem`, `.json`, certificates) in the wshub AES-256-GCM vault.
+
+```bash
+# List secrets
+ws hub secret list
+
+# Set a secret key
+ws hub secret set <KEY> <VALUE> [--repo <repo_name>]
+
+# Get a secret value
+ws hub secret get <KEY> [--repo <repo_name>]
+
+# Upload a sensitive file
+ws hub secret upload <file_path>
+
+# Pull and decrypt files to local files/ directory
+ws hub secret pull
+```
+
+---
+
+## 7. Universal Inverted Syntax
 
 All workspace-scoped commands support the intuitive **`ws @<name> <verb>`** inverted syntax:
 
@@ -600,3 +687,4 @@ ws @develop push
 ws @develop pull
 ws @develop stop
 ```
+
