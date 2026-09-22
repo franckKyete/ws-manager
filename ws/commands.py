@@ -12,17 +12,30 @@ from ws.workspace import WorkspaceManager
 logger = logging.getLogger("ws.commands")
 
 
-def cmd_new(manager: WorkspaceManager, name: str, repo_specs: Sequence[RepoSpec], run_setup: bool = False) -> None:
+def cmd_new(
+    manager: WorkspaceManager,
+    name: str,
+    repo_specs: Sequence[RepoSpec],
+    run_setup: bool = False,
+    tmux_cmd: str | None = None,
+    no_tmux: bool = False,
+) -> None:
     """Execute 'ws create' / 'ws new' command."""
-    manager.create_workspace(name=name, repo_specs=repo_specs)
+    manager.create_workspace(name=name, repo_specs=repo_specs, tmux_cmd=tmux_cmd, no_tmux=no_tmux)
     if run_setup:
         results = manager.setup_workspace(workspace_name=name)
         OutputHandler.print_setup_summary(workspace_name=name, results=results)
 
 
-def cmd_create(manager: WorkspaceManager, config_file: Path | str, run_setup: bool = False) -> None:
+def cmd_create(
+    manager: WorkspaceManager,
+    config_file: Path | str,
+    run_setup: bool = False,
+    tmux_cmd: str | None = None,
+    no_tmux: bool = False,
+) -> None:
     """Execute 'ws create -f <config.yml>' command using a YAML configuration file."""
-    meta = manager.create_workspace_from_config(config_file=config_file)
+    meta = manager.create_workspace_from_config(config_file=config_file, tmux_cmd=tmux_cmd, no_tmux=no_tmux)
     if run_setup:
         results = manager.setup_workspace(workspace_name=meta.name)
         OutputHandler.print_setup_summary(workspace_name=meta.name, results=results)
@@ -56,6 +69,7 @@ def cmd_end(
     no_merge: bool = False,
     delete_branch: bool = False,
     target_branch: str | None = None,
+    no_tmux: bool = False,
 ) -> None:
     """Execute 'ws end' / 'ws close' command to safely terminate and remove a workspace."""
     manager.end_workspace(
@@ -64,12 +78,21 @@ def cmd_end(
         no_merge=no_merge,
         delete_branch=delete_branch,
         target_branch=target_branch,
+        no_tmux=no_tmux,
     )
 
 
 cmd_close = cmd_end
 cmd_delete = cmd_end
 cmd_remove = cmd_end
+
+
+def cmd_focus(manager: WorkspaceManager, name: str) -> None:
+    """Execute 'ws focus' / 'ws switch' command to focus/switch to a workspace tmux window."""
+    manager.focus_workspace(name=name)
+
+
+cmd_switch = cmd_focus
 
 
 def cmd_shell(

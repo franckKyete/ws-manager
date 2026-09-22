@@ -24,29 +24,135 @@ class TmuxLauncher:
         return f"ws-{project_name}"
 
     @classmethod
-    def is_session_running(cls, project_name: str) -> bool:
-        """Check if project tmux session is active."""
+    def is_session_active(cls, session_name: str) -> bool:
+        """Check if a specific tmux session name is active."""
         if not cls.is_available():
             return False
         res = subprocess.run(
-            ["tmux", "has-session", "-t", cls.session_name(project_name)],
+            ["tmux", "has-session", "-t", session_name],
             capture_output=True,
             check=False,
         )
         return res.returncode == 0
 
     @classmethod
-    def is_window_running(cls, project_name: str, workspace_name: str) -> bool:
-        """Check if workspace window exists inside project tmux session."""
-        if not cls.is_session_running(project_name):
+    def is_session_running(cls, project_name: str) -> bool:
+        """Check if project tmux session is active."""
+        return cls.is_session_active(cls.session_name(project_name))
+
+    @classmethod
+    def is_window_active(cls, session_name: str, window_name: str) -> bool:
+        """Check if a specific window exists inside a tmux session."""
+        if not cls.is_session_active(session_name):
             return False
         res = subprocess.run(
-            ["tmux", "list-windows", "-t", cls.session_name(project_name), "-F", "#{window_name}"],
+            ["tmux", "list-windows", "-t", session_name, "-F", "#{window_name}"],
             capture_output=True,
             text=True,
             check=False,
         )
-        return workspace_name in res.stdout.splitlines()
+        return window_name in [line.strip() for line in res.stdout.splitlines()]
+
+    @classmethod
+    def is_window_running(cls, project_name: str, workspace_name: str) -> bool:
+        """Check if workspace window exists inside project tmux session."""
+        return cls.is_window_active(cls.session_name(project_name), workspace_name)
+
+    @classmethod
+    def create_workspace_window(
+        cls,
+        session_name: str,
+        window_name: str,
+        cwd: Path | str,
+        command: str | None = None,
+        switch: bool = False,
+    ) -> bool:
+        """Create a workspace window in the project tmux session.
+
+        Spawns a new session if the session does not exist, or adds a new window
+        in the background (-d) to the existing session.
+        """
+        if not cls.is_available():
+            logger.warning("tmux is not installed or available on PATH")
+            return False
+
+        cwd_str = str(cwd)
+        if not cls.is_session_active(session_name):
+            # Create session with this workspace as the initial window
+            cmd = [
+                "tmux", "new-session", "-d",
+                "-s", session_name,
+                "-n", window_name,
+                "-c", cwd_str,
+            ]
+            if command:
+                cmd.append(command)
+            logger.debug("Creating new tmux session '%s' with window '%s': %s", session_name, window_name, cmd)
+            res = subprocess.run(cmd, capture_output=True, check=False)
+            if res.returncode != 0:
+                logger.error(
+                    "Failed to create tmux session '%s': %s",
+                    session_name,
+                    res.stderr.decode("utf-8", errors="replace"),
+                )
+                return False
+        else:
+            # Session exists: check if window exists
+            if not cls.is_window_active(session_name, window_name):
+                cmd = [
+                    "tmux", "new-window", "-d",
+                    "-t", session_name,
+                    "-n", window_name,
+                    "-c", cwd_str,
+                ]
+                if command:
+                    cmd.append(command)
+                logger.debug("Creating tmux window '%s' in session '%s': %s", window_name, session_name, cmd)
+                res = subprocess.run(cmd, capture_output=True, check=False)
+                if res.returncode != 0:
+                    logger.error(
+                        "Failed to create tmux window '%s' in session '%s': %s",
+                        window_name,
+                        session_name,
+                        res.stderr.decode("utf-8", errors="replace"),
+                    )
+                    return False
+
+        if switch:
+            cls.focus_workspace_window(session_name, window_name)
+
+        return True
+
+    @classmethod
+    def kill_workspace_window(cls, session_name: str, window_name: str) -> bool:
+        """Kill workspace window in the specified tmux session."""
+        if not cls.is_session_active(session_name):
+            return False
+        if not cls.is_window_active(session_name, window_name):
+            return False
+
+        target = f"{session_name}:{window_name}"
+        res = subprocess.run(
+            ["tmux", "kill-window", "-t", target],
+            capture_output=True,
+            check=False,
+        )
+        return res.returncode == 0
+
+    @classmethod
+    def focus_workspace_window(cls, session_name: str, window_name: str) -> bool:
+        """Focus/switch to a workspace window inside tmux or attach to it from outside."""
+        if not cls.is_available() or not cls.is_session_active(session_name):
+            return False
+
+        target = f"{session_name}:{window_name}"
+        subprocess.run(["tmux", "select-window", "-t", target], capture_output=True, check=False)
+
+        if os.environ.get("TMUX"):
+            subprocess.run(["tmux", "switch-client", "-t", target], check=False)
+        else:
+            os.system(f"tmux attach-session -t {target}")
+        return True
 
     @classmethod
     def list_panes(cls, project_name: str, workspace_name: str) -> list[str]:

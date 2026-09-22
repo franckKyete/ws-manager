@@ -29,7 +29,7 @@ _(Note: The CLI is forgiving and also accepts un-prefixed names or `+repo`, `:re
 Creates a new workspace containing Git worktrees for specified repositories.
 
 ```bash
-ws create @<name> [%repo[:branch[:mode]] ...] [--all] [--existing] [-f <file.yml>] [--setup]
+ws create @<name> [%repo[:branch[:mode]] ...] [--all] [--existing] [-f <file.yml>] [--setup] [--cmd <command>] [--no-tmux]
 ```
 
 #### Arguments & Options
@@ -42,12 +42,17 @@ ws create @<name> [%repo[:branch[:mode]] ...] [--all] [--existing] [-f <file.yml
 | `--existing`              | Flag       | Default to checking out existing branches rather than creating new `feature/<name>` branches. |
 | `-f`, `--file <file.yml>` | Option     | Path to a declarative workspace YAML configuration file.                                      |
 | `--setup`                 | Flag       | Automatically run setup scripts and environment sync immediately after workspace creation.    |
+| `--cmd`, `--command <cmd>`| Option     | Command to run inside the workspace Tmux window upon creation (overrides config default).     |
+| `--no-tmux`               | Flag       | Skip opening a dedicated Tmux window for this workspace.                                      |
 
 #### Examples
 
 ```bash
 # Create workspace with feature/auth branches across server and mobile:
 ws create @feat-auth %server %mobile
+
+# Create workspace and launch custom editor inside Tmux window:
+ws create @feat-auth %server %mobile --cmd "nvim"
 
 # Checkout existing develop branch for server, create new feature/auth branch for mobile:
 ws create @feat-auth %server:develop:existing %mobile:feature/auth:new
@@ -89,17 +94,36 @@ ws info @develop
 
 ---
 
+### `ws focus` / `ws switch`
+
+Focuses or switches to the workspace's Tmux window. If run inside Tmux, selects and switches client to that window. If run outside Tmux, attaches to the project session focused on that window.
+
+```bash
+ws focus @<name>
+# or
+ws switch @<name>
+```
+
+#### Example
+
+```bash
+ws focus @feat-auth
+```
+
+---
+
 ### `ws end` / `ws close`
 
 Safely ends and closes a workspace. Before pruning Git worktrees and removing the workspace directory, `ws end` verifies that:
 1. **All work has been committed**: Checks for uncommitted changes (staged, unstaged, and untracked files). Prevents closing if uncommitted work is found.
 2. **All work has been merged**: Checks if feature branches have been merged into their base branch (defaulting to the bare repo default branch, e.g. `main` or `master`). Prevents closing if unmerged commits exist.
 3. **Session successfully stopped**: If services are running under the background daemon, ensures the session is cleanly terminated before files are deleted.
+4. **Tmux window closed**: If configured, cleanly terminates the workspace's Tmux window.
 
 ```bash
-ws end @<name> [--no-merge] [-f|--force] [--delete-branch] [-t|--target <branch>]
+ws end @<name> [--no-merge] [-f|--force] [--delete-branch] [-t|--target <branch>] [--no-tmux]
 # or alias
-ws close @<name> [--no-merge] [-f|--force] [--delete-branch] [-t|--target <branch>]
+ws close @<name> [--no-merge] [-f|--force] [--delete-branch] [-t|--target <branch>] [--no-tmux]
 ```
 
 #### Options
@@ -110,6 +134,7 @@ ws close @<name> [--no-merge] [-f|--force] [--delete-branch] [-t|--target <branc
 | `-f`, `--force` | Force close regardless of uncommitted changes, unmerged branches, or active sessions. |
 | `--delete-branch` | Also delete the Git feature branch from the bare repository store. |
 | `-t`, `--target`, `--target-branch <branch>` | Base branch to check merge status against (default: repo default branch, e.g. `main` or `master`). |
+| `--no-tmux` | Skip closing the workspace's Tmux window. |
 
 #### Examples
 

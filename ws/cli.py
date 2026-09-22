@@ -21,6 +21,8 @@ from ws.commands import (
     cmd_env,
     cmd_exec,
     cmd_fetch,
+    cmd_focus,
+    cmd_switch,
     cmd_info,
     cmd_init,
     cmd_internal_complete,
@@ -77,7 +79,7 @@ KNOWN_COMMANDS = {
     "create", "new", "list", "ls", "info", "end", "close", "delete", "rm", "remove",
     "status", "exec", "push", "pull", "start", "launch", "run",
     "attach", "stop", "kill", "restart", "logs", "shell", "enter", "open",
-    "env", "setup", "bridge",
+    "env", "setup", "bridge", "focus", "switch",
     "repo", "lock", "unlock", "workspace",
     "project", "init", "add", "fetch", "sync", "doctor", "antigravity",
     "completion", "_complete",
@@ -168,6 +170,15 @@ def parse_create_workspace_args(
             continue
         elif arg == "--new":
             global_existing = False
+            idx += 1
+            continue
+        elif arg == "--no-tmux":
+            idx += 1
+            continue
+        elif arg in ("--cmd", "--command"):
+            idx += 2
+            continue
+        elif arg.startswith("--cmd=") or arg.startswith("--command="):
             idx += 1
             continue
 
@@ -376,6 +387,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_create.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_create.add_argument("-f", "--file", type=str, default=None, help="Path to workspace YAML configuration file")
     p_create.add_argument("--setup", action="store_true", help="Run setup scripts and sync environment variables after creation")
+    p_create.add_argument("--cmd", "--command", dest="tmux_cmd", type=str, default=None, help="Command to run in workspace tmux window")
+    p_create.add_argument("--no-tmux", action="store_true", help="Skip creating a tmux window for this workspace")
 
     # Command: ws list / ws ls
     subparsers.add_parser("list", aliases=["ls"], help="List all workspaces")
@@ -383,6 +396,14 @@ def build_parser() -> argparse.ArgumentParser:
     # Command: ws info @<name>
     p_info = subparsers.add_parser("info", help="Display details and live process status for a workspace")
     p_info.add_argument("name", help="Workspace name (@<name>)")
+
+    # Command: ws focus @<name> / ws switch @<name>
+    p_focus = subparsers.add_parser(
+        "focus",
+        aliases=["switch"],
+        help="Focus or switch to workspace tmux window",
+    )
+    p_focus.add_argument("name", help="Workspace name (@<name>)")
 
     # Command: ws end @<name> / ws close @<name>
     p_end = subparsers.add_parser(
@@ -415,6 +436,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Target base branch to check merge status against (default: repo default branch, e.g. main)",
+    )
+    p_end.add_argument(
+        "--no-tmux",
+        action="store_true",
+        help="Skip removing the workspace tmux window",
     )
 
     # Command: ws status @<name>
@@ -749,8 +775,16 @@ def main(sys_args: Sequence[str] | None = None) -> int:
 
         # 2. Workspace creation
         elif args.subcommand in ("create", "new"):
+            tmux_cmd = getattr(args, "tmux_cmd", None)
+            no_tmux = getattr(args, "no_tmux", False)
             if getattr(args, "file", None):
-                cmd_create(manager=manager, config_file=args.file, run_setup=args.setup)
+                cmd_create(
+                    manager=manager,
+                    config_file=args.file,
+                    run_setup=args.setup,
+                    tmux_cmd=tmux_cmd,
+                    no_tmux=no_tmux,
+                )
             else:
                 if not args.name:
                     raise WSException("Workspace name (@<name>) is required for 'ws create' unless '-f/--file' is used.")
@@ -761,7 +795,14 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                     raw_args=raw_create_args,
                     repositories=app_config.repositories,
                 )
-                cmd_new(manager=manager, name=ws_name, repo_specs=repo_specs, run_setup=args.setup)
+                cmd_new(
+                    manager=manager,
+                    name=ws_name,
+                    repo_specs=repo_specs,
+                    run_setup=args.setup,
+                    tmux_cmd=tmux_cmd,
+                    no_tmux=no_tmux,
+                )
 
         # 3. Workspace listing & inspection
         elif args.subcommand in ("list", "ls"):
@@ -769,6 +810,9 @@ def main(sys_args: Sequence[str] | None = None) -> int:
 
         elif args.subcommand == "info":
             cmd_info(manager=manager, name=clean_workspace(args.name))
+
+        elif args.subcommand in ("focus", "switch"):
+            cmd_focus(manager=manager, name=clean_workspace(args.name))
 
         elif args.subcommand in ("end", "close", "delete", "rm", "remove"):
             cmd_end(
@@ -778,6 +822,7 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                 no_merge=args.no_merge,
                 delete_branch=args.delete_branch,
                 target_branch=getattr(args, "target_branch", None),
+                no_tmux=getattr(args, "no_tmux", False),
             )
 
         elif args.subcommand == "status":

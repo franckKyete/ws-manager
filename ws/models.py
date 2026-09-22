@@ -293,6 +293,40 @@ class WorkspaceMetadata:
 
 
 @dataclass
+class TmuxConfig:
+    """Tmux session and workspace window configuration."""
+
+    session: str
+    command: str | None = None
+    switch: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        res: dict[str, Any] = {"session": self.session}
+        if self.command:
+            res["command"] = self.command
+        if self.switch:
+            res["switch"] = self.switch
+        return res
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | str) -> "TmuxConfig":
+        if isinstance(data, str):
+            return cls(session=data.strip())
+        if isinstance(data, dict):
+            session_val = data.get("session") or data.get("session_name") or data.get("name")
+            if not session_val:
+                raise ValueError("Tmux configuration must include 'session'")
+            command_val = data.get("command") or data.get("cmd")
+            switch_val = data.get("switch", False)
+            return cls(
+                session=str(session_val).strip(),
+                command=str(command_val).strip() if command_val else None,
+                switch=bool(switch_val),
+            )
+        raise ValueError("Invalid tmux configuration format")
+
+
+@dataclass
 class AppConfig:
     """Application-wide configuration."""
 
@@ -306,6 +340,7 @@ class AppConfig:
     setup: list[str] = field(default_factory=list)
     secrets: list[str] = field(default_factory=list)
     copy_files: list[Any] = field(default_factory=list)
+    tmux: TmuxConfig | None = None
 
     @property
     def project_root(self) -> Path:

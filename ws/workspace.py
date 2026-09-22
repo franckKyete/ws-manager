@@ -16,6 +16,7 @@ from ws.env import EnvEngine
 from ws.exceptions import (
     BranchAlreadyExistsException,
     BranchNotFoundException,
+    ConfigException,
     RepoAlreadyInWorkspaceException,
     RepoFrozenException,
     RepoNotInWorkspaceException,
@@ -127,7 +128,13 @@ class WorkspaceManager:
                     f"Branch '{spec.branch}' does not exist in repository '{spec.name}' ({repo_cfg.bare.name})"
                 )
 
-    def create_workspace(self, name: str, repo_specs: Sequence[RepoSpec]) -> WorkspaceMetadata:
+    def create_workspace(
+        self,
+        name: str,
+        repo_specs: Sequence[RepoSpec],
+        tmux_cmd: str | None = None,
+        no_tmux: bool = False,
+    ) -> WorkspaceMetadata:
         """Create a new workspace with git worktrees and metadata."""
         # 1. Validation
         self.validate_creation(name, repo_specs)
@@ -195,6 +202,29 @@ class WorkspaceManager:
 
             self._save_metadata(ws_dir, metadata)
 
+            # Step D: Open tmux workspace window if configured
+            if self.config.tmux and not no_tmux:
+                from ws.multiplexer import TmuxLauncher
+                sess_name = self.config.tmux.session
+                win_cmd = tmux_cmd if tmux_cmd is not None else self.config.tmux.command
+                do_switch = self.config.tmux.switch
+
+                rollback.add(
+                    f"Close tmux window {name}",
+                    lambda s=sess_name, w=name: TmuxLauncher.kill_workspace_window(s, w),
+                )
+                opened = TmuxLauncher.create_workspace_window(
+                    session_name=sess_name,
+                    window_name=name,
+                    cwd=ws_dir,
+                    command=win_cmd,
+                    switch=do_switch,
+                )
+                if opened:
+                    OutputHandler.print_info(
+                        f"Opened tmux window '[bold cyan]@{name}[/bold cyan]' in session '[bold cyan]{sess_name}[/bold cyan]'"
+                    )
+
             # Success! Clear rollback stack
             rollback.clear()
             OutputHandler.print_creation_success(name, ws_dir)
@@ -206,7 +236,12 @@ class WorkspaceManager:
             OutputHandler.print_rollback_notice(str(e), restored=True)
             raise RollbackException(f"Failed to create workspace '{name}': {e}") from e
 
-    def create_workspace_from_config(self, config_file: Path | str) -> WorkspaceMetadata:
+    def create_workspace_from_config(
+        self,
+        config_file: Path | str,
+        tmux_cmd: str | None = None,
+        no_tmux: bool = False,
+    ) -> WorkspaceMetadata:
         """Create a workspace defined by a YAML configuration file."""
         cfg_path = Path(config_file).resolve()
         if not cfg_path.exists() or not cfg_path.is_file():
@@ -249,7 +284,7 @@ class WorkspaceManager:
                 )
             )
 
-        return self.create_workspace(name=str(name), repo_specs=specs)
+        return self.create_workspace(name=str(name), repo_specs=specs, tmux_cmd=tmux_cmd, no_tmux=no_tmux)
 
     def remove_workspace(self, name: str, quiet: bool = False) -> None:
         """Remove a workspace, removing all its git worktrees and metadata."""
@@ -396,6 +431,7 @@ class WorkspaceManager:
         no_merge: bool = False,
         delete_branch: bool = False,
         target_branch: str | None = None,
+        no_tmux: bool = False,
     ) -> None:
         """Safely end (close and remove) a workspace with Git and session safety checks."""
         self.validate_environment()
@@ -500,7 +536,27 @@ class WorkspaceManager:
                 except Exception as e:
                     logger.warning("Could not delete branch '%s' in %s: %s", br_name, b_path, e)
 
+        # 6. Remove workspace tmux window if tmux is configured
+        if self.config.tmux and not no_tmux:
+            from ws.multiplexer import TmuxLauncher
+            sess_name = self.config.tmux.session
+            if TmuxLauncher.is_window_active(sess_name, name):
+                TmuxLauncher.kill_workspace_window(sess_name, name)
+                OutputHandler.print_info(f"Closed tmux window '@{name}' in session '{sess_name}'")
+
         OutputHandler.print_success(f"Safely closed workspace '@{name}'")
+
+    def focus_workspace(self, name: str) -> bool:
+        """Focus or switch to workspace tmux window."""
+        if not self.config.tmux:
+            raise ConfigException("Tmux integration is not configured. Add 'tmux:' to repositories.yml.")
+        sess_name = self.config.tmux.session
+        from ws.multiplexer import TmuxLauncher
+        if not TmuxLauncher.is_available():
+            raise WSException("tmux executable not found on PATH.")
+        if not TmuxLauncher.is_window_active(sess_name, name):
+            raise WorkspaceNotFoundException(f"Tmux window '@{name}' not found in session '{sess_name}'.")
+        return TmuxLauncher.focus_workspace_window(sess_name, name)
 
     def list_workspaces(self) -> list[WorkspaceMetadata]:
         """List all managed workspaces."""

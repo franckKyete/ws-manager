@@ -236,6 +236,8 @@ _ws_commands() {
         'list:List all active workspaces'
         'ls:List all active workspaces (alias for list)'
         'info:Display workspace details, ports, and live processes'
+        'focus:Focus or switch to workspace tmux window'
+        'switch:Switch to workspace tmux window (alias for focus)'
         'end:Safely end and close a workspace, pruning worktrees'
         'close:Safely close a workspace (alias for end)'
         'delete:Safely delete a workspace (alias for end)'
@@ -316,32 +318,35 @@ _ws() {
                     '(-m --mode)'{-m,--mode}'[Engine backend]:mode:(tui tmux zellij)' \\
                     '1:service:_ws_repositories'
                 ;;
+            focus|switch)
+                return
+                ;;
             restart|logs|bridge|shell|enter|open|lock|unlock)
                 _arguments '*:service:_ws_repositories'
                 ;;
             env)
-                _arguments \\
-                    '--sync[Sync environment variables into .env files]' \\
-                    '--interface[Network interface name or type]:interface:_ws_interfaces' \\
-                    '--iface[Network interface name or type]:interface:_ws_interfaces' \\
-                    '--ip[Explicit host LAN IP address override]:ip:' \\
-                    '--lan-ip[Explicit host LAN IP address override]:ip:' \\
+                _arguments \
+                    '--sync[Sync environment variables into .env files]' \
+                    '--interface[Network interface name or type]:interface:_ws_interfaces' \
+                    '--iface[Network interface name or type]:interface:_ws_interfaces' \
+                    '--ip[Explicit host LAN IP address override]:ip:' \
+                    '--lan-ip[Explicit host LAN IP address override]:ip:' \
                     '*:service:_ws_repositories'
                 ;;
             setup)
-                _arguments \\
-                    '--all[Setup all repositories in workspace]' \\
-                    '--dry-run[Print setup commands without running them]' \\
-                    '--skip-scripts[Only sync environment variables without running scripts]' \\
-                    '--interface[Network interface name or type]:interface:_ws_interfaces' \\
-                    '--iface[Network interface name or type]:interface:_ws_interfaces' \\
-                    '--ip[Explicit host LAN IP address override]:ip:' \\
-                    '--lan-ip[Explicit host LAN IP address override]:ip:' \\
+                _arguments \
+                    '--all[Setup all repositories in workspace]' \
+                    '--dry-run[Print setup commands without running them]' \
+                    '--skip-scripts[Only sync environment variables without running scripts]' \
+                    '--interface[Network interface name or type]:interface:_ws_interfaces' \
+                    '--iface[Network interface name or type]:interface:_ws_interfaces' \
+                    '--ip[Explicit host LAN IP address override]:ip:' \
+                    '--lan-ip[Explicit host LAN IP address override]:ip:' \
                     '*:service:_ws_repositories'
                 ;;
             push|pull)
-                _arguments \\
-                    '--remote[Git remote name]:remote:(origin upstream)' \\
+                _arguments \
+                    '--remote[Git remote name]:remote:(origin upstream)' \
                     '*:service:_ws_repositories'
                 ;;
             *)
@@ -351,12 +356,12 @@ _ws() {
         return
     fi
 
-    _arguments -C \\
-        '(-v --verbose)'{-v,--verbose}'[Enable debug logging]' \\
-        '(-c --config)'{-c,--config}'[Path to repositories configuration file]:config file:_files' \\
-        '(-w --workspaces-dir)'{-w,--workspaces-dir}'[Directory for storing workspaces]:directory:_files -/' \\
-        '--version[Show version information]' \\
-        '1: :->command_or_workspace' \\
+    _arguments -C \
+        '(-v --verbose)'{-v,--verbose}'[Enable debug logging]' \
+        '(-c --config)'{-c,--config}'[Path to repositories configuration file]:config file:_files' \
+        '(-w --workspaces-dir)'{-w,--workspaces-dir}'[Directory for storing workspaces]:directory:_files -/' \
+        '--version[Show version information]' \
+        '1: :->command_or_workspace' \
         '*:: :->args'
 
     case $state in
@@ -368,40 +373,46 @@ _ws() {
             local cmd="${words[2]}"
             case "$cmd" in
                 create|new)
-                    _arguments \\
-                        '1:workspace name:_ws_workspaces_all' \\
-                        '(-f --file)'{-f,--file}'[Path to workspace YAML file]:YAML file:_files -g "*.yml *.yaml"' \\
-                        '--setup[Run setup scripts after creation]' \\
-                        '--all[Include all repositories]' \\
-                        '--existing[Checkout existing branches]' \\
+                    _arguments \
+                        '1:workspace name:_ws_workspaces_all' \
+                        '(-f --file)'{-f,--file}'[Path to workspace YAML file]:YAML file:_files -g "*.yml *.yaml"' \
+                        '--setup[Run setup scripts after creation]' \
+                        '--cmd[Command to run in workspace tmux window]:command:' \
+                        '--command[Command to run in workspace tmux window]:command:' \
+                        '--no-tmux[Skip creating a tmux window for this workspace]' \
+                        '--all[Include all repositories]' \
+                        '--existing[Checkout existing branches]' \
                         '*:repository specification:_ws_repositories'
                     ;;
+                focus|switch)
+                    _arguments '1:workspace:_ws_workspaces_all'
+                    ;;
                 start|launch|run)
-                    _arguments \\
-                        '1:workspace:_ws_workspaces_all' \\
-                        '--all[Start all services in workspace]' \\
-                        '--tmux[Launch in Tmux session with vertical panes]' \\
-                        '(-z --zellij)'{-z,--zellij}'[Launch in Zellij session]' \\
-                        '(-t --terminal)'{-t,--terminal}'[Launch in separate terminal windows]' \\
-                        '--stream[Stream raw stdout/stderr without interactive TUI]' \\
-                        '(-d --daemon)'{-d,--daemon}'[Launch detached in background daemon]' \\
-                        '(-s --switch)'{-s,--switch}'[Zero-downtime switch to presentation engine]' \\
-                        '(-m --mode)'{-m,--mode}'[Multiplexer mode]:mode:(tui tmux zellij terminal stream daemon)' \\
-                        '--interface[Network interface name or type]:interface:_ws_interfaces' \\
-                        '--iface[Network interface name or type]:interface:_ws_interfaces' \\
-                        '--ip[Explicit host LAN IP address override]:ip:' \\
-                        '--lan-ip[Explicit host LAN IP address override]:ip:' \\
-                        '--attach[Focus single service]:service:_ws_repositories' \\
+                    _arguments \
+                        '1:workspace:_ws_workspaces_all' \
+                        '--all[Start all services in workspace]' \
+                        '--tmux[Launch in Tmux session with vertical panes]' \
+                        '(-z --zellij)'{-z,--zellij}'[Launch in Zellij session]' \
+                        '(-t --terminal)'{-t,--terminal}'[Launch in separate terminal windows]' \
+                        '--stream[Stream raw stdout/stderr without interactive TUI]' \
+                        '(-d --daemon)'{-d,--daemon}'[Launch detached in background daemon]' \
+                        '(-s --switch)'{-s,--switch}'[Zero-downtime switch to presentation engine]' \
+                        '(-m --mode)'{-m,--mode}'[Multiplexer mode]:mode:(tui tmux zellij terminal stream daemon)' \
+                        '--interface[Network interface name or type]:interface:_ws_interfaces' \
+                        '--iface[Network interface name or type]:interface:_ws_interfaces' \
+                        '--ip[Explicit host LAN IP address override]:ip:' \
+                        '--lan-ip[Explicit host LAN IP address override]:ip:' \
+                        '--attach[Focus single service]:service:_ws_repositories' \
                         '*:services:_ws_repositories'
                     ;;
                 attach)
-                    _arguments \\
-                        '1:workspace:_ws_workspaces_all' \\
-                        '2:service:_ws_repositories' \\
-                        '--all[Attach in multi-pane grid view]' \\
-                        '--tmux[Attach using Tmux backend]' \\
-                        '(-z --zellij)'{-z,--zellij}'[Attach using Zellij backend]' \\
-                        '(-s --switch)'{-s,--switch}'[Zero-downtime switch presentation engine]' \\
+                    _arguments \
+                        '1:workspace:_ws_workspaces_all' \
+                        '2:service:_ws_repositories' \
+                        '--all[Attach in multi-pane grid view]' \
+                        '--tmux[Attach using Tmux backend]' \
+                        '(-z --zellij)'{-z,--zellij}'[Attach using Zellij backend]' \
+                        '(-s --switch)'{-s,--switch}'[Zero-downtime switch presentation engine]' \
                         '(-m --mode)'{-m,--mode}'[Engine backend]:mode:(tui tmux zellij)'
                     ;;
                 end|close|delete|rm|remove)
@@ -410,7 +421,8 @@ _ws() {
                         '--no-merge[Allow closing unmerged branches]' \
                         '(-f --force)'{-f,--force}'[Force close regardless of uncommitted or unmerged work]' \
                         '--delete-branch[Delete Git branch from bare store]' \
-                        '(-t --target --target-branch)'{-t,--target,--target-branch}'[Target base branch]:target:'
+                        '(-t --target --target-branch)'{-t,--target,--target-branch}'[Target base branch]:target:' \
+                        '--no-tmux[Skip removing the workspace tmux window]'
                     ;;
                 info|status|stop|kill)
                     _arguments '1:workspace:_ws_workspaces_all'
