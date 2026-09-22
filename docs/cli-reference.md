@@ -2,7 +2,7 @@
 
 `ws` provides a clean, intentional command hierarchy organized across 5 core domains:
 
-1. [**Workspace Lifecycle**](#1-workspace-lifecycle) (`create`, `list`, `info`, `delete`, `status`, `exec`, `push`, `pull`)
+1. [**Workspace Lifecycle**](#1-workspace-lifecycle) (`create`, `list`, `info`, `end`, `close`, `status`, `exec`, `push`, `pull`)
 2. [**Worktree & Repository Operations**](#2-worktree--repository-operations) (`repo add`, `repo remove`, `repo lock`, `repo unlock`, `lock`, `unlock`)
 3. [**Service Runtime & Multiplexers**](#3-service-runtime--multiplexers) (`start`, `attach`, `stop`, `restart`, `logs`, `bridge`)
 4. [**Developer Shell & Environment**](#4-developer-shell--environment) (`shell`, `env`, `setup`)
@@ -89,20 +89,45 @@ ws info @develop
 
 ---
 
-### `ws delete` / `ws rm` / `ws remove`
+### `ws end` / `ws close`
 
-Safely terminates running background daemon processes, prunes all associated Git worktrees, and removes the workspace directory from disk.
+Safely ends and closes a workspace. Before pruning Git worktrees and removing the workspace directory, `ws end` verifies that:
+1. **All work has been committed**: Checks for uncommitted changes (staged, unstaged, and untracked files). Prevents closing if uncommitted work is found.
+2. **All work has been merged**: Checks if feature branches have been merged into their base branch (defaulting to the bare repo default branch, e.g. `main` or `master`). Prevents closing if unmerged commits exist.
+3. **Session successfully stopped**: If services are running under the background daemon, ensures the session is cleanly terminated before files are deleted.
 
 ```bash
-ws delete @<name>
-# or
-ws rm @<name>
+ws end @<name> [--no-merge] [-f|--force] [--delete-branch] [-t|--target <branch>]
+# or alias
+ws close @<name> [--no-merge] [-f|--force] [--delete-branch] [-t|--target <branch>]
 ```
 
-#### Example
+#### Options
+
+| Flag | Description |
+| :--- | :--- |
+| `--no-merge` | Allow closing even if committed changes have not been merged into the base branch. *(Note: `--no-merge` does NOT bypass uncommitted work!)* |
+| `-f`, `--force` | Force close regardless of uncommitted changes, unmerged branches, or active sessions. |
+| `--delete-branch` | Also delete the Git feature branch from the bare repository store. |
+| `-t`, `--target`, `--target-branch <branch>` | Base branch to check merge status against (default: repo default branch, e.g. `main` or `master`). |
+
+#### Examples
 
 ```bash
-ws delete @feat-auth
+# Safely end workspace (verifies all work committed and merged, stops active daemon):
+ws end @feat-auth
+
+# Close workspace even if branch is not yet merged:
+ws end @feat-auth --no-merge
+
+# Check merge status against develop branch instead of main:
+ws end @feat-auth --target develop
+
+# Safely close and delete feature branch from bare repository:
+ws end @feat-auth --delete-branch
+
+# Force close discarding any uncommitted changes:
+ws end @feat-auth --force
 ```
 
 ---

@@ -49,11 +49,27 @@ def cmd_info(manager: WorkspaceManager, name: str) -> None:
 
 
 
-def cmd_delete(manager: WorkspaceManager, name: str) -> None:
-    """Execute 'ws delete' / 'ws rm' command."""
-    manager.remove_workspace(name=name)
+def cmd_end(
+    manager: WorkspaceManager,
+    name: str,
+    force: bool = False,
+    no_merge: bool = False,
+    delete_branch: bool = False,
+    target_branch: str | None = None,
+) -> None:
+    """Execute 'ws end' / 'ws close' command to safely terminate and remove a workspace."""
+    manager.end_workspace(
+        name=name,
+        force=force,
+        no_merge=no_merge,
+        delete_branch=delete_branch,
+        target_branch=target_branch,
+    )
 
-cmd_remove = cmd_delete
+
+cmd_close = cmd_end
+cmd_delete = cmd_end
+cmd_remove = cmd_end
 
 
 def cmd_shell(

@@ -24,6 +24,9 @@ from ws.exceptions import (
     ValidationException,
     WorkspaceExistsException,
     WorkspaceNotFoundException,
+    WorkspaceSessionStopException,
+    WorkspaceUncommittedChangesException,
+    WorkspaceUnmergedBranchException,
     WSException,
 )
 from ws.git import GitService
@@ -248,7 +251,7 @@ class WorkspaceManager:
 
         return self.create_workspace(name=str(name), repo_specs=specs)
 
-    def remove_workspace(self, name: str) -> None:
+    def remove_workspace(self, name: str, quiet: bool = False) -> None:
         """Remove a workspace, removing all its git worktrees and metadata."""
         self.validate_environment()
         ws_dir = self._get_workspace_dir(name)
@@ -293,7 +296,211 @@ class WorkspaceManager:
 
         # Delete workspace directory
         shutil.rmtree(ws_dir, ignore_errors=True)
-        OutputHandler.print_success(f"Removed workspace '{name}'")
+        if not quiet:
+            OutputHandler.print_success(f"Removed workspace '{name}'")
+
+    def inspect_workspace_safety(
+        self,
+        name: str,
+        target_branch: str | None = None,
+    ) -> dict[str, Any]:
+        """Inspect uncommitted changes and merged status across all worktrees in workspace."""
+        self.validate_environment()
+        ws_dir = self._get_workspace_dir(name)
+
+        if not ws_dir.exists() or not ws_dir.is_dir():
+            raise WorkspaceNotFoundException(f"Workspace '{name}' not found at: {ws_dir}")
+
+        metadata_file = ws_dir / "workspace.yml"
+        metadata: WorkspaceMetadata | None = None
+
+        if metadata_file.exists():
+            try:
+                with open(metadata_file, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                    metadata = WorkspaceMetadata.from_dict(data)
+            except Exception as e:
+                logger.warning("Could not read workspace metadata: %s", e)
+
+        repos_safety: dict[str, Any] = {}
+        has_uncommitted = False
+        has_unmerged = False
+
+        repositories_map: dict[str, RepoSpec] = {}
+        if metadata and metadata.repositories:
+            repositories_map = metadata.repositories
+        else:
+            for r_name, repo_cfg in self.config.repositories.items():
+                repositories_map[r_name] = RepoSpec(
+                    name=r_name,
+                    branch="HEAD",
+                    create=False,
+                    path=repo_cfg.checkout,
+                )
+
+        for r_name, spec in repositories_map.items():
+            if r_name not in self.config.repositories:
+                continue
+            repo_cfg = self.validate_repository_config(r_name)
+            wt_path = ws_dir / spec.path
+            bare_path = repo_cfg.bare.resolve() if repo_cfg.bare.is_absolute() else (Path.cwd() / repo_cfg.bare).resolve()
+
+            if not wt_path.exists():
+                repos_safety[r_name] = {
+                    "worktree_exists": False,
+                    "uncommitted": {"has_uncommitted": False, "modified": [], "untracked": []},
+                    "merged_info": {"is_merged": True, "target_branch": "", "unmerged_commits": 0},
+                    "branch": spec.branch,
+                }
+                continue
+
+            # 1. Uncommitted changes check
+            uncommitted_info = self.git.check_worktree_uncommitted(wt_path)
+            if uncommitted_info.get("has_uncommitted"):
+                has_uncommitted = True
+
+            # 2. Merged check
+            current_branch = self.git.get_current_branch(wt_path)
+            branch_to_check = spec.branch if (spec.branch and spec.branch != "HEAD") else current_branch
+            is_merged, resolved_target, unmerged_count = self.git.is_branch_merged(
+                bare_path=bare_path,
+                branch=branch_to_check,
+                target_branch=target_branch,
+                worktree_path=wt_path,
+            )
+            if not is_merged:
+                has_unmerged = True
+
+            repos_safety[r_name] = {
+                "worktree_exists": True,
+                "uncommitted": uncommitted_info,
+                "merged_info": {
+                    "is_merged": is_merged,
+                    "target_branch": resolved_target,
+                    "unmerged_commits": unmerged_count,
+                },
+                "branch": branch_to_check,
+            }
+
+        return {
+            "workspace": name,
+            "has_uncommitted": has_uncommitted,
+            "has_unmerged": has_unmerged,
+            "repos": repos_safety,
+        }
+
+    def end_workspace(
+        self,
+        name: str,
+        force: bool = False,
+        no_merge: bool = False,
+        delete_branch: bool = False,
+        target_branch: str | None = None,
+    ) -> None:
+        """Safely end (close and remove) a workspace with Git and session safety checks."""
+        self.validate_environment()
+        ws_dir = self._get_workspace_dir(name)
+
+        if not ws_dir.exists() or not ws_dir.is_dir():
+            raise WorkspaceNotFoundException(f"Workspace '{name}' not found at: {ws_dir}")
+
+        metadata_file = ws_dir / "workspace.yml"
+        metadata: WorkspaceMetadata | None = None
+        if metadata_file.exists():
+            try:
+                with open(metadata_file, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                    metadata = WorkspaceMetadata.from_dict(data)
+            except Exception as e:
+                logger.warning("Could not read workspace metadata: %s", e)
+
+        # 1. Perform safety inspection if not forced
+        if not force:
+            safety = self.inspect_workspace_safety(name, target_branch=target_branch)
+
+            # Check for uncommitted changes
+            if safety["has_uncommitted"]:
+                details: list[str] = []
+                for r_name, r_info in safety["repos"].items():
+                    unc = r_info.get("uncommitted", {})
+                    if unc.get("has_uncommitted"):
+                        parts = []
+                        mod_count = len(unc.get("modified", []))
+                        unt_count = len(unc.get("untracked", []))
+                        if mod_count > 0:
+                            parts.append(f"{mod_count} modified/staged")
+                        if unt_count > 0:
+                            parts.append(f"{unt_count} untracked")
+                        details.append(f"  • %{r_name}: {', '.join(parts)}")
+                        for f_path in unc.get("modified", [])[:5]:
+                            details.append(f"      - modified: {f_path}")
+                        for f_path in unc.get("untracked", [])[:5]:
+                            details.append(f"      - untracked: {f_path}")
+
+                err_msg = (
+                    f"Cannot end workspace '@{name}': uncommitted changes detected.\n"
+                    + "\n".join(details)
+                    + "\n\nPlease commit or stash your changes before closing."
+                    + f"\nTo discard changes and close anyway, use: ws end @{name} --force"
+                )
+                raise WorkspaceUncommittedChangesException(err_msg)
+
+            # Check for unmerged changes (unless --no-merge passed)
+            if safety["has_unmerged"] and not no_merge:
+                details = []
+                for r_name, r_info in safety["repos"].items():
+                    m_info = r_info.get("merged_info", {})
+                    if not m_info.get("is_merged"):
+                        br = r_info.get("branch", "unknown")
+                        tgt = m_info.get("target_branch", "main")
+                        cnt = m_info.get("unmerged_commits", 0)
+                        details.append(f"  • %{r_name} (branch '{br}'): {cnt} commit(s) not merged into '{tgt}'")
+
+                err_msg = (
+                    f"Cannot end workspace '@{name}': unmerged work detected.\n"
+                    + "\n".join(details)
+                    + f"\n\nTo close without merging, re-run with: ws end @{name} --no-merge"
+                    + f"\nTo force close regardless of work status, use: ws end @{name} --force"
+                )
+                raise WorkspaceUnmergedBranchException(err_msg)
+
+        # 2. Stop running session if active; closing only happens on successful termination
+        if self.is_session_running(name):
+            OutputHandler.print_info(f"Stopping active services for workspace '@{name}'...")
+            self.stop_workspace(name)
+            if self.is_session_running(name):
+                if not force:
+                    raise WorkspaceSessionStopException(
+                        f"Failed to terminate active daemon session for workspace '@{name}'. Workspace closing aborted."
+                    )
+                else:
+                    OutputHandler.print_warning("Session termination incomplete, forcing closure (--force).")
+
+        # 3. Track branches to delete if requested
+        branches_to_delete: list[tuple[Path, str]] = []
+        if delete_branch:
+            if metadata and metadata.repositories:
+                for r_name, spec in metadata.repositories.items():
+                    if r_name in self.config.repositories:
+                        repo_cfg = self.validate_repository_config(r_name)
+                        bare_path = repo_cfg.bare.resolve() if repo_cfg.bare.is_absolute() else (Path.cwd() / repo_cfg.bare).resolve()
+                        default_br = self.git.get_default_branch(bare_path)
+                        if spec.branch and spec.branch != default_br:
+                            branches_to_delete.append((bare_path, spec.branch))
+
+        # 4. Remove worktrees and workspace directory
+        self.remove_workspace(name, quiet=True)
+
+        # 5. Delete branches if --delete-branch
+        if branches_to_delete:
+            for b_path, br_name in branches_to_delete:
+                try:
+                    self.git.delete_branch(b_path, br_name, force=True)
+                    OutputHandler.print_info(f"Deleted branch '{br_name}' from {b_path.name}")
+                except Exception as e:
+                    logger.warning("Could not delete branch '%s' in %s: %s", br_name, b_path, e)
+
+        OutputHandler.print_success(f"Safely closed workspace '@{name}'")
 
     def list_workspaces(self) -> list[WorkspaceMetadata]:
         """List all managed workspaces."""

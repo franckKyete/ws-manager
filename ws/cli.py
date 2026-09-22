@@ -16,6 +16,8 @@ from ws.commands import (
     cmd_create,
     cmd_delete,
     cmd_doctor,
+    cmd_end,
+    cmd_close,
     cmd_env,
     cmd_exec,
     cmd_fetch,
@@ -72,7 +74,7 @@ from ws.workspace import WorkspaceManager
 logger = logging.getLogger("ws.cli")
 
 KNOWN_COMMANDS = {
-    "create", "new", "list", "ls", "info", "delete", "rm", "remove",
+    "create", "new", "list", "ls", "info", "end", "close", "delete", "rm", "remove",
     "status", "exec", "push", "pull", "start", "launch", "run",
     "attach", "stop", "kill", "restart", "logs", "shell", "enter", "open",
     "env", "setup", "bridge",
@@ -382,9 +384,38 @@ def build_parser() -> argparse.ArgumentParser:
     p_info = subparsers.add_parser("info", help="Display details and live process status for a workspace")
     p_info.add_argument("name", help="Workspace name (@<name>)")
 
-    # Command: ws delete @<name>
-    p_delete = subparsers.add_parser("delete", aliases=["rm", "remove"], help="Delete a workspace and prune all its worktrees")
-    p_delete.add_argument("name", help="Workspace name (@<name>)")
+    # Command: ws end @<name> / ws close @<name>
+    p_end = subparsers.add_parser(
+        "end",
+        aliases=["close", "delete", "rm", "remove"],
+        help="Safely end and close a workspace, pruning all its worktrees",
+    )
+    p_end.add_argument("name", help="Workspace name (@<name>)")
+    p_end.add_argument(
+        "--no-merge",
+        action="store_true",
+        help="Allow closing even if committed branches are not merged into base/target branch",
+    )
+    p_end.add_argument(
+        "-f",
+        "--force",
+        action="store_true",
+        help="Force close regardless of uncommitted changes, unmerged branches, or active session",
+    )
+    p_end.add_argument(
+        "--delete-branch",
+        action="store_true",
+        help="Also delete the Git branch from the bare repository store",
+    )
+    p_end.add_argument(
+        "-t",
+        "--target",
+        "--target-branch",
+        dest="target_branch",
+        type=str,
+        default=None,
+        help="Target base branch to check merge status against (default: repo default branch, e.g. main)",
+    )
 
     # Command: ws status @<name>
     p_status = subparsers.add_parser("status", help="Show Git status across all workspace worktrees")
@@ -739,8 +770,15 @@ def main(sys_args: Sequence[str] | None = None) -> int:
         elif args.subcommand == "info":
             cmd_info(manager=manager, name=clean_workspace(args.name))
 
-        elif args.subcommand in ("delete", "rm", "remove"):
-            cmd_delete(manager=manager, name=clean_workspace(args.name))
+        elif args.subcommand in ("end", "close", "delete", "rm", "remove"):
+            cmd_end(
+                manager=manager,
+                name=clean_workspace(args.name),
+                force=args.force,
+                no_merge=args.no_merge,
+                delete_branch=args.delete_branch,
+                target_branch=getattr(args, "target_branch", None),
+            )
 
         elif args.subcommand == "status":
             cmd_status(manager=manager, name=clean_workspace(args.name))

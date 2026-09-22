@@ -82,3 +82,21 @@ class RepoNotInWorkspaceException(ValidationException):
 
     pass
 
+
+class WorkspaceUncommittedChangesException(ValidationException):
+    """Raised when ending/closing a workspace that has uncommitted changes."""
+
+    pass
+
+
+class WorkspaceUnmergedBranchException(ValidationException):
+    """Raised when ending/closing a workspace whose branches have not been merged."""
+
+    pass
+
+
+class WorkspaceSessionStopException(ValidationException):
+    """Raised when an active session fails to stop during workspace closure."""
+
+    pass
+

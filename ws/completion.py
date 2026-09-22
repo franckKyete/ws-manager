@@ -236,9 +236,11 @@ _ws_commands() {
         'list:List all active workspaces'
         'ls:List all active workspaces (alias for list)'
         'info:Display workspace details, ports, and live processes'
-        'delete:Safely delete a workspace and prune worktrees'
-        'rm:Delete a workspace (alias for delete)'
-        'remove:Delete a workspace (alias for delete)'
+        'end:Safely end and close a workspace, pruning worktrees'
+        'close:Safely close a workspace (alias for end)'
+        'delete:Safely delete a workspace (alias for end)'
+        'rm:Delete a workspace (alias for end)'
+        'remove:Delete a workspace (alias for end)'
         'status:Show combined Git status across all workspace worktrees'
         'exec:Execute an arbitrary command across all worktrees'
         'push:Push committed changes to Git remotes'
@@ -402,7 +404,15 @@ _ws() {
                         '(-s --switch)'{-s,--switch}'[Zero-downtime switch presentation engine]' \\
                         '(-m --mode)'{-m,--mode}'[Engine backend]:mode:(tui tmux zellij)'
                     ;;
-                info|status|stop|kill|delete|rm|remove)
+                end|close|delete|rm|remove)
+                    _arguments \
+                        '1:workspace:_ws_workspaces_all' \
+                        '--no-merge[Allow closing unmerged branches]' \
+                        '(-f --force)'{-f,--force}'[Force close regardless of uncommitted or unmerged work]' \
+                        '--delete-branch[Delete Git branch from bare store]' \
+                        '(-t --target --target-branch)'{-t,--target,--target-branch}'[Target base branch]:target:'
+                    ;;
+                info|status|stop|kill)
                     _arguments '1:workspace:_ws_workspaces_all'
                     ;;
                 restart|logs)
@@ -484,7 +494,7 @@ _ws_completion() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="create new list ls info delete rm remove status exec push pull start launch run attach stop kill restart logs bridge shell enter open env setup repo lock unlock project init add fetch sync doctor hub clone completion"
+    local commands="create new list ls info end close delete rm remove status exec push pull start launch run attach stop kill restart logs bridge shell enter open env setup repo lock unlock project init add fetch sync doctor hub clone completion"
 
     # Top-level command completion
     if [[ $cword -eq 1 ]]; then
@@ -549,7 +559,15 @@ _ws_completion() {
                 COMPREPLY=( $(compgen -W "${repos}" -- "$cur") )
             fi
             ;;
-        attach|stop|kill|restart|logs|bridge|shell|enter|open|lock|unlock|push|pull|status|info|delete|rm|remove)
+        end|close|delete|rm|remove)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--no-merge --force -f --delete-branch --target --target-branch -t" -- "$cur") )
+            elif [[ $cword -eq 2 ]]; then
+                local workspaces=$(ws _complete workspaces 2>/dev/null | cut -d: -f1)
+                COMPREPLY=( $(compgen -W "${workspaces}" -- "$cur") )
+            fi
+            ;;
+        attach|stop|kill|restart|logs|bridge|shell|enter|open|lock|unlock|push|pull|status|info)
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=( $(compgen -W "--all --tmux -z --zellij --switch -s --follow -f --lines -n --remote" -- "$cur") )
             elif [[ $cword -eq 2 ]]; then
@@ -597,6 +615,8 @@ complete -c ws -f
 complete -c ws -n "__fish_use_subcommand" -a "create" -d "Create workspace with Git worktrees"
 complete -c ws -n "__fish_use_subcommand" -a "list" -d "List all workspaces"
 complete -c ws -n "__fish_use_subcommand" -a "info" -d "Display workspace details & processes"
+complete -c ws -n "__fish_use_subcommand" -a "end" -d "Safely end and close workspace"
+complete -c ws -n "__fish_use_subcommand" -a "close" -d "Safely close workspace"
 complete -c ws -n "__fish_use_subcommand" -a "delete" -d "Delete workspace and prune worktrees"
 complete -c ws -n "__fish_use_subcommand" -a "status" -d "Show combined Git status"
 complete -c ws -n "__fish_use_subcommand" -a "start" -d "Start services in TUI or multiplexer"
@@ -616,10 +636,15 @@ complete -c ws -n "__fish_use_subcommand" -a "doctor" -d "Run health check diagn
 complete -c ws -n "__fish_use_subcommand" -a "completion" -d "Generate completion scripts"
 
 # Dynamic workspace and repo arguments
-complete -c ws -n "__fish_seen_subcommand_from start attach info delete status restart logs bridge shell env setup lock unlock push pull" -a "(__fish_ws_workspaces)"
+complete -c ws -n "__fish_seen_subcommand_from start attach info end close delete status restart logs bridge shell env setup lock unlock push pull" -a "(__fish_ws_workspaces)"
 complete -c ws -n "__fish_seen_subcommand_from start attach restart logs bridge shell env setup lock unlock push pull" -a "(__fish_ws_repos)"
 
 # Flags
+complete -c ws -n "__fish_seen_subcommand_from end close delete rm remove" -l no-merge -d "Allow closing unmerged branches"
+complete -c ws -n "__fish_seen_subcommand_from end close delete rm remove" -s f -l force -d "Force close regardless of uncommitted or unmerged work"
+complete -c ws -n "__fish_seen_subcommand_from end close delete rm remove" -l delete-branch -d "Delete branch from bare store"
+complete -c ws -n "__fish_seen_subcommand_from end close delete rm remove" -s t -l target -d "Target base branch to check merge status against"
+complete -c ws -n "__fish_seen_subcommand_from end close delete rm remove" -l target-branch -d "Target base branch to check merge status against"
 complete -c ws -n "__fish_seen_subcommand_from start" -l tmux -d "Launch in Tmux vertical panes"
 complete -c ws -n "__fish_seen_subcommand_from start" -s z -l zellij -d "Launch in Zellij session"
 complete -c ws -n "__fish_seen_subcommand_from start" -s d -l daemon -d "Launch in background daemon"

@@ -64,6 +64,10 @@ class GitService:
     def clone_bare(self, url: str, target_bare_path: Path) -> None:
         """Clone a remote repository as a bare git repository."""
         self._run(["clone", "--bare", url, str(target_bare_path)])
+        self._run(
+            ["--git-dir", str(target_bare_path), "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+            check=False,
+        )
 
     def is_bare_repo(self, bare_path: Path) -> bool:
         """Check if specified path is a valid bare git repository."""
@@ -162,7 +166,60 @@ class GitService:
 
     def fetch_repo(self, bare_path: Path) -> None:
         """Fetch updates in bare repository."""
+        self._run(
+            ["--git-dir", str(bare_path), "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+            check=False,
+        )
         self._run(["--git-dir", str(bare_path), "fetch", "--all"])
+
+    def get_remotes(self, bare_path: Path, worktree_path: Path | None = None) -> list[str]:
+        """Get list of configured git remotes."""
+        if worktree_path and worktree_path.exists():
+            res = self._run(["remote"], cwd=worktree_path, check=False)
+        else:
+            res = self._run(["--git-dir", str(bare_path), "remote"], check=False)
+        if res.returncode != 0:
+            return []
+        return [r.strip() for r in res.stdout.splitlines() if r.strip()]
+
+    def ref_exists(
+        self,
+        bare_path: Path,
+        ref: str,
+        worktree_path: Path | None = None,
+    ) -> bool:
+        """Check if a git reference exists."""
+        if worktree_path and worktree_path.exists():
+            res = self._run(["rev-parse", "--verify", "--quiet", ref], cwd=worktree_path, check=False)
+        else:
+            res = self._run(["--git-dir", str(bare_path), "rev-parse", "--verify", "--quiet", ref], check=False)
+        return res.returncode == 0
+
+    def fetch_remote_branch(
+        self,
+        bare_path: Path,
+        branch: str,
+        remote: str = "origin",
+        worktree_path: Path | None = None,
+    ) -> bool:
+        """Fetch updates for a target branch from remote into remote tracking ref.
+
+        Returns True if fetch succeeded, False otherwise (e.g. offline, branch not on remote).
+        """
+        clean_branch = branch.removeprefix("refs/heads/").removeprefix("refs/remotes/").removeprefix(f"{remote}/")
+
+        # Ensure fetch refspec is configured for future operations
+        self._run(
+            ["--git-dir", str(bare_path), "config", f"remote.{remote}.fetch", f"+refs/heads/*:refs/remotes/{remote}/*"],
+            check=False,
+        )
+
+        refspec = f"+refs/heads/{clean_branch}:refs/remotes/{remote}/{clean_branch}"
+        if worktree_path and worktree_path.exists():
+            res = self._run(["fetch", remote, refspec], cwd=worktree_path, check=False)
+        else:
+            res = self._run(["--git-dir", str(bare_path), "fetch", remote, refspec], check=False)
+        return res.returncode == 0
 
     def prune_worktrees(self, bare_path: Path) -> None:
         """Prune working tree information in bare repository."""
@@ -368,5 +425,201 @@ class GitService:
         except Exception as e:
             logger.warning("Failed to apply patch in '%s': %s", worktree_path, e)
             return False
+
+    def check_worktree_uncommitted(self, worktree_path: Path) -> dict[str, Any]:
+        """Check if worktree has uncommitted changes (staged, unstaged, untracked).
+
+        Returns:
+            {
+                "has_uncommitted": bool,
+                "modified": list[str],
+                "untracked": list[str],
+            }
+        """
+        if not worktree_path.exists() or not worktree_path.is_dir():
+            return {"has_uncommitted": False, "modified": [], "untracked": []}
+
+        res = self._run(["status", "--porcelain"], cwd=worktree_path, check=False)
+        if res.returncode != 0:
+            return {"has_uncommitted": False, "modified": [], "untracked": []}
+
+        modified: list[str] = []
+        untracked: list[str] = []
+
+        for line in res.stdout.splitlines():
+            line_str = line.strip()
+            if not line_str:
+                continue
+            status_code = line[:2]
+            filename = line[3:].strip()
+            if " -> " in filename:
+                filename = filename.split(" -> ", 1)[1]
+
+            if status_code == "??" or status_code.startswith("?"):
+                if filename == ".env" or filename.startswith(".env."):
+                    continue
+                untracked.append(filename)
+            else:
+                modified.append(filename)
+
+        has_uncommitted = bool(modified or untracked)
+        return {
+            "has_uncommitted": has_uncommitted,
+            "modified": modified,
+            "untracked": untracked,
+        }
+
+    def get_default_branch(self, bare_path: Path) -> str:
+        """Resolve the default branch name of a bare repository."""
+        # 1. Try symbolic-ref HEAD
+        res = self._run(
+            ["--git-dir", str(bare_path), "symbolic-ref", "--short", "HEAD"],
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+
+        # 2. Check main
+        if self.branch_exists(bare_path, "main"):
+            return "main"
+
+        # 3. Check master
+        if self.branch_exists(bare_path, "master"):
+            return "master"
+
+        # 4. Fallback to start point or any branch
+        fallback = self.get_default_branch_or_head(bare_path)
+        if fallback and fallback != "HEAD":
+            return fallback
+
+        res_branches = self._run(
+            ["--git-dir", str(bare_path), "branch", "--format=%(refname:short)"],
+            check=False,
+        )
+        if res_branches.returncode == 0 and res_branches.stdout.strip():
+            lines = res_branches.stdout.splitlines()
+            if lines:
+                first_branch = lines[0].strip()
+                if first_branch:
+                    return first_branch
+
+        return "main"
+
+    def is_branch_merged(
+        self,
+        bare_path: Path,
+        branch: str,
+        target_branch: str | None = None,
+        worktree_path: Path | None = None,
+        prefer_remote: bool = True,
+    ) -> tuple[bool, str, int]:
+        """Check if branch is merged into target_branch.
+
+        Always compares with the remote version of the target branch if a remote exists,
+        fetching the latest changes from the remote to ensure up-to-date merge detection.
+
+        Uses multi-tier detection to reliably handle:
+        1. Direct ancestry (fast-forward or standard merge commits) via `merge-base --is-ancestor`.
+        2. Patch equivalence (cherry-picks, rebase merges, PR merges with rewritten commit IDs) via `git cherry`.
+        3. Tree equivalence (squash merges, single or multi-commit) via `git merge-tree --write-tree`.
+
+        Returns (is_merged, resolved_target_branch, unmerged_commit_count).
+        """
+        def _exec(git_args: list[str]):
+            if worktree_path and worktree_path.exists():
+                return self._run(git_args, cwd=worktree_path, check=False)
+            return self._run(["--git-dir", str(bare_path)] + git_args, check=False)
+
+        raw_target = target_branch or self.get_default_branch(bare_path)
+        clean_target = raw_target.removeprefix("refs/heads/").removeprefix("refs/remotes/")
+        clean_branch = branch.removeprefix("refs/heads/").removeprefix("refs/remotes/")
+
+        # Identify available remotes
+        remotes = self.get_remotes(bare_path, worktree_path=worktree_path)
+        primary_remote = "origin" if "origin" in remotes else (remotes[0] if remotes else None)
+
+        target_ref = None
+        target_display = clean_target
+
+        if prefer_remote and primary_remote:
+            # If raw_target is already a remote ref (e.g. origin/main or refs/remotes/origin/main)
+            if raw_target.startswith(f"{primary_remote}/") or raw_target.startswith(f"refs/remotes/{primary_remote}/"):
+                remote_branch_name = raw_target.removeprefix(f"refs/remotes/{primary_remote}/").removeprefix(f"{primary_remote}/")
+                self.fetch_remote_branch(bare_path, remote_branch_name, remote=primary_remote, worktree_path=worktree_path)
+                candidate_ref = f"refs/remotes/{primary_remote}/{remote_branch_name}"
+                if self.ref_exists(bare_path, candidate_ref, worktree_path=worktree_path):
+                    target_ref = candidate_ref
+                    target_display = f"{primary_remote}/{remote_branch_name}"
+            else:
+                # Attempt to fetch remote target branch
+                self.fetch_remote_branch(bare_path, clean_target, remote=primary_remote, worktree_path=worktree_path)
+                candidate_remote_ref = f"refs/remotes/{primary_remote}/{clean_target}"
+                if self.ref_exists(bare_path, candidate_remote_ref, worktree_path=worktree_path):
+                    target_ref = candidate_remote_ref
+                    target_display = f"{primary_remote}/{clean_target}"
+
+        # If no remote target resolved, fall back to local target branch
+        if not target_ref:
+            if raw_target.startswith("refs/") or raw_target == "HEAD":
+                target_ref = raw_target
+            else:
+                target_ref = f"refs/heads/{clean_target}"
+            target_display = clean_target
+
+        # Resolve branch ref
+        if branch.startswith("refs/") or branch == "HEAD":
+            branch_ref = branch
+        elif "/" in branch and any(branch.startswith(f"{r}/") for r in remotes):
+            branch_ref = f"refs/remotes/{branch}"
+        else:
+            branch_ref = f"refs/heads/{clean_branch}"
+
+        # If checking exact same ref against itself
+        if branch_ref == target_ref:
+            return True, target_display, 0
+
+        # 1. Tier 1: Direct ancestry check (fast-path for standard merge commits or fast-forwards)
+        res_ancestor = _exec(["merge-base", "--is-ancestor", branch_ref, target_ref])
+        if res_ancestor.returncode == 0:
+            return True, target_display, 0
+
+        # 2. Tier 2: Patch equivalence check via git cherry
+        # git cherry outputs '-' for commits whose patch-id exists in target, and '+' for unmerged commits.
+        res_cherry = _exec(["cherry", target_ref, branch_ref])
+        plus_commits: list[str] = []
+        if res_cherry.returncode == 0:
+            cherry_lines = [line.strip() for line in res_cherry.stdout.splitlines() if line.strip()]
+            plus_commits = [line for line in cherry_lines if line.startswith("+")]
+            if not plus_commits:
+                # All commits have an equivalent changeset in target (e.g. cherry-picked / PR rebase-merge)
+                return True, target_display, 0
+
+        # 3. Tier 3: Tree equivalence check via git merge-tree
+        # Catches squash merges where multiple branch commits were squashed into a single commit in target,
+        # or subsequent target commits that already incorporated all code changes from branch.
+        res_merge_tree = _exec(["merge-tree", "--write-tree", target_ref, branch_ref])
+        if res_merge_tree.returncode == 0 and res_merge_tree.stdout.strip():
+            merged_tree = res_merge_tree.stdout.strip().splitlines()[0].strip()
+            res_target_tree = _exec(["rev-parse", f"{target_ref}^{{tree}}"])
+            if res_target_tree.returncode == 0:
+                target_tree = res_target_tree.stdout.strip()
+                if merged_tree and merged_tree == target_tree:
+                    return True, target_display, 0
+
+        # If not merged, calculate unmerged commit count
+        if res_cherry.returncode == 0 and plus_commits:
+            unmerged_count = len(plus_commits)
+        else:
+            res_count = _exec(["rev-list", "--count", f"{target_ref}..{branch_ref}"])
+            if res_count.returncode == 0:
+                try:
+                    unmerged_count = int(res_count.stdout.strip())
+                except ValueError:
+                    unmerged_count = 1
+            else:
+                unmerged_count = 1
+
+        return False, target_display, max(unmerged_count, 1)
+
 
 

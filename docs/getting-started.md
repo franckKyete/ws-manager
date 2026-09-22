@@ -232,8 +232,8 @@ ws info @feat-auth
 # Stop running services
 ws stop @feat-auth
 
-# Safely delete the workspace when work is finished
-ws delete @feat-auth
+# Safely end and close the workspace when work is committed and merged
+ws end @feat-auth
 ```
 
 ---
