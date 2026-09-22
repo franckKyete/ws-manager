@@ -494,12 +494,14 @@ def cmd_attach(
     from ws.multiplexer import TmuxLauncher, ZellijLauncher
 
     if active_engine == "tmux" or (not active_engine and mode == "tmux"):
+        launch_sess = manager.get_launch_session_name()
         OutputHandler.print_info(
             f"Attaching to running Tmux window for workspace: [bold cyan]{workspace_name}[/bold cyan] "
             f"({'all panes' if all_panes else (repo_name or 'fullscreen pane')})"
         )
         TmuxLauncher.attach(
             workspace_name=workspace_name,
+            session_name=launch_sess,
             project_name=project_name,
             repo_name=repo_name,
             all_panes=all_panes,
@@ -515,6 +517,7 @@ def cmd_attach(
             project_name=project_name,
             repo_name=repo_name,
             all_panes=all_panes,
+            ws_dir=manager.get_workspace_dir(workspace_name),
         )
         return
 

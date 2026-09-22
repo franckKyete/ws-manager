@@ -218,6 +218,7 @@ class RepoSpec:
     create: bool
     path: str
     frozen: bool = False
+    base_branch: str | None = None
 
     @property
     def locked(self) -> bool:
@@ -228,13 +229,16 @@ class RepoSpec:
         self.frozen = value
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        res: dict[str, Any] = {
             "branch": self.branch,
             "create": self.create,
             "path": self.path,
             "locked": self.frozen,
             "frozen": self.frozen,
         }
+        if self.base_branch and isinstance(self.base_branch, str):
+            res["base"] = self.base_branch
+        return res
 
     @classmethod
     def from_dict(cls, name: str, data: dict[str, Any]) -> "RepoSpec":
@@ -242,6 +246,7 @@ class RepoSpec:
         create = data.get("create", True)
         path = data.get("path", name)
         frozen = data.get("locked", data.get("frozen", False))
+        base_val = data.get("base") or data.get("target") or data.get("base_branch") or data.get("from")
         if not branch:
             raise ValueError(f"Repository specification '{name}' missing required 'branch'")
         return cls(
@@ -250,6 +255,7 @@ class RepoSpec:
             create=bool(create),
             path=str(path),
             frozen=bool(frozen),
+            base_branch=str(base_val) if base_val else None,
         )
 
 
@@ -297,11 +303,14 @@ class TmuxConfig:
     """Tmux session and workspace window configuration."""
 
     session: str
+    launch_session: str | None = None
     command: str | None = None
     switch: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         res: dict[str, Any] = {"session": self.session}
+        if self.launch_session:
+            res["launch_session"] = self.launch_session
         if self.command:
             res["command"] = self.command
         if self.switch:
@@ -316,10 +325,12 @@ class TmuxConfig:
             session_val = data.get("session") or data.get("session_name") or data.get("name")
             if not session_val:
                 raise ValueError("Tmux configuration must include 'session'")
+            launch_val = data.get("launch_session") or data.get("launch") or data.get("launch_name")
             command_val = data.get("command") or data.get("cmd")
             switch_val = data.get("switch", False)
             return cls(
                 session=str(session_val).strip(),
+                launch_session=str(launch_val).strip() if launch_val else None,
                 command=str(command_val).strip() if command_val else None,
                 switch=bool(switch_val),
             )

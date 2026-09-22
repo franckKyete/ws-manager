@@ -116,20 +116,21 @@ class GitService:
         worktree_path: Path,
         branch: str,
         create_branch: bool = True,
+        start_point: str | None = None,
     ) -> None:
         """Create a new worktree from a bare repository.
 
-        If create_branch is True, creates new branch `-b branch`.
+        If create_branch is True, creates new branch `-b branch` from start_point.
         Otherwise checks out existing branch `branch`.
         """
         worktree_path_str = str(worktree_path)
         bare_path_str = str(bare_path)
 
         if create_branch:
-            start_point = self.get_default_branch_or_head(bare_path)
+            resolved_start = start_point or self.get_default_branch_or_head(bare_path)
             args = ["--git-dir", bare_path_str, "worktree", "add", "-b", branch, worktree_path_str]
-            if start_point:
-                args.append(start_point)
+            if resolved_start:
+                args.append(resolved_start)
         else:
             args = ["--git-dir", bare_path_str, "worktree", "add", worktree_path_str, branch]
 
@@ -504,6 +505,87 @@ class GitService:
                     return first_branch
 
         return "main"
+
+    def resolve_main_branch(self, bare_path: Path) -> str:
+        """Resolve the primary main branch (main, develop, master) in bare repo or remote."""
+        for candidate in ["main", "develop", "master"]:
+            if self.branch_exists(bare_path, candidate):
+                return candidate
+            if self.ref_exists(bare_path, f"refs/remotes/origin/{candidate}"):
+                return candidate
+
+        return self.get_default_branch(bare_path)
+
+    def get_branch_divergence(
+        self,
+        bare_path: Path,
+        branch: str,
+        remote: str = "origin",
+        worktree_path: Path | None = None,
+    ) -> tuple[int, int]:
+        """Calculate divergence between local branch and remote tracking branch.
+
+        Returns (ahead_count, behind_count).
+        """
+        clean_branch = branch.removeprefix("refs/heads/").removeprefix("refs/remotes/").removeprefix(f"{remote}/")
+        local_ref = f"refs/heads/{clean_branch}"
+        remote_ref = f"refs/remotes/{remote}/{clean_branch}"
+
+        if not self.ref_exists(bare_path, remote_ref, worktree_path=worktree_path):
+            return (0, 0)
+
+        if not self.ref_exists(bare_path, local_ref, worktree_path=worktree_path):
+            count_res = (
+                self._run(["rev-list", "--count", remote_ref], cwd=worktree_path, check=False)
+                if (worktree_path and worktree_path.exists())
+                else self._run(["--git-dir", str(bare_path), "rev-list", "--count", remote_ref], check=False)
+            )
+            behind = int(count_res.stdout.strip()) if count_res.returncode == 0 and count_res.stdout.strip().isdigit() else 1
+            return (0, behind)
+
+        if worktree_path and worktree_path.exists():
+            res = self._run(
+                ["rev-list", "--left-right", "--count", f"{local_ref}...{remote_ref}"],
+                cwd=worktree_path,
+                check=False,
+            )
+        else:
+            res = self._run(
+                ["--git-dir", str(bare_path), "rev-list", "--left-right", "--count", f"{local_ref}...{remote_ref}"],
+                check=False,
+            )
+
+        if res.returncode != 0:
+            return (0, 0)
+
+        parts = res.stdout.strip().split()
+        if len(parts) >= 2:
+            try:
+                ahead = int(parts[0])
+                behind = int(parts[1])
+                return (ahead, behind)
+            except ValueError:
+                pass
+        return (0, 0)
+
+    def find_worktree_for_branch(self, bare_path: Path, branch: str) -> Path | None:
+        """Find if a branch is currently checked out in any worktree."""
+        clean_branch = branch.removeprefix("refs/heads/")
+        worktrees = self.list_worktrees(bare_path)
+        for wt_path_str, wt_branch in worktrees:
+            cleaned_wt_branch = wt_branch.removeprefix("refs/heads/")
+            if cleaned_wt_branch == clean_branch:
+                p = Path(wt_path_str)
+                if p.exists() and p.is_dir():
+                    return p
+        return None
+
+    def update_bare_branch(self, bare_path: Path, branch: str, new_ref_or_commit: str) -> bool:
+        """Update a branch ref in a bare repository to a target ref or commit (fast-forward)."""
+        clean_branch = branch.removeprefix("refs/heads/")
+        target_ref = f"refs/heads/{clean_branch}"
+        res = self._run(["--git-dir", str(bare_path), "update-ref", target_ref, new_ref_or_commit], check=False)
+        return res.returncode == 0
 
     def is_branch_merged(
         self,

@@ -143,6 +143,13 @@ class ConfigLoader:
             if tmux_raw is not None:
                 try:
                     tmux_cfg = TmuxConfig.from_dict(tmux_raw)
+                    if tmux_cfg.launch_session and tmux_cfg.session == tmux_cfg.launch_session:
+                        raise ConfigException(
+                            f"Tmux work session ('{tmux_cfg.session}') and launch session ('{tmux_cfg.launch_session}') "
+                            "must have different names to prevent collisions."
+                        )
+                except ConfigException:
+                    raise
                 except Exception as e:
                     raise ConfigException(f"Invalid tmux configuration: {e}") from e
         else:

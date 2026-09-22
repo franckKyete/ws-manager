@@ -111,7 +111,7 @@ def clean_repos(repos: Sequence[str] | None) -> list[str] | None:
 
 
 def normalize_cli_args(sys_args: Sequence[str]) -> list[str]:
-    """Normalize CLI arguments to support both 'ws <command> @<workspace> ...' and 'ws @<workspace> <command> ...'."""
+    """Normalize CLI arguments to support 'ws <command> @<workspace>', 'ws @<workspace> <command>', and 'ws %<repo> <command>'."""
     args_list = list(sys_args)
     if not args_list:
         return args_list
@@ -119,6 +119,12 @@ def normalize_cli_args(sys_args: Sequence[str]) -> list[str]:
     first = args_list[0]
     # Check if first argument is a workspace name with @ sigil (e.g. '@develop start --tmux')
     if first.startswith("@") and len(args_list) >= 2:
+        second = args_list[1]
+        if second in KNOWN_COMMANDS:
+            return [second, first] + args_list[2:]
+
+    # Check if first argument is a repository with % sigil (e.g. '%manager logs')
+    if first.startswith("%") and len(args_list) >= 2:
         second = args_list[1]
         if second in KNOWN_COMMANDS:
             return [second, first] + args_list[2:]
@@ -132,12 +138,78 @@ def normalize_cli_args(sys_args: Sequence[str]) -> list[str]:
     return args_list
 
 
+def resolve_ws_and_repo_args(
+    manager: WorkspaceManager,
+    name_arg: str | None,
+    repo_arg: str | None = None,
+    repos_arg: Sequence[str] | None = None,
+    require_ws: bool = True,
+    require_repo: bool = False,
+) -> tuple[str, str | None, list[str]]:
+    """
+    Intelligently resolve workspace name, single repo, and list of repos
+    using explicit arguments and current directory context.
+    """
+    detected_ws, detected_repo = manager.detect_context()
+
+    # Determine if name_arg is actually a repository/service specification
+    # e.g. ws logs %manager, ws shell %worker, ws start %manager
+    is_repo_spec = False
+    if name_arg:
+        if name_arg.startswith(("%", "+", ":", "#", "$")):
+            is_repo_spec = True
+        elif detected_ws and name_arg in manager.config.repositories and not manager.has_workspace(name_arg):
+            is_repo_spec = True
+
+    resolved_ws: str | None = None
+    resolved_repo: str | None = None
+    resolved_repos: list[str] = []
+
+    if is_repo_spec:
+        resolved_ws = detected_ws
+        actual_repo = clean_repo(name_arg)
+        resolved_repo = actual_repo
+        resolved_repos = [actual_repo] if actual_repo else []
+        if repos_arg:
+            resolved_repos.extend(clean_repos(repos_arg) or [])
+        if repo_arg:
+            c_repo = clean_repo(repo_arg)
+            if c_repo and c_repo not in resolved_repos:
+                resolved_repos.append(c_repo)
+    else:
+        resolved_ws = clean_workspace(name_arg) if name_arg else detected_ws
+        if repo_arg:
+            resolved_repo = clean_repo(repo_arg)
+        elif not name_arg or clean_workspace(name_arg) == detected_ws:
+            resolved_repo = detected_repo
+        else:
+            resolved_repo = None
+
+        if repos_arg:
+            resolved_repos = clean_repos(repos_arg) or []
+
+    if require_ws and not resolved_ws:
+        raise WSException(
+            "Workspace name (@<name>) required. "
+            "Specify a workspace or run this command from inside a workspace directory."
+        )
+
+    if require_repo and not resolved_repo:
+        raise WSException(
+            "Repository/service (%<repo>) required. "
+            "Specify a repository or run this command from inside a repository directory."
+        )
+
+    return resolved_ws or "", resolved_repo, resolved_repos
+
+
 def parse_create_workspace_args(
     workspace_name: str,
     raw_args: list[str],
     repositories: dict[str, RepoConfig],
+    target_branch: str | None = None,
 ) -> list[RepoSpec]:
-    """Parse parameters for 'ws create @<name> [#repo[:branch[:mode]] ...] [--all] [--existing]'."""
+    """Parse parameters for 'ws create @<name> [#repo[:branch[:mode[:base]]] ...] [--all] [--existing] [--target <branch>]'."""
     clean_ws = clean_workspace(workspace_name) or workspace_name
     global_existing = False
     include_all = False
@@ -172,6 +244,16 @@ def parse_create_workspace_args(
             global_existing = False
             idx += 1
             continue
+        elif arg in ("--target", "--target-branch", "--base", "--from", "-t"):
+            if idx + 1 >= len(raw_args):
+                raise WSException(f"Option '{arg}' requires a branch argument")
+            target_branch = raw_args[idx + 1]
+            idx += 2
+            continue
+        elif any(arg.startswith(f"{opt}=") for opt in ("--target", "--target-branch", "--base", "--from")):
+            target_branch = arg.split("=", 1)[1]
+            idx += 1
+            continue
         elif arg == "--no-tmux":
             idx += 1
             continue
@@ -182,7 +264,7 @@ def parse_create_workspace_args(
             idx += 1
             continue
 
-        # Check colon tag syntax (e.g. #server:main, #server:main:existing, server:main:new)
+        # Check colon tag syntax (e.g. #server:main, #server:main:existing, server:main:new, server:feat:new:develop)
         clean_arg = clean_repo(arg)
         if ":" in clean_arg and not clean_arg.startswith("-"):
             parts = clean_arg.split(":")
@@ -194,17 +276,25 @@ def parse_create_workspace_args(
                 )
             branch_val = parts[1] if len(parts) > 1 and parts[1] else clean_ws
             create_mode = not global_existing
+            repo_base = target_branch
             if len(parts) > 2:
-                if parts[2] == "existing":
+                if parts[2] in ("existing", "exist"):
                     create_mode = False
-                elif parts[2] == "new":
+                    if len(parts) > 3:
+                        repo_base = parts[3]
+                elif parts[2] in ("new", "create"):
                     create_mode = True
+                    if len(parts) > 3:
+                        repo_base = parts[3]
+                else:
+                    repo_base = parts[2]
 
             explicit_specs[repo_key] = RepoSpec(
                 name=repo_key,
                 branch=branch_val,
                 create=create_mode,
                 path=repositories[repo_key].checkout,
+                base_branch=repo_base,
             )
             idx += 1
             continue
@@ -240,6 +330,7 @@ def parse_create_workspace_args(
                 branch=branch_name,
                 create=create_mode,
                 path=repositories[repo_key].checkout,
+                base_branch=target_branch,
             )
             idx += 1
             continue
@@ -262,6 +353,7 @@ def parse_create_workspace_args(
                 branch=branch_name,
                 create=create_mode,
                 path=repositories[repo_key].checkout,
+                base_branch=target_branch,
             )
             idx += 1
             continue
@@ -282,6 +374,7 @@ def parse_create_workspace_args(
                     branch=branch_name,
                     create=True,
                     path=repositories[repo_name].checkout,
+                    base_branch=target_branch,
                 )
                 idx += 2
                 matched = True
@@ -296,6 +389,7 @@ def parse_create_workspace_args(
                     branch=branch_name,
                     create=False,
                     path=repositories[repo_name].checkout,
+                    base_branch=target_branch,
                 )
                 idx += 2
                 matched = True
@@ -310,6 +404,7 @@ def parse_create_workspace_args(
                     branch=branch_name,
                     create=not global_existing,
                     path=repositories[repo_name].checkout,
+                    base_branch=target_branch,
                 )
                 idx += 2
                 matched = True
@@ -342,7 +437,17 @@ def parse_create_workspace_args(
     final_specs: list[RepoSpec] = []
     for repo_name in sorted(target_names):
         if repo_name in explicit_specs:
-            final_specs.append(explicit_specs[repo_name])
+            spec = explicit_specs[repo_name]
+            if spec.base_branch is None and target_branch is not None:
+                spec = RepoSpec(
+                    name=spec.name,
+                    branch=spec.branch,
+                    create=spec.create,
+                    path=spec.path,
+                    frozen=spec.frozen,
+                    base_branch=target_branch,
+                )
+            final_specs.append(spec)
         else:
             repo_cfg = repositories[repo_name]
             if global_existing:
@@ -358,6 +463,7 @@ def parse_create_workspace_args(
                     branch=branch,
                     create=create,
                     path=repo_cfg.checkout,
+                    base_branch=target_branch,
                 )
             )
 
@@ -389,13 +495,24 @@ def build_parser() -> argparse.ArgumentParser:
     p_create.add_argument("--setup", action="store_true", help="Run setup scripts and sync environment variables after creation")
     p_create.add_argument("--cmd", "--command", dest="tmux_cmd", type=str, default=None, help="Command to run in workspace tmux window")
     p_create.add_argument("--no-tmux", action="store_true", help="Skip creating a tmux window for this workspace")
+    p_create.add_argument(
+        "-t",
+        "--target",
+        "--target-branch",
+        "--base",
+        "--from",
+        dest="target_branch",
+        type=str,
+        default=None,
+        help="Base branch to create workspace branches from (defaults to main/develop/master)",
+    )
 
     # Command: ws list / ws ls
     subparsers.add_parser("list", aliases=["ls"], help="List all workspaces")
 
     # Command: ws info @<name>
     p_info = subparsers.add_parser("info", help="Display details and live process status for a workspace")
-    p_info.add_argument("name", help="Workspace name (@<name>)")
+    p_info.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
 
     # Command: ws focus @<name> / ws switch @<name>
     p_focus = subparsers.add_parser(
@@ -403,7 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["switch"],
         help="Focus or switch to workspace tmux window",
     )
-    p_focus.add_argument("name", help="Workspace name (@<name>)")
+    p_focus.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
 
     # Command: ws end @<name> / ws close @<name>
     p_end = subparsers.add_parser(
@@ -411,7 +528,7 @@ def build_parser() -> argparse.ArgumentParser:
         aliases=["close", "delete", "rm", "remove"],
         help="Safely end and close a workspace, pruning all its worktrees",
     )
-    p_end.add_argument("name", help="Workspace name (@<name>)")
+    p_end.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_end.add_argument(
         "--no-merge",
         action="store_true",
@@ -445,23 +562,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Command: ws status @<name>
     p_status = subparsers.add_parser("status", help="Show Git status across all workspace worktrees")
-    p_status.add_argument("name", help="Workspace name (@<name>)")
+    p_status.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
 
     # Command: ws exec @<name> -- <command...>
     p_exec = subparsers.add_parser("exec", help="Execute command inside each repo worktree of a workspace")
-    p_exec.add_argument("name", help="Workspace name (@<name>)")
+    p_exec.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_exec.add_argument("command", nargs=argparse.REMAINDER, help="Command to execute")
 
     # Command: ws push @<name> [%repos...] [--remote origin]
     p_push = subparsers.add_parser("push", help="Push committed changes for workspace repositories to remotes")
-    p_push.add_argument("name", help="Workspace name (@<name>)")
+    p_push.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_push.add_argument("repos", nargs="*", help="Repository names to push (%%<repo>)")
     p_push.add_argument("--repos", dest="repos_flag", type=str, help="Comma-separated list of repository names")
     p_push.add_argument("--remote", type=str, default="origin", help="Git remote name (default: origin)")
 
     # Command: ws pull @<name> [%repos...] [--remote origin]
     p_pull = subparsers.add_parser("pull", help="Pull remote updates for workspace repositories")
-    p_pull.add_argument("name", help="Workspace name (@<name>)")
+    p_pull.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_pull.add_argument("repos", nargs="*", help="Repository names to pull (%%<repo>)")
     p_pull.add_argument("--repos", dest="repos_flag", type=str, help="Comma-separated list of repository names")
     p_pull.add_argument("--remote", type=str, default="origin", help="Git remote name (default: origin)")
@@ -472,37 +589,37 @@ def build_parser() -> argparse.ArgumentParser:
     repo_subparsers = p_repo.add_subparsers(dest="repo_subcommand", title="repo actions", metavar="ACTION")
 
     p_repo_add = repo_subparsers.add_parser("add", aliases=["add-repo"], help="Add a repository worktree to an existing workspace")
-    p_repo_add.add_argument("name", help="Workspace name (@<name>)")
-    p_repo_add.add_argument("repo", help="Repository specification (%%<repo>[:branch])")
+    p_repo_add.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
+    p_repo_add.add_argument("repo", nargs="?", default=None, help="Repository specification (%%<repo>[:branch])")
     p_repo_add.add_argument("branch", nargs="?", default=None, help="Git branch name (optional if specified in repo)")
     p_repo_add.add_argument("--existing", action="store_true", help="Checkout existing branch instead of creating new branch")
 
     p_repo_rm = repo_subparsers.add_parser("remove", aliases=["rm", "remove-repo"], help="Remove a repository worktree from a workspace")
-    p_repo_rm.add_argument("name", help="Workspace name (@<name>)")
-    p_repo_rm.add_argument("repo", help="Repository name (%%<repo>)")
+    p_repo_rm.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
+    p_repo_rm.add_argument("repo", nargs="?", default=None, help="Repository name (%%<repo>)")
     p_repo_rm.add_argument("--delete-branch", action="store_true", help="Also delete the branch from bare repository")
 
     p_repo_lock = repo_subparsers.add_parser("lock", aliases=["freeze"], help="Lock repository worktree (mark files read-only)")
-    p_repo_lock.add_argument("name", help="Workspace name (@<name>)")
-    p_repo_lock.add_argument("repo", help="Repository name (%%<repo>)")
+    p_repo_lock.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
+    p_repo_lock.add_argument("repo", nargs="?", default=None, help="Repository name (%%<repo>)")
 
     p_repo_unlock = repo_subparsers.add_parser("unlock", aliases=["unfreeze"], help="Unlock repository worktree (restore write permissions)")
-    p_repo_unlock.add_argument("name", help="Workspace name (@<name>)")
-    p_repo_unlock.add_argument("repo", help="Repository name (%%<repo>)")
+    p_repo_unlock.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
+    p_repo_unlock.add_argument("repo", nargs="?", default=None, help="Repository name (%%<repo>)")
 
     # Direct top-level shortcuts for lock/unlock
     p_lock = subparsers.add_parser("lock", help="Lock repository worktree (read-only)")
-    p_lock.add_argument("name", help="Workspace name (@<name>)")
-    p_lock.add_argument("repo", help="Repository name (%%<repo>)")
+    p_lock.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
+    p_lock.add_argument("repo", nargs="?", default=None, help="Repository name (%%<repo>)")
 
     p_unlock = subparsers.add_parser("unlock", help="Unlock repository worktree (writable)")
-    p_unlock.add_argument("name", help="Workspace name (@<name>)")
-    p_unlock.add_argument("repo", help="Repository name (%%<repo>)")
+    p_unlock.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
+    p_unlock.add_argument("repo", nargs="?", default=None, help="Repository name (%%<repo>)")
 
     # ==================== 3. Service Runtime & Multiplexers ====================
     # Command: ws start @<name> [%repos...] [--tmux|-z|-d|-t|--stream] [--switch]
     p_start = subparsers.add_parser("start", aliases=["launch", "run"], help="Start workspace services concurrently")
-    p_start.add_argument("name", help="Workspace name (@<name>)")
+    p_start.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_start.add_argument("repos", nargs="*", help="Services to start (%%<repo>)")
     p_start.add_argument("--all", action="store_true", help="Start all services in workspace")
     p_start.add_argument("--repos", "--only", dest="repos_flag", type=str, help="Comma-separated list of services")
@@ -519,7 +636,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Command: ws attach @<name> [%repo]
     p_attach = subparsers.add_parser("attach", help="Attach to a running workspace session")
-    p_attach.add_argument("name", help="Workspace name (@<name>)")
+    p_attach.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_attach.add_argument("repo", nargs="?", default=None, help="Service name to focus (%%<repo>)")
     p_attach.add_argument("--all", action="store_true", help="Attach in multi-pane grid view")
     p_attach.add_argument("--switch", "-s", action="store_true", help="Zero-downtime switch presentation engine")
@@ -529,34 +646,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Command: ws stop @<name>
     p_stop = subparsers.add_parser("stop", aliases=["kill"], help="Stop running workspace background session")
-    p_stop.add_argument("name", help="Workspace name (@<name>)")
+    p_stop.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
 
     # Command: ws restart @<name> [%repos...]
     p_restart = subparsers.add_parser("restart", help="Restart running workspace services")
-    p_restart.add_argument("name", help="Workspace name (@<name>)")
+    p_restart.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_restart.add_argument("repos", nargs="*", help="Services to restart (%%<repo>)")
 
     # Command: ws logs @<name> [%repo] [-f]
     p_logs = subparsers.add_parser("logs", help="View service logs")
-    p_logs.add_argument("name", help="Workspace name (@<name>)")
+    p_logs.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_logs.add_argument("repo", nargs="?", default=None, help="Service name (%%<repo>)")
     p_logs.add_argument("-f", "--follow", action="store_true", help="Follow log output")
     p_logs.add_argument("-n", "--lines", type=int, default=50, help="Number of lines to display (default: 50)")
 
     # Command: ws bridge @<name> %<repo>
     p_bridge = subparsers.add_parser("bridge", help="Connect raw terminal I/O bridge to a running workspace service")
-    p_bridge.add_argument("name", help="Workspace name (@<name>)")
-    p_bridge.add_argument("repo", help="Repository service name (%%<repo>)")
+    p_bridge.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
+    p_bridge.add_argument("repo", nargs="?", default=None, help="Repository service name (%%<repo>)")
 
     # ==================== 4. Developer Shell & Environment ====================
     # Command: ws shell @<name> [%worktree]
     p_shell = subparsers.add_parser("shell", aliases=["enter", "open"], help="Open interactive subshell inside workspace or worktree")
-    p_shell.add_argument("name", help="Workspace name (@<name>)")
+    p_shell.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_shell.add_argument("worktree", nargs="?", default=None, help="Repository worktree name to open subshell into (%%<repo>)")
 
     # Command: ws env @<name> [%repo]
     p_env = subparsers.add_parser("env", help="Inspect or sync environment variables for a workspace")
-    p_env.add_argument("name", help="Workspace name (@<name>)")
+    p_env.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_env.add_argument("repo", nargs="?", default=None, help="Repository name (%%<repo>)")
     p_env.add_argument("--sync", action="store_true", help="Sync resolved environment variables into worktree .env files")
     p_env.add_argument("--interface", "--iface", "--lan-interface", dest="interface", default=None, help="Network interface name (e.g. wlan0, eno1) or type (wifi, ethernet) to populate LAN IP")
@@ -564,7 +681,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Command: ws setup @<name> [%repos...]
     p_setup = subparsers.add_parser("setup", help="Run setup scripts and environment variable sync for a workspace")
-    p_setup.add_argument("name", help="Workspace name (@<name>)")
+    p_setup.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_setup.add_argument("repos", nargs="*", help="Repository names to setup (%%<repo>)")
     p_setup.add_argument("--all", action="store_true", help="Setup all repositories in the workspace")
     p_setup.add_argument("--repos", "--only", dest="repos_flag", type=str, help="Comma-separated list of repository names to setup")
@@ -790,10 +907,12 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                     raise WSException("Workspace name (@<name>) is required for 'ws create' unless '-f/--file' is used.")
                 ws_name = clean_workspace(args.name)
                 raw_create_args = list(unknown)
+                target_branch = getattr(args, "target_branch", None)
                 repo_specs = parse_create_workspace_args(
                     workspace_name=ws_name,
                     raw_args=raw_create_args,
                     repositories=app_config.repositories,
+                    target_branch=target_branch,
                 )
                 cmd_new(
                     manager=manager,
@@ -809,15 +928,18 @@ def main(sys_args: Sequence[str] | None = None) -> int:
             cmd_list(manager=manager)
 
         elif args.subcommand == "info":
-            cmd_info(manager=manager, name=clean_workspace(args.name))
+            ws_name, _, _ = resolve_ws_and_repo_args(manager, args.name)
+            cmd_info(manager=manager, name=ws_name)
 
         elif args.subcommand in ("focus", "switch"):
-            cmd_focus(manager=manager, name=clean_workspace(args.name))
+            ws_name, _, _ = resolve_ws_and_repo_args(manager, args.name)
+            cmd_focus(manager=manager, name=ws_name)
 
         elif args.subcommand in ("end", "close", "delete", "rm", "remove"):
+            ws_name, _, _ = resolve_ws_and_repo_args(manager, args.name)
             cmd_end(
                 manager=manager,
-                name=clean_workspace(args.name),
+                name=ws_name,
                 force=args.force,
                 no_merge=args.no_merge,
                 delete_branch=args.delete_branch,
@@ -826,10 +948,39 @@ def main(sys_args: Sequence[str] | None = None) -> int:
             )
 
         elif args.subcommand == "status":
-            cmd_status(manager=manager, name=clean_workspace(args.name))
+            ws_name, _, _ = resolve_ws_and_repo_args(manager, args.name)
+            cmd_status(manager=manager, name=ws_name)
 
         elif args.subcommand == "exec":
-            cmd_exec(manager=manager, name=clean_workspace(args.name), command=args.command)
+            detected_ws, _ = manager.detect_context()
+            exec_name = args.name
+            exec_cmd = list(args.command) if args.command else []
+
+            # If name is "--", it was just the delimiter
+            if exec_name == "--":
+                ws_name = detected_ws
+            elif exec_name and (exec_name.startswith("@") or manager.has_workspace(clean_workspace(exec_name))):
+                ws_name = clean_workspace(exec_name)
+            elif detected_ws:
+                # exec_name is part of the command itself (e.g. 'ws exec git status')
+                ws_name = detected_ws
+                if exec_name:
+                    exec_cmd = [exec_name] + exec_cmd
+            else:
+                ws_name = clean_workspace(exec_name)
+
+            if exec_cmd and exec_cmd[0] == "--":
+                exec_cmd = exec_cmd[1:]
+
+            if not ws_name:
+                raise WSException(
+                    "Workspace name (@<name>) required for 'ws exec'. "
+                    "Specify a workspace or run this command from inside a workspace directory."
+                )
+            if not exec_cmd:
+                raise WSException("Command required for 'ws exec'.")
+
+            cmd_exec(manager=manager, name=ws_name, command=exec_cmd)
 
         # 4. Worktree & Repo management
         elif args.subcommand in ("repo", "workspace"):
@@ -838,13 +989,21 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                 OutputHandler.print_error("Please specify a repo action: add, remove, lock, unlock")
                 return 1
 
-            ws_name = clean_workspace(args.name)
-            repo_val = clean_repo(args.repo)
+            ws_name, repo_val, _ = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repo_arg=args.repo,
+                require_ws=True,
+                require_repo=(ws_cmd != "add"),
+            )
             if ws_cmd in ("add", "add-repo"):
+                repo_input = args.repo or args.name
+                if not repo_input:
+                    raise WSException("Repository specification (%<repo>[:branch]) required.")
                 cmd_repo_add(
                     manager=manager,
                     workspace_name=ws_name,
-                    repo_input=args.repo,
+                    repo_input=repo_input,
                     branch=args.branch,
                     existing=args.existing,
                 )
@@ -861,18 +1020,39 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                 cmd_repo_unlock(manager=manager, workspace_name=ws_name, repo_name=repo_val)
 
         elif args.subcommand == "lock":
-            cmd_repo_lock(manager=manager, workspace_name=clean_workspace(args.name), repo_name=clean_repo(args.repo))
+            ws_name, repo_val, _ = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repo_arg=args.repo,
+                require_ws=True,
+                require_repo=True,
+            )
+            cmd_repo_lock(manager=manager, workspace_name=ws_name, repo_name=repo_val)
 
         elif args.subcommand == "unlock":
-            cmd_repo_unlock(manager=manager, workspace_name=clean_workspace(args.name), repo_name=clean_repo(args.repo))
+            ws_name, repo_val, _ = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repo_arg=args.repo,
+                require_ws=True,
+                require_repo=True,
+            )
+            cmd_repo_unlock(manager=manager, workspace_name=ws_name, repo_name=repo_val)
 
         # 5. Service runtime
         elif args.subcommand in ("start", "launch", "run"):
+            ws_name, _, resolved_repos = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repos_arg=getattr(args, "repos", None),
+                require_ws=True,
+                require_repo=False,
+            )
             target_repos = None
             if getattr(args, "repos_flag", None):
                 target_repos = [clean_repo(r.strip()) for r in args.repos_flag.split(",") if r.strip()]
-            elif getattr(args, "repos", None):
-                target_repos = clean_repos(args.repos)
+            elif resolved_repos:
+                target_repos = resolved_repos
 
             mode = getattr(args, "mode", None) or "tui"
             if getattr(args, "zellij", False):
@@ -888,7 +1068,7 @@ def main(sys_args: Sequence[str] | None = None) -> int:
 
             cmd_launch(
                 manager=manager,
-                workspace_name=clean_workspace(args.name),
+                workspace_name=ws_name,
                 repos=target_repos if not getattr(args, "all", False) else None,
                 mode=mode,
                 attach_repo=clean_repo(getattr(args, "attach", None)),
@@ -899,6 +1079,13 @@ def main(sys_args: Sequence[str] | None = None) -> int:
             )
 
         elif args.subcommand == "attach":
+            ws_name, repo_name, _ = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repo_arg=getattr(args, "repo", None),
+                require_ws=True,
+                require_repo=False,
+            )
             attach_mode = getattr(args, "mode", None)
             if getattr(args, "zellij", False):
                 attach_mode = "zellij"
@@ -907,74 +1094,123 @@ def main(sys_args: Sequence[str] | None = None) -> int:
 
             cmd_attach(
                 manager=manager,
-                workspace_name=clean_workspace(args.name),
-                repo_name=clean_repo(getattr(args, "repo", None)),
+                workspace_name=ws_name,
+                repo_name=repo_name,
                 all_panes=getattr(args, "all", False),
                 mode=attach_mode,
                 switch=getattr(args, "switch", False),
             )
 
         elif args.subcommand in ("stop", "kill"):
-            cmd_stop(manager=manager, name=clean_workspace(args.name))
+            ws_name, _, _ = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                require_ws=True,
+            )
+            cmd_stop(manager=manager, name=ws_name)
 
         elif args.subcommand == "restart":
+            ws_name, _, resolved_repos = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repos_arg=getattr(args, "repos", None),
+                require_ws=True,
+            )
             cmd_restart(
                 manager=manager,
-                workspace_name=clean_workspace(args.name),
-                repos=clean_repos(getattr(args, "repos", None)),
+                workspace_name=ws_name,
+                repos=resolved_repos if resolved_repos else None,
             )
 
         elif args.subcommand == "logs":
+            ws_name, repo_name, _ = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repo_arg=getattr(args, "repo", None),
+                require_ws=True,
+                require_repo=False,
+            )
             cmd_logs(
                 manager=manager,
-                workspace_name=clean_workspace(args.name),
-                repo_name=clean_repo(getattr(args, "repo", None)),
+                workspace_name=ws_name,
+                repo_name=repo_name,
                 follow=args.follow,
                 lines=args.lines,
             )
 
         elif args.subcommand == "bridge":
+            ws_name, repo_name, _ = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repo_arg=args.repo,
+                require_ws=True,
+                require_repo=True,
+            )
             cmd_bridge(
                 manager=manager,
-                workspace_name=clean_workspace(args.name),
-                repo_name=clean_repo(args.repo),
+                workspace_name=ws_name,
+                repo_name=repo_name,
             )
 
         # 6. Developer shell & environment
         elif args.subcommand in ("shell", "enter", "open"):
+            ws_name, repo_name, _ = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repo_arg=getattr(args, "worktree", None),
+                require_ws=True,
+                require_repo=False,
+            )
             cmd_shell(
                 manager=manager,
-                name=clean_workspace(args.name),
-                worktree=clean_repo(getattr(args, "worktree", None)),
+                name=ws_name,
+                worktree=repo_name,
             )
 
         elif args.subcommand == "env":
+            ws_name, repo_name, _ = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repo_arg=args.repo,
+                require_ws=True,
+                require_repo=False,
+            )
             cmd_env(
                 manager=manager,
-                workspace_name=clean_workspace(args.name),
-                repo_name=clean_repo(args.repo),
+                workspace_name=ws_name,
+                repo_name=repo_name,
                 sync=args.sync,
                 interface=getattr(args, "interface", None),
                 lan_ip=getattr(args, "lan_ip", None),
             )
 
         elif args.subcommand == "setup":
+            ws_name, _, resolved_repos = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repos_arg=args.repos,
+                require_ws=True,
+                require_repo=False,
+            )
             target_repos = None
             if getattr(args, "repos_flag", None):
                 target_repos = [clean_repo(r.strip()) for r in args.repos_flag.split(",") if r.strip()]
-            elif getattr(args, "repos", None):
-                target_repos = clean_repos(args.repos)
+            elif resolved_repos:
+                target_repos = resolved_repos
+            elif not args.all:
+                _, detected_repo = manager.detect_context()
+                if detected_repo:
+                    target_repos = [detected_repo]
 
             if not args.all and not target_repos:
                 raise WSException(
-                    f"Explicit repository selection required for setup in workspace '@{clean_workspace(args.name)}'. "
+                    f"Explicit repository selection required for setup in workspace '@{ws_name}'. "
                     "Specify '--all' to setup all repositories, or specify repositories using '%repo1 %repo2' or '--repos r1,r2'."
                 )
 
-
             cmd_setup(
                 manager=manager,
-                workspace_name=clean_workspace(args.name),
+                workspace_name=ws_name,
                 repos=target_repos if not args.all else None,
                 dry_run=args.dry_run,
                 skip_scripts=args.skip_scripts,
@@ -984,33 +1220,34 @@ def main(sys_args: Sequence[str] | None = None) -> int:
             )
 
         # 7. Git Collaboration
-        elif args.subcommand == "push":
+        elif args.subcommand in ("push", "pull"):
+            ws_name, _, resolved_repos = resolve_ws_and_repo_args(
+                manager=manager,
+                name_arg=args.name,
+                repos_arg=args.repos,
+                require_ws=True,
+                require_repo=False,
+            )
             target_repos = None
             if getattr(args, "repos_flag", None):
                 target_repos = [clean_repo(r.strip()) for r in args.repos_flag.split(",") if r.strip()]
-            elif getattr(args, "repos", None):
-                target_repos = clean_repos(args.repos)
+            elif resolved_repos:
+                target_repos = resolved_repos
 
-            cmd_push(
-                manager=manager,
-                workspace_name=clean_workspace(args.name),
-                repos=target_repos,
-                remote=args.remote,
-            )
-
-        elif args.subcommand == "pull":
-            target_repos = None
-            if getattr(args, "repos_flag", None):
-                target_repos = [clean_repo(r.strip()) for r in args.repos_flag.split(",") if r.strip()]
-            elif getattr(args, "repos", None):
-                target_repos = clean_repos(args.repos)
-
-            cmd_pull(
-                manager=manager,
-                workspace_name=clean_workspace(args.name),
-                repos=target_repos,
-                remote=args.remote,
-            )
+            if args.subcommand == "push":
+                cmd_push(
+                    manager=manager,
+                    workspace_name=ws_name,
+                    repos=target_repos,
+                    remote=args.remote,
+                )
+            else:
+                cmd_pull(
+                    manager=manager,
+                    workspace_name=ws_name,
+                    repos=target_repos,
+                    remote=args.remote,
+                )
 
         elif args.subcommand == "doctor":
             cmd_doctor(manager=manager)

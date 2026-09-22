@@ -155,11 +155,15 @@ class TmuxLauncher:
         return True
 
     @classmethod
-    def list_panes(cls, project_name: str, workspace_name: str) -> list[str]:
+    def list_panes(cls, session_name: str, workspace_name: str) -> list[str]:
         """List running pane titles/names for a workspace window."""
-        if not cls.is_window_running(project_name, workspace_name):
-            return []
-        sess = cls.session_name(project_name)
+        sess = session_name
+        if not cls.is_window_active(sess, workspace_name):
+            fallback = cls.session_name(session_name)
+            if cls.is_window_active(fallback, workspace_name):
+                sess = fallback
+            else:
+                return []
         res = subprocess.run(
             ["tmux", "list-panes", "-t", f"{sess}:{workspace_name}", "-F", "#{pane_title}"],
             capture_output=True,
@@ -173,17 +177,21 @@ class TmuxLauncher:
         cls,
         workspace_name: str,
         services: Sequence[tuple[str, str, str, dict[str, str]]],
-        project_name: str,
+        session_name: str | None = None,
+        project_name: str | None = None,
     ) -> bool:
-        """Launch services in a project-wide tmux session with a window named after the workspace."""
+        """Launch services in a tmux session with a window named after the workspace."""
         if not cls.is_available() or not services:
             return False
 
-        sess = cls.session_name(project_name)
+        sess = session_name or (cls.session_name(project_name) if project_name else None)
+        if not sess:
+            raise ValueError("Either session_name or project_name must be provided to TmuxLauncher.launch()")
+
         layout = "even-horizontal" if len(services) <= 3 else "tiled"
 
-        if not cls.is_session_running(project_name):
-            # Create new project session with the workspace as the first window
+        if not cls.is_session_active(sess):
+            # Create new session with the workspace as the first window
             first_svc = services[0]
             s_name, s_cwd, _, _ = first_svc
             bridge_cmd = f"ws bridge {workspace_name} {s_name}"
@@ -215,7 +223,7 @@ class TmuxLauncher:
                 subprocess.run(["tmux", "select-pane", "-t", f"{sess}:{workspace_name}", "-T", s_name], check=False)
             subprocess.run(["tmux", "select-layout", "-t", f"{sess}:{workspace_name}", layout], check=False)
 
-        elif not cls.is_window_running(project_name, workspace_name):
+        elif not cls.is_window_active(sess, workspace_name):
             # Session exists, create new window for this workspace
             first_svc = services[0]
             s_name, s_cwd, _, _ = first_svc
@@ -250,7 +258,7 @@ class TmuxLauncher:
 
         else:
             # Window already running: add any missing service panes
-            existing_panes = cls.list_panes(project_name, workspace_name)
+            existing_panes = cls.list_panes(sess, workspace_name)
             for svc in services:
                 s_name, s_cwd, _, _ = svc
                 if s_name not in existing_panes:
@@ -268,29 +276,32 @@ class TmuxLauncher:
                     subprocess.run(["tmux", "select-pane", "-t", f"{sess}:{workspace_name}", "-T", s_name], check=False)
                     subprocess.run(["tmux", "select-layout", "-t", f"{sess}:{workspace_name}", layout], check=False)
 
-
-
         # Select workspace window
         subprocess.run(["tmux", "select-window", "-t", f"{sess}:{workspace_name}"], check=False)
 
         # Attach / switch to window
-        cls.attach(workspace_name=workspace_name, project_name=project_name, all_panes=True)
+        cls.attach(workspace_name=workspace_name, session_name=sess, all_panes=True)
         return True
-
 
     @classmethod
     def attach(
         cls,
         workspace_name: str,
-        project_name: str,
+        session_name: str | None = None,
+        project_name: str | None = None,
         repo_name: str | None = None,
         all_panes: bool = False,
     ) -> bool:
         """Attach to workspace window. If not all_panes, zoom the focused pane fullscreen."""
-        if not cls.is_session_running(project_name):
+        sess = session_name
+        if not sess and project_name:
+            sess = cls.session_name(project_name)
+        elif sess and not cls.is_session_active(sess) and cls.is_session_active(cls.session_name(sess)):
+            sess = cls.session_name(sess)
+
+        if not sess or not cls.is_session_active(sess):
             return False
 
-        sess = cls.session_name(project_name)
         target_win = f"{sess}:{workspace_name}"
 
         # Switch to target window
@@ -322,11 +333,21 @@ class TmuxLauncher:
         return True
 
     @classmethod
-    def kill_workspace(cls, workspace_name: str, project_name: str) -> bool:
-        """Kill workspace window in project tmux session."""
-        if not cls.is_session_running(project_name):
+    def kill_workspace(
+        cls,
+        workspace_name: str,
+        session_name: str | None = None,
+        project_name: str | None = None,
+    ) -> bool:
+        """Kill workspace window in tmux session."""
+        sess = session_name
+        if not sess and project_name:
+            sess = cls.session_name(project_name)
+        elif sess and not cls.is_session_active(sess) and cls.is_session_active(cls.session_name(sess)):
+            sess = cls.session_name(sess)
+
+        if not sess or not cls.is_session_active(sess):
             return False
-        sess = cls.session_name(project_name)
         res = subprocess.run(
             ["tmux", "kill-window", "-t", f"{sess}:{workspace_name}"],
             capture_output=True,
@@ -340,15 +361,26 @@ class TmuxLauncher:
             check=False,
         )
         if not win_list.stdout.strip():
-            cls.kill_session(project_name)
+            cls.kill_session(session_name=sess)
         return res.returncode == 0
 
     @classmethod
-    def kill_session(cls, project_name: str) -> bool:
-        """Kill entire project tmux session."""
+    def kill_session(
+        cls,
+        session_name: str | None = None,
+        project_name: str | None = None,
+    ) -> bool:
+        """Kill entire tmux session."""
         if not cls.is_available():
             return False
-        sess = cls.session_name(project_name)
+        sess = session_name
+        if not sess and project_name:
+            sess = cls.session_name(project_name)
+        elif sess and not cls.is_session_active(sess) and cls.is_session_active(cls.session_name(sess)):
+            sess = cls.session_name(sess)
+
+        if not sess or not cls.is_session_active(sess):
+            return False
         res = subprocess.run(["tmux", "kill-session", "-t", sess], capture_output=True, check=False)
         return res.returncode == 0
 
@@ -581,6 +613,7 @@ class ZellijLauncher:
         project_name: str,
         repo_name: str | None = None,
         all_panes: bool = False,
+        ws_dir: Path | None = None,
     ) -> bool:
         """Attach to project zellij session and focus the workspace tab."""
         if not cls.is_available():
@@ -588,7 +621,10 @@ class ZellijLauncher:
         sess = cls.session_name(project_name)
         cls.clean_dead_sessions(project_name)
         if not cls.is_session_running(project_name):
-            layout_file = Path.cwd() / "workspaces" / workspace_name / ".ws" / "zellij.kdl"
+            if ws_dir:
+                layout_file = ws_dir / ".ws" / "zellij.kdl"
+            else:
+                layout_file = Path.cwd() / "workspaces" / workspace_name / ".ws" / "zellij.kdl"
             if layout_file.exists():
                 os.system(f"zellij --layout {layout_file} options --session-name {sess}")
             else:

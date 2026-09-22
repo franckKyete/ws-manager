@@ -73,9 +73,76 @@ class WorkspaceManager:
         self.config = config
         self.git = git_service or GitService()
 
+    def _resolve_bare_path(self, bare: Path | str) -> Path:
+        """Resolve a bare repository path relative to project_root if relative."""
+        p = Path(bare)
+        return p.resolve() if p.is_absolute() else (self.config.project_root / p).resolve()
+
     def _get_workspace_dir(self, name: str) -> Path:
         """Get absolute path to a workspace directory."""
-        return (self.config.workspaces_dir / name).resolve()
+        clean = name.lstrip("@")
+        return (self.config.workspaces_dir / clean).resolve()
+
+    def get_workspace_dir(self, name: str) -> Path:
+        """Public method to get absolute path to a workspace directory."""
+        return self._get_workspace_dir(name)
+
+    def has_workspace(self, name: str) -> bool:
+        """Check if a workspace exists and has a workspace.yml file."""
+        ws_dir = self._get_workspace_dir(name)
+        return ws_dir.exists() and (ws_dir / "workspace.yml").exists()
+
+    def detect_context(self, cwd: Path | None = None) -> tuple[str | None, str | None]:
+        """
+        Detect active workspace and repository from current working directory.
+
+        Returns:
+            (workspace_name, repo_name): Tuple of detected names, or (None, None).
+        """
+        curr = (cwd or Path.cwd()).resolve()
+        workspaces_dir = self.config.workspaces_dir.resolve()
+
+        detected_ws: str | None = None
+        detected_repo: str | None = None
+
+        # 1. Check if curr is inside workspaces_dir
+        try:
+            rel = curr.relative_to(workspaces_dir)
+            parts = rel.parts
+            if parts:
+                detected_ws = parts[0].lstrip("@")
+                if len(parts) >= 2:
+                    folder_name = parts[1]
+                    for r_name, r_cfg in self.config.repositories.items():
+                        checkout_name = Path(r_cfg.checkout).name if r_cfg.checkout else r_name
+                        if folder_name in (r_name, checkout_name):
+                            detected_repo = r_name
+                            break
+            return (detected_ws, detected_repo)
+        except ValueError:
+            pass
+
+        # 2. Fallback: Search upward for workspace.yml (e.g. symlinks or custom workspace paths)
+        p = curr
+        while p != p.parent:
+            if (p / "workspace.yml").exists():
+                detected_ws = p.name.lstrip("@")
+                if curr != p:
+                    try:
+                        rel_p = curr.relative_to(p)
+                        if rel_p.parts:
+                            f_name = rel_p.parts[0]
+                            for r_name, r_cfg in self.config.repositories.items():
+                                checkout_name = Path(r_cfg.checkout).name if r_cfg.checkout else r_name
+                                if f_name in (r_name, checkout_name):
+                                    detected_repo = r_name
+                                    break
+                    except ValueError:
+                        pass
+                return (detected_ws, detected_repo)
+            p = p.parent
+
+        return (None, None)
 
     def validate_environment(self) -> None:
         """Ensure Git is installed and available."""
@@ -91,8 +158,8 @@ class WorkspaceManager:
             )
         repo_cfg = self.config.repositories[repo_name]
 
-        # Resolve bare repo path relative to cwd if relative
-        bare_path = repo_cfg.bare.resolve() if repo_cfg.bare.is_absolute() else (Path.cwd() / repo_cfg.bare).resolve()
+        # Resolve bare repo path relative to project_root if relative
+        bare_path = self._resolve_bare_path(repo_cfg.bare)
 
         if not self.git.is_bare_repo(bare_path):
             raise RepositoryNotFoundException(
@@ -128,6 +195,142 @@ class WorkspaceManager:
                     f"Branch '{spec.branch}' does not exist in repository '{spec.name}' ({repo_cfg.bare.name})"
                 )
 
+    def prepare_and_sync_target_branch(
+        self,
+        repo_name: str,
+        bare_path: Path,
+        target_branch: str | None = None,
+    ) -> str | None:
+        """Resolve, validate, and synchronize the target base branch for a repository.
+
+        Rules:
+        - If target_branch is None or empty, default to main branch (main, develop, master, or default).
+        - If remote tracking branch exists:
+          - If diverged (ahead > 0 and behind > 0): fail with ValidationException.
+          - If advanced (ahead > 0 and behind == 0): create directly with local branch without pulling.
+          - If up to date (ahead == 0 and behind == 0): create directly.
+          - If behind (ahead == 0 and behind > 0):
+            - If checked out in an existing worktree:
+              - If any tracked files are modified: fail with ValidationException before pulling.
+              - If clean (or only untracked files): pull remote branch into worktree.
+            - If not checked out in any worktree (bare repo only):
+              - Fast-forward bare repo branch ref directly to remote commit.
+        """
+        is_explicit_target = bool(target_branch and target_branch.strip())
+        resolved_target = target_branch.strip() if is_explicit_target else None
+        if not resolved_target:
+            main_res = self.git.resolve_main_branch(bare_path)
+            resolved_target = main_res if isinstance(main_res, str) else None
+
+        clean_target = resolved_target.removeprefix("refs/heads/") if resolved_target else "main"
+
+        # Identify primary remote
+        remotes_raw = self.git.get_remotes(bare_path)
+        remotes = remotes_raw if isinstance(remotes_raw, (list, tuple, set)) else []
+        primary_remote = "origin" if "origin" in remotes else (remotes[0] if remotes else None)
+
+        if primary_remote:
+            # Attempt to fetch target branch from remote
+            try:
+                self.git.fetch_remote_branch(bare_path, clean_target, remote=primary_remote)
+            except Exception as e:
+                logger.debug("Fetch remote branch '%s' for '%s' returned: %s", clean_target, repo_name, e)
+
+            remote_ref = f"refs/remotes/{primary_remote}/{clean_target}"
+            has_remote = bool(self.git.ref_exists(bare_path, remote_ref))
+            has_local = bool(self.git.branch_exists(bare_path, clean_target))
+
+            if not has_remote and not has_local:
+                if is_explicit_target:
+                    raise ValidationException(
+                        f"Target branch '{clean_target}' does not exist in repository '{repo_name}'"
+                    )
+                fallback = self.git.get_default_branch_or_head(bare_path)
+                if not isinstance(fallback, str) or not fallback:
+                    return None
+                clean_target = fallback
+
+            if has_remote:
+                div = self.git.get_branch_divergence(bare_path, clean_target, remote=primary_remote)
+                if isinstance(div, (tuple, list)) and len(div) == 2:
+                    ahead, behind = int(div[0]), int(div[1])
+                else:
+                    ahead, behind = 0, 0
+
+                if ahead > 0 and behind > 0:
+                    raise ValidationException(
+                        f"Repository '{repo_name}' branch '{clean_target}' has diverged from "
+                        f"'{primary_remote}/{clean_target}' ({ahead} commit(s) ahead, {behind} commit(s) behind). "
+                        f"Please resolve divergence before creating workspace."
+                    )
+                elif ahead > 0 and behind == 0:
+                    logger.info(
+                        "Repository '%s' branch '%s' is advanced (%d commit(s) ahead of %s/%s). "
+                        "Using local branch.",
+                        repo_name,
+                        clean_target,
+                        ahead,
+                        primary_remote,
+                        clean_target,
+                    )
+                elif ahead == 0 and behind > 0:
+                    logger.info(
+                        "Repository '%s' branch '%s' is behind %s/%s by %d commit(s). Synchronizing...",
+                        repo_name,
+                        clean_target,
+                        primary_remote,
+                        clean_target,
+                        behind,
+                    )
+                    wt_path = self.git.find_worktree_for_branch(bare_path, clean_target)
+                    if wt_path:
+                        # Check uncommitted tracked files
+                        uncommitted = self.git.check_worktree_uncommitted(wt_path)
+                        modified_files = uncommitted.get("modified", []) if isinstance(uncommitted, dict) else []
+                        if modified_files:
+                            dirty_files = ", ".join(modified_files[:5])
+                            if len(modified_files) > 5:
+                                dirty_files += f" and {len(modified_files) - 5} more"
+                            raise ValidationException(
+                                f"Cannot pull latest changes for repository '{repo_name}' branch '{clean_target}': "
+                                f"worktree at '{wt_path}' has uncommitted changes in tracked files ({dirty_files}). "
+                                f"Please commit or stash changes before creating workspace."
+                            )
+                        # Clean worktree (or only untracked files) -> pull
+                        OutputHandler.print_info(
+                            f"Pulling latest changes for '{repo_name}' branch '{clean_target}' at '{wt_path.name}'..."
+                        )
+                        try:
+                            self.git.pull_branch(wt_path, remote=primary_remote, branch=clean_target)
+                        except Exception as e:
+                            raise ValidationException(
+                                f"Failed to pull latest changes for repository '{repo_name}' branch '{clean_target}': {e}"
+                            ) from e
+                    else:
+                        # Bare repo update
+                        updated = self.git.update_bare_branch(bare_path, clean_target, remote_ref)
+                        if not updated:
+                            raise ValidationException(
+                                f"Failed to update branch '{clean_target}' in bare repository '{repo_name}' to '{remote_ref}'."
+                            )
+                        logger.info(
+                            "Fast-forwarded bare repository '%s' branch '%s' to '%s'",
+                            repo_name,
+                            clean_target,
+                            remote_ref,
+                        )
+            return clean_target if isinstance(clean_target, str) else None
+        else:
+            # No remotes configured
+            if self.git.branch_exists(bare_path, clean_target):
+                return clean_target if isinstance(clean_target, str) else None
+            if is_explicit_target:
+                raise ValidationException(
+                    f"Target branch '{clean_target}' does not exist in repository '{repo_name}'"
+                )
+            fallback = self.git.get_default_branch_or_head(bare_path)
+            return fallback if isinstance(fallback, str) else None
+
     def create_workspace(
         self,
         name: str,
@@ -138,6 +341,18 @@ class WorkspaceManager:
         """Create a new workspace with git worktrees and metadata."""
         # 1. Validation
         self.validate_creation(name, repo_specs)
+
+        # 2. Target base branch validation & synchronization
+        resolved_bases: dict[str, str | None] = {}
+        for spec in repo_specs:
+            repo_cfg = self.validate_repository_config(spec.name)
+            target_to_sync = spec.base_branch if spec.create else spec.branch
+            resolved_base = self.prepare_and_sync_target_branch(
+                repo_name=spec.name,
+                bare_path=repo_cfg.bare,
+                target_branch=target_to_sync,
+            )
+            resolved_bases[spec.name] = resolved_base
 
         ws_dir = self._get_workspace_dir(name)
         rollback = RollbackStack()
@@ -156,16 +371,22 @@ class WorkspaceManager:
             for spec in repo_specs:
                 repo_cfg = self.validate_repository_config(spec.name)
                 worktree_path = ws_dir / repo_cfg.checkout
+                start_point = resolved_bases.get(spec.name) if spec.create else None
 
                 mode_str = "Creating branch and worktree" if spec.create else "Checking out worktree"
                 logger.info("%s for '%s' at %s", mode_str, spec.name, worktree_path)
 
                 with OutputHandler.spinner(f"Setting up worktree for {spec.name} ({spec.branch})..."):
+                    create_kwargs = {}
+                    if start_point:
+                        create_kwargs["start_point"] = start_point
+
                     self.git.create_worktree(
                         bare_path=repo_cfg.bare,
                         worktree_path=worktree_path,
                         branch=spec.branch,
                         create_branch=spec.create,
+                        **create_kwargs,
                     )
 
                 # Register rollback for worktree removal
@@ -190,6 +411,7 @@ class WorkspaceManager:
                     branch=spec.branch,
                     create=spec.create,
                     path=repo_cfg.checkout,
+                    base_branch=resolved_bases.get(spec.name) if spec.create else None,
                 )
 
             # Step C: Write workspace.yml metadata
@@ -275,12 +497,14 @@ class WorkspaceManager:
             if r_name in self.config.repositories:
                 checkout_path = self.config.repositories[r_name].checkout
 
+            base = r_data.get("base") or r_data.get("target") or r_data.get("from")
             specs.append(
                 RepoSpec(
                     name=r_name,
                     branch=str(branch),
                     create=bool(create),
                     path=checkout_path,
+                    base_branch=str(base) if base else None,
                 )
             )
 
@@ -317,7 +541,7 @@ class WorkspaceManager:
         else:
             # Fallback to configured repositories
             for r_name, repo_cfg in self.config.repositories.items():
-                bare_path = repo_cfg.bare.resolve() if repo_cfg.bare.is_absolute() else (Path.cwd() / repo_cfg.bare).resolve()
+                bare_path = self._resolve_bare_path(repo_cfg.bare)
                 wt_path = ws_dir / repo_cfg.checkout
                 if wt_path.exists():
                     with OutputHandler.spinner(f"Removing worktree for {r_name}..."):
@@ -325,7 +549,7 @@ class WorkspaceManager:
 
         # Prune worktrees in all bare repositories
         for r_name, repo_cfg in self.config.repositories.items():
-            bare_path = repo_cfg.bare.resolve() if repo_cfg.bare.is_absolute() else (Path.cwd() / repo_cfg.bare).resolve()
+            bare_path = self._resolve_bare_path(repo_cfg.bare)
             if self.git.is_bare_repo(bare_path):
                 self.git.prune_worktrees(bare_path)
 
@@ -378,7 +602,7 @@ class WorkspaceManager:
                 continue
             repo_cfg = self.validate_repository_config(r_name)
             wt_path = ws_dir / spec.path
-            bare_path = repo_cfg.bare.resolve() if repo_cfg.bare.is_absolute() else (Path.cwd() / repo_cfg.bare).resolve()
+            bare_path = self._resolve_bare_path(repo_cfg.bare)
 
             if not wt_path.exists():
                 repos_safety[r_name] = {
@@ -519,7 +743,7 @@ class WorkspaceManager:
                 for r_name, spec in metadata.repositories.items():
                     if r_name in self.config.repositories:
                         repo_cfg = self.validate_repository_config(r_name)
-                        bare_path = repo_cfg.bare.resolve() if repo_cfg.bare.is_absolute() else (Path.cwd() / repo_cfg.bare).resolve()
+                        bare_path = self._resolve_bare_path(repo_cfg.bare)
                         default_br = self.git.get_default_branch(bare_path)
                         if spec.branch and spec.branch != default_br:
                             branches_to_delete.append((bare_path, spec.branch))
@@ -557,6 +781,113 @@ class WorkspaceManager:
         if not TmuxLauncher.is_window_active(sess_name, name):
             raise WorkspaceNotFoundException(f"Tmux window '@{name}' not found in session '{sess_name}'.")
         return TmuxLauncher.focus_workspace_window(sess_name, name)
+
+    def get_launch_session_name(self) -> str:
+        """Get the configured or default tmux launch session name."""
+        if self.config.tmux and self.config.tmux.launch_session:
+            return self.config.tmux.launch_session
+        return f"running-{self.config.project_root.name}"
+
+    def get_or_create_launch_session(self) -> str:
+        """Get or automatically create and persist a non-colliding tmux launch session name."""
+        import secrets
+
+        if self.config.tmux and self.config.tmux.launch_session:
+            if self.config.tmux.session == self.config.tmux.launch_session:
+                raise ConfigException(
+                    f"Tmux work session ('{self.config.tmux.session}') and launch session ('{self.config.tmux.launch_session}') "
+                    "must have different names to prevent collisions."
+                )
+            return self.config.tmux.launch_session
+
+        proj_name = self.config.project_root.name
+        work_session = self.config.tmux.session if self.config.tmux else None
+
+        while True:
+            suffix = secrets.token_hex(2)
+            candidate = f"running-{proj_name}-{suffix}"
+            if candidate != work_session:
+                break
+
+        self._persist_launch_session(candidate)
+        OutputHandler.print_info(
+            f"Configured tmux launch session as '[bold cyan]{candidate}[/bold cyan]' in repositories.yml"
+        )
+        return candidate
+
+    def _persist_launch_session(self, launch_session_name: str) -> None:
+        """Persist generated launch_session into repositories.yml and update in-memory config."""
+        from ws.models import TmuxConfig
+
+        # Update in-memory config
+        if self.config.tmux is None:
+            self.config.tmux = TmuxConfig(
+                session=self.config.project_root.name,
+                launch_session=launch_session_name,
+            )
+        else:
+            self.config.tmux.launch_session = launch_session_name
+
+        config_path = self.config.config_file_path or (self.config.project_root / "repositories.yml")
+        if not config_path.exists():
+            return
+
+        try:
+            content = config_path.read_text(encoding="utf-8")
+            lines = content.splitlines(keepends=True)
+            tmux_idx = -1
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("tmux:") or stripped == "tmux:":
+                    tmux_idx = i
+                    break
+
+            if tmux_idx != -1:
+                # Find indentation and insertion point under tmux
+                indent = "  "
+                insert_pos = tmux_idx + 1
+                found_existing = False
+                for j in range(tmux_idx + 1, len(lines)):
+                    line = lines[j]
+                    if not line.strip() or line.strip().startswith("#"):
+                        continue
+                    if line.startswith(" ") or line.startswith("\t"):
+                        indent = line[: len(line) - len(line.lstrip())]
+                        stripped = line.strip()
+                        if stripped.startswith("launch_session:") or stripped.startswith("launch:"):
+                            lines[j] = f"{indent}launch_session: {launch_session_name}\n"
+                            found_existing = True
+                            break
+                        insert_pos = j + 1
+                    else:
+                        insert_pos = j
+                        break
+                if not found_existing:
+                    lines.insert(insert_pos, f"{indent}launch_session: {launch_session_name}\n")
+                new_content = "".join(lines)
+            else:
+                new_content = f"tmux:\n  launch_session: {launch_session_name}\n" + content
+
+            # Validate that the modified YAML is valid
+            yaml.safe_load(new_content)
+            config_path.write_text(new_content, encoding="utf-8")
+        except Exception as e:
+            logger.warning("Failed text-based insertion of launch_session, falling back to safe_load: %s", e)
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+                if "tmux" not in data or not isinstance(data["tmux"], dict):
+                    if isinstance(data.get("tmux"), str):
+                        data["tmux"] = {"session": data["tmux"], "launch_session": launch_session_name}
+                    else:
+                        data["tmux"] = {"launch_session": launch_session_name}
+                else:
+                    data["tmux"]["launch_session"] = launch_session_name
+                with open(config_path, "w", encoding="utf-8") as f:
+                    yaml.dump(data, f, sort_keys=False, default_flow_style=False)
+            except Exception as e2:
+                logger.error("Could not persist launch_session to %s: %s", config_path, e2)
+
 
     def list_workspaces(self) -> list[WorkspaceMetadata]:
         """List all managed workspaces."""
@@ -642,7 +973,8 @@ class WorkspaceManager:
         project_name = self.config.project_root.name
         from ws.multiplexer import TmuxLauncher, ZellijLauncher
 
-        if TmuxLauncher.is_window_running(project_name, name):
+        launch_sess = self.get_launch_session_name()
+        if TmuxLauncher.is_window_active(launch_sess, name) or TmuxLauncher.is_window_running(project_name, name):
             return "tmux"
 
         if ZellijLauncher.is_session_running(project_name):
@@ -698,7 +1030,8 @@ class WorkspaceManager:
         project_name = self.config.project_root.name
         from ws.multiplexer import TmuxLauncher
         if active_engine == "tmux":
-            panes = TmuxLauncher.list_panes(project_name, name)
+            launch_sess = self.get_launch_session_name()
+            panes = TmuxLauncher.list_panes(launch_sess, name)
             for p in panes:
                 s_disc = discovery_services.get(p, {})
                 results[p] = {
@@ -727,8 +1060,12 @@ class WorkspaceManager:
         from ws.multiplexer import TmuxLauncher, ZellijLauncher
         stopped_any = False
 
-        if TmuxLauncher.is_window_running(project_name, name):
-            TmuxLauncher.kill_workspace(name, project_name)
+        launch_sess = self.get_launch_session_name()
+        if TmuxLauncher.is_window_active(launch_sess, name):
+            TmuxLauncher.kill_workspace_window(launch_sess, name)
+            stopped_any = True
+        elif TmuxLauncher.is_window_running(project_name, name):
+            TmuxLauncher.kill_workspace(name, project_name=project_name)
             stopped_any = True
 
         if ZellijLauncher.is_session_running(project_name):
@@ -817,7 +1154,7 @@ class WorkspaceManager:
     def fetch_repositories(self) -> None:
         """Fetch all bare repositories."""
         for r_name, repo_cfg in self.config.repositories.items():
-            bare_path = repo_cfg.bare.resolve() if repo_cfg.bare.is_absolute() else (Path.cwd() / repo_cfg.bare).resolve()
+            bare_path = self._resolve_bare_path(repo_cfg.bare)
             if self.git.is_bare_repo(bare_path):
                 OutputHandler.print_info(f"Fetching bare repo [bold cyan]{r_name}[/bold cyan] ({bare_path.name})...")
                 self.git.fetch_repo(bare_path)
@@ -828,7 +1165,7 @@ class WorkspaceManager:
         results["git_installed"] = self.git.is_git_installed()
 
         for r_name, repo_cfg in self.config.repositories.items():
-            bare_path = repo_cfg.bare.resolve() if repo_cfg.bare.is_absolute() else (Path.cwd() / repo_cfg.bare).resolve()
+            bare_path = self._resolve_bare_path(repo_cfg.bare)
             results[f"repo_{r_name}"] = self.git.is_bare_repo(bare_path)
 
         ws_root = self.config.workspaces_dir.resolve()
@@ -879,7 +1216,7 @@ class WorkspaceManager:
         for item in repo_inputs:
             name, url, bare_path, checkout = self.parse_repo_url(item)
 
-            resolved_bare = bare_path.resolve() if bare_path.is_absolute() else (Path.cwd() / bare_path).resolve()
+            resolved_bare = self._resolve_bare_path(bare_path)
             ensure_directory(resolved_bare.parent)
 
             if not self.git.is_bare_repo(resolved_bare):
@@ -1266,6 +1603,11 @@ class WorkspaceManager:
             lan_ip=resolved_lan_ip,
             interface=interface,
         )
+
+        # Ensure tmux launch session is configured
+        if not dry_run:
+            if not (self.config.tmux and self.config.tmux.launch_session):
+                self.get_or_create_launch_session()
 
         results: dict[str, dict[str, Any]] = {}
 
@@ -1675,7 +2017,11 @@ class WorkspaceManager:
                 )
                 from ws.multiplexer import TmuxLauncher, ZellijLauncher
                 if active_engine == "tmux":
-                    TmuxLauncher.kill_workspace(workspace_name, self.config.project_root.name)
+                    launch_sess = self.get_launch_session_name()
+                    if TmuxLauncher.is_window_active(launch_sess, workspace_name):
+                        TmuxLauncher.kill_workspace_window(launch_sess, workspace_name)
+                    else:
+                        TmuxLauncher.kill_workspace(workspace_name, project_name=self.config.project_root.name)
                 elif active_engine == "zellij":
                     ZellijLauncher.kill_workspace(workspace_name, self.config.project_root.name)
             else:
@@ -1753,7 +2099,8 @@ class WorkspaceManager:
                 )
                 return launch_entries
             _ensure_daemon_running()
-            if TmuxLauncher.launch(workspace_name, launch_entries, project_name=project_name):
+            launch_sess = self.get_or_create_launch_session()
+            if TmuxLauncher.launch(workspace_name, launch_entries, session_name=launch_sess):
                 return launch_entries
 
 
