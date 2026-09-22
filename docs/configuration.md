@@ -81,7 +81,29 @@ repositories:
 | `secret`        | `dict[str, str]`        | Global sensitive secrets encrypted with AES-256-GCM in wshub Vault.                         |
 | `private`       | `dict[str, str]`        | Global host-specific variables that **never leave the local machine**.                      |
 | `setup.scripts` | `list[ScriptSpec]`      | Global setup scripts executed in the workspace root directory.                              |
+| `tmux`          | `dict` or `str`         | Project Tmux session configuration for workspace windows (`session`, `command`, `switch`).   |
 | `repositories`  | `dict[str, RepoConfig]` | Map of repository definitions keyed by repository alias (`server`, `mobile`, etc.).         |
+
+---
+
+### 🪟 Tmux Workspace Integration (`tmux:`)
+
+When `tmux` is configured, `ws` automatically manages a project-wide tmux session where each window represents a workspace.
+
+```yaml
+# Mapping notation
+tmux:
+  session: "Workspace"   # Required: Tmux session name
+  command: "nvim"        # Optional: command to run in newly created windows (default: None -> default shell)
+  switch: false          # Optional: auto-focus new workspace window upon creation (default: false)
+
+# Or shorthand notation
+tmux: "Workspace"
+```
+
+- On `ws create @feat`: creates a new window named `@feat` in the session, working directory set to `workspaces/feat`.
+- On `ws end @feat`: cleanly terminates the window `tmux kill-window -t Workspace:feat`.
+- Switch/focus anytime with `ws focus @feat` or `ws switch @feat`.
 
 ---
 

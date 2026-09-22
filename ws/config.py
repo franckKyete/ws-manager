@@ -9,6 +9,7 @@ from ws.exceptions import ConfigException
 from ws.models import (
     AppConfig,
     RepoConfig,
+    TmuxConfig,
     clean_env_val,
     is_private_val,
     is_secret_val,
@@ -136,6 +137,21 @@ class ConfigLoader:
 
             copy_files_raw = data.get("copy_files", data.get("files", []))
             global_copy_files = list(copy_files_raw) if isinstance(copy_files_raw, list) else ([copy_files_raw] if copy_files_raw else [])
+
+            tmux_raw = data.get("tmux", data.get("tmux_session"))
+            tmux_cfg = None
+            if tmux_raw is not None:
+                try:
+                    tmux_cfg = TmuxConfig.from_dict(tmux_raw)
+                    if tmux_cfg.launch_session and tmux_cfg.session == tmux_cfg.launch_session:
+                        raise ConfigException(
+                            f"Tmux work session ('{tmux_cfg.session}') and launch session ('{tmux_cfg.launch_session}') "
+                            "must have different names to prevent collisions."
+                        )
+                except ConfigException:
+                    raise
+                except Exception as e:
+                    raise ConfigException(f"Invalid tmux configuration: {e}") from e
         else:
             global_env = {}
             global_secret_env = {}
@@ -144,6 +160,7 @@ class ConfigLoader:
             global_setup = []
             global_secrets = []
             global_copy_files = []
+            tmux_cfg = None
             # Fallback auto-detection for .git bare repos in bares/ or current directory
             bares_dir = project_root / "bares"
             bare_dirs = sorted(bares_dir.glob("*.git")) if bares_dir.exists() else []
@@ -184,6 +201,7 @@ class ConfigLoader:
             setup=global_setup,
             secrets=global_secrets,
             copy_files=global_copy_files,
+            tmux=tmux_cfg,
         )
 
     @classmethod
@@ -240,6 +258,8 @@ class ConfigLoader:
             sanitized_data["setup"] = list(app_config.setup)
         if app_config.copy_files:
             sanitized_data["copy_files"] = list(app_config.copy_files)
+        if app_config.tmux:
+            sanitized_data["tmux"] = app_config.tmux.to_dict()
 
         sanitized_data["repositories"] = sanitized_repos
         sanitized_yaml = yaml.dump(sanitized_data, sort_keys=False, default_flow_style=False)

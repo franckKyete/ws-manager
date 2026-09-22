@@ -40,15 +40,33 @@ ws start @develop
 
 ---
 
-## 2. Tmux Integration (Vertical Side-by-Side Panes)
+## 2. Tmux Integration
 
-For developers who live inside `tmux`, `ws` launches services in side-by-side **vertical columns** (`tmux split-window -h`) with an `even-horizontal` layout:
+`ws` provides first-class support for `tmux` across two dimensions: **Workspace Window Management** and **Multi-Service Panes**.
+
+### A. Workspace Window Management (`repositories.yml`)
+
+Configure `tmux:` in your `repositories.yml` to have `ws` manage a dedicated window for each workspace inside your project tmux session:
+
+```yaml
+tmux:
+  session: "Workspace"   # Project session name
+  command: "nvim"        # Optional startup command (default: user shell)
+```
+
+- **`ws create @feature`**: Automatically adds a background window named `@feature` (working directory: workspace root) inside session `Workspace`.
+- **`ws focus @feature`** (or `ws switch @feature`): Switches your tmux client directly to the workspace window.
+- **`ws end @feature`**: Safely closes the workspace and removes the tmux window.
+
+### B. Vertical Side-by-Side Service Panes (`ws start --tmux`)
+
+For monitoring multi-service log output, `ws` launches services in side-by-side **vertical columns** (`tmux split-window -h`) with an `even-horizontal` layout:
 
 ```bash
 ws start @develop --tmux
 ```
 
-### Features:
+#### Features:
 
 - **Automatic Session & Window Naming**: Named `ws-<workspace_name>` (e.g. `ws-develop`).
 - **Vertical Columns**: Services sit side-by-side across your monitor, allowing easy horizontal comparison of frontend, backend, and database logs.
