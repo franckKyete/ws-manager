@@ -762,6 +762,91 @@ def cmd_hub_state_restore(manager: WorkspaceManager, workspace: str, project: st
         OutputHandler.print_error(f"Failed restoring state: {e}")
 
 
+def cmd_hub_auto_save_status(manager: WorkspaceManager) -> None:
+    """Execute 'ws hub auto-save status' command."""
+    from ws.utils import format_relative_time
+    from rich.table import Table
+
+    status = manager.get_auto_save_status()
+    enabled = status["enabled"]
+    interval_sec = status["interval"]
+    daemon_active = status["daemon_active"]
+    daemon_pid = status["daemon_pid"]
+    workspaces = status["workspaces"]
+
+    interval_str = f"{interval_sec // 60}m" if interval_sec % 60 == 0 else f"{interval_sec}s"
+    enabled_str = "[bold green]enabled[/bold green]" if enabled else "[yellow]disabled[/yellow]"
+    daemon_str = f"[bold green]active (PID {daemon_pid})[/bold green]" if daemon_active else "[dim]inactive[/dim]"
+
+    OutputHandler.print_info(f"wshub Auto-Save: {enabled_str} (Interval: {interval_str}, Daemon: {daemon_str})")
+
+    table = Table(title="Workspace Auto-Save Status")
+    table.add_column("Workspace", style="bold cyan")
+    table.add_column("Last Saved", style="white")
+    table.add_column("Uncommitted WIP", style="magenta")
+    table.add_column("Session", style="dim")
+
+    for w_name, info in sorted(workspaces.items()):
+        last_saved = info.get("last_saved_at")
+        last_str = format_relative_time(last_saved) if last_saved else "[dim]never[/dim]"
+        dirty_str = "[yellow]dirty (uncommitted)[/yellow]" if info.get("has_uncommitted") else "[green]clean[/green]"
+        sess_str = "[green]active[/green]" if info.get("active_session") else "[dim]idle[/dim]"
+        table.add_row(f"@{w_name}", last_str, dirty_str, sess_str)
+
+    console.print(table)
+
+
+def cmd_hub_auto_save_start(
+    manager: WorkspaceManager,
+    interval: str | int | None = None,
+    project: str | None = None,
+    detached: bool = True,
+) -> None:
+    """Execute 'ws hub auto-save start' command."""
+    from ws.utils import parse_duration
+    sec = parse_duration(interval) if interval is not None else None
+    try:
+        pid = manager.start_auto_save_daemon(interval=sec, project_identifier=project, detached=detached)
+        OutputHandler.print_success(f"Started wshub auto-save background daemon (PID [bold cyan]{pid}[/bold cyan])")
+    except Exception as e:
+        OutputHandler.print_error(f"Failed starting auto-save daemon: {e}")
+
+
+def cmd_hub_auto_save_stop(manager: WorkspaceManager) -> None:
+    """Execute 'ws hub auto-save stop' command."""
+    active, pid = manager.is_auto_save_daemon_active()
+    if not active:
+        OutputHandler.print_info("No active auto-save daemon found.")
+        return
+    stopped = manager.stop_auto_save_daemon()
+    if stopped:
+        OutputHandler.print_success(f"Stopped auto-save daemon (PID {pid})")
+    else:
+        OutputHandler.print_error(f"Failed stopping auto-save daemon (PID {pid})")
+
+
+def cmd_hub_auto_save_run(
+    manager: WorkspaceManager,
+    interval: str | int | None = None,
+    project: str | None = None,
+    once: bool = False,
+    force: bool = False,
+) -> None:
+    """Execute 'ws hub auto-save run' or 'ws hub auto-save once' command."""
+    from ws.utils import parse_duration
+    if once:
+        results = manager.hub_auto_save_all_workspaces(project_identifier=project, force=force, silent=False)
+        saved = [w for w, s in results.items() if s]
+        if saved:
+            OutputHandler.print_success(f"Saved workspaces: {', '.join(f'@{w}' for w in saved)}")
+        else:
+            OutputHandler.print_info("No changes detected across workspaces (skipped).")
+    else:
+        sec = parse_duration(interval) if interval is not None else None
+        manager.start_auto_save_daemon(interval=sec, project_identifier=project, detached=False)
+
+
+
 def cmd_hub_secret_list(manager: WorkspaceManager, project: str | None = None) -> None:
     """Execute 'ws hub secret list' command."""
     from ws.hub import HubClient

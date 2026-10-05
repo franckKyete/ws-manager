@@ -114,3 +114,47 @@ If you only want to sync the branch references without uncommitted code:
 ws hub state save @develop --no-wip
 ws hub resume @develop --no-wip
 ```
+
+---
+
+### 6. Automatic Workspace State Saving (`ws hub auto-save`)
+
+Instead of remembering to manually run `ws hub state save`, `ws` can periodically snapshot and save your workspaces in the background.
+
+#### Smart Deduplication
+Auto-save continuously computes a workspace fingerprint incorporating:
+- Current branch `HEAD` commit SHA for each repository.
+- Modified / staged files detected via Git status.
+- Untracked file timestamps and sizes.
+
+If nothing has changed since the last snapshot, the upload is **completely skipped**, ensuring zero wasteful network calls.
+
+#### Configuration in `repositories.yml`
+```yaml
+hub:
+  project: "kyete/renttik"
+  auto_save:
+    enabled: true        # Enable auto-save (default: false)
+    interval: "15m"      # e.g., "5m", "15m", "1h", "300s", or "never"
+    include_wip: true    # include uncommitted / untracked work (default: true)
+    workspaces: "all"    # "all", "active" (workspaces with active sessions), or list of names
+```
+
+#### Managing the Auto-Save Daemon
+```bash
+# Check daemon status, interval, and workspace snapshot history
+ws hub auto-save status
+
+# Start daemon in the background
+ws hub auto-save start
+
+# Stop the running background daemon
+ws hub auto-save stop
+
+# Trigger an immediate one-time auto-save pass across configured workspaces
+ws hub auto-save once
+
+# Force save even if no modifications were detected
+ws hub auto-save once --force
+```
+

@@ -338,6 +338,45 @@ class TmuxConfig:
 
 
 @dataclass
+class HubAutoSaveConfig:
+    """Configuration for periodic automatic workspace state saving to wshub."""
+
+    enabled: bool = False
+    interval: int = 900  # seconds (default 15 minutes)
+    include_wip: bool = True
+    workspaces: str | list[str] = "all"  # "all", "active", or list of workspace names
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "interval": self.interval,
+            "include_wip": self.include_wip,
+            "workspaces": self.workspaces,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | bool) -> "HubAutoSaveConfig":
+        if isinstance(data, bool):
+            return cls(enabled=data)
+        if isinstance(data, dict):
+            from ws.utils import parse_duration
+            enabled_val = data.get("enabled", True)
+            interval_raw = data.get("interval", 900)
+            interval_sec = parse_duration(interval_raw)
+            if interval_sec <= 0:
+                enabled_val = False
+            include_wip_val = data.get("include_wip", True)
+            workspaces_val = data.get("workspaces", "all")
+            return cls(
+                enabled=bool(enabled_val),
+                interval=interval_sec if interval_sec > 0 else 900,
+                include_wip=bool(include_wip_val),
+                workspaces=workspaces_val,
+            )
+        raise ValueError("Invalid hub auto_save configuration format")
+
+
+@dataclass
 class AppConfig:
     """Application-wide configuration."""
 
@@ -352,12 +391,15 @@ class AppConfig:
     secrets: list[str] = field(default_factory=list)
     copy_files: list[Any] = field(default_factory=list)
     tmux: TmuxConfig | None = None
+    hub_auto_save: HubAutoSaveConfig | None = None
+    hub_project: str | None = None
 
     @property
     def project_root(self) -> Path:
         """Root directory of the project containing configuration file."""
 
         return self.config_file_path.parent.resolve() if self.config_file_path else Path.cwd().resolve()
+
 
 
 

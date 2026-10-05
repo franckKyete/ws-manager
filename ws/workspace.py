@@ -2635,6 +2635,8 @@ class WorkspaceManager:
         workspace_name: str,
         project_identifier: str | None = None,
         include_wip: bool = True,
+        silent: bool = False,
+        is_auto: bool = False,
     ) -> dict[str, Any]:
         """Save active workspace state (branches, locks, local env, and uncommitted WIP) to wshub."""
         from ws.hub import HubClient
@@ -2643,6 +2645,10 @@ class WorkspaceManager:
 
         meta, ws_dir = self.get_workspace_info(workspace_name)
         state_dict = meta.to_dict()
+
+        if is_auto:
+            state_dict["auto_saved"] = True
+            state_dict["saved_at"] = get_iso_timestamp()
 
         wip_summary: list[tuple[str, int, int]] = []
         if include_wip:
@@ -2676,22 +2682,312 @@ class WorkspaceManager:
             if wip_dict:
                 state_dict["wip"] = wip_dict
 
-        with OutputHandler.spinner(f"Saving state for @{meta.name} to wshub..."):
+        if silent:
             result = client.save_workspace_state(
                 namespace=namespace,
                 name=name,
                 workspace_name=meta.name,
                 state_dict=state_dict,
             )
-        OutputHandler.print_success(f"Saved workspace state [bold cyan]@{meta.name}[/bold cyan] to [cyan]{namespace}/{name}[/cyan]")
-        for r_name, mod_cnt, untr_cnt in wip_summary:
-            parts = []
-            if mod_cnt > 0:
-                parts.append(f"{mod_cnt} modified file{'s' if mod_cnt != 1 else ''}")
-            if untr_cnt > 0:
-                parts.append(f"{untr_cnt} untracked file{'s' if untr_cnt != 1 else ''}")
-            OutputHandler.print_info(f"  🔒 Captured uncommitted work in [cyan]%{r_name}[/cyan] ({', '.join(parts)})")
+            logger.info("Saved workspace state @%s to %s/%s (auto=%s)", meta.name, namespace, name, is_auto)
+        else:
+            with OutputHandler.spinner(f"Saving state for @{meta.name} to wshub..."):
+                result = client.save_workspace_state(
+                    namespace=namespace,
+                    name=name,
+                    workspace_name=meta.name,
+                    state_dict=state_dict,
+                )
+            prefix = "Auto-saved" if is_auto else "Saved"
+            OutputHandler.print_success(f"{prefix} workspace state [bold cyan]@{meta.name}[/bold cyan] to [cyan]{namespace}/{name}[/cyan]")
+            for r_name, mod_cnt, untr_cnt in wip_summary:
+                parts = []
+                if mod_cnt > 0:
+                    parts.append(f"{mod_cnt} modified file{'s' if mod_cnt != 1 else ''}")
+                if untr_cnt > 0:
+                    parts.append(f"{untr_cnt} untracked file{'s' if untr_cnt != 1 else ''}")
+                OutputHandler.print_info(f"  🔒 Captured uncommitted work in [cyan]%{r_name}[/cyan] ({', '.join(parts)})")
         return result
+
+    def _get_auto_save_cache_file(self) -> Path:
+        """Path to local auto-save cache file recording fingerprints and timestamps."""
+        return self.config.workspaces_dir / ".auto_save_cache.json"
+
+    def _load_auto_save_cache(self) -> dict[str, Any]:
+        """Load cached fingerprints and last save timestamps."""
+        cache_file = self._get_auto_save_cache_file()
+        if cache_file.exists():
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning("Failed reading auto-save cache: %s", e)
+        return {}
+
+    def _save_auto_save_cache(self, cache: dict[str, Any]) -> None:
+        """Persist auto-save cache to disk."""
+        cache_file = self._get_auto_save_cache_file()
+        try:
+            ensure_directory(cache_file.parent)
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(cache, f, indent=2)
+        except Exception as e:
+            logger.warning("Failed writing auto-save cache: %s", e)
+
+    def get_workspace_fingerprint(self, workspace_name: str, include_wip: bool = True) -> str:
+        """Compute SHA-256 fingerprint representing the current state of a workspace."""
+        import hashlib
+        meta, ws_dir = self.get_workspace_info(workspace_name)
+        h = hashlib.sha256()
+        h.update(meta.name.encode("utf-8"))
+        for r_name, spec in sorted(meta.repositories.items()):
+            h.update(f"{r_name}:{spec.branch}:{spec.frozen}:{spec.path}".encode("utf-8"))
+            wt_path = ws_dir / spec.path
+            if wt_path.exists():
+                head = self.git.get_head_commit(wt_path) or ""
+                h.update(f"head:{head}".encode("utf-8"))
+                if include_wip:
+                    uncommitted = self.git.check_worktree_uncommitted(wt_path)
+                    h.update(f"has_uncommitted:{uncommitted['has_uncommitted']}".encode("utf-8"))
+                    for m in sorted(uncommitted.get("modified", [])):
+                        h.update(f"mod:{m}".encode("utf-8"))
+                    for u in sorted(uncommitted.get("untracked", [])):
+                        f_p = wt_path / u
+                        if f_p.is_file():
+                            try:
+                                st = f_p.stat()
+                                h.update(f"untr:{u}:{st.st_size}:{int(st.st_mtime)}".encode("utf-8"))
+                            except OSError:
+                                h.update(f"untr:{u}".encode("utf-8"))
+        return h.hexdigest()
+
+    def hub_auto_save_workspace(
+        self,
+        workspace_name: str,
+        project_identifier: str | None = None,
+        include_wip: bool = True,
+        force: bool = False,
+        silent: bool = True,
+    ) -> bool:
+        """
+        Auto-save workspace state to wshub if changes are detected (or force is True).
+        Returns True if saved, False if skipped because no changes occurred.
+        """
+        if not self.has_workspace(workspace_name):
+            return False
+
+        current_fp = self.get_workspace_fingerprint(workspace_name, include_wip=include_wip)
+        cache = self._load_auto_save_cache()
+        entry = cache.get(workspace_name, {})
+        last_fp = entry.get("fingerprint")
+
+        if not force and last_fp == current_fp:
+            logger.debug("Workspace '@%s' unchanged since last save. Skipping auto-save.", workspace_name)
+            return False
+
+        # Execute save
+        self.hub_state_save(
+            workspace_name=workspace_name,
+            project_identifier=project_identifier,
+            include_wip=include_wip,
+            silent=silent,
+            is_auto=True,
+        )
+
+        # Update cache
+        cache[workspace_name] = {
+            "fingerprint": current_fp,
+            "last_saved_at": get_iso_timestamp(),
+        }
+        self._save_auto_save_cache(cache)
+        return True
+
+    def hub_auto_save_all_workspaces(
+        self,
+        project_identifier: str | None = None,
+        force: bool = False,
+        silent: bool = True,
+    ) -> dict[str, bool]:
+        """
+        Evaluate and auto-save target workspaces.
+        Returns dict mapping workspace name -> bool (True if saved, False if skipped).
+        """
+        auto_cfg = getattr(self.config, "hub_auto_save", None)
+        target_setting = auto_cfg.workspaces if auto_cfg else "all"
+        include_wip = auto_cfg.include_wip if auto_cfg else True
+
+        all_ws_meta = self.list_workspaces()
+        all_names = [m.name for m in all_ws_meta]
+
+        if isinstance(target_setting, list):
+            target_names = [w for w in target_setting if w in all_names]
+        elif target_setting == "active":
+            target_names = [w for w in all_names if self.is_session_running(w)]
+        else:
+            target_names = all_names
+
+        results: dict[str, bool] = {}
+        for w_name in target_names:
+            try:
+                saved = self.hub_auto_save_workspace(
+                    workspace_name=w_name,
+                    project_identifier=project_identifier,
+                    include_wip=include_wip,
+                    force=force,
+                    silent=silent,
+                )
+                results[w_name] = saved
+            except Exception as e:
+                logger.error("Auto-save failed for workspace '@%s': %s", w_name, e)
+                results[w_name] = False
+        return results
+
+    def get_auto_save_pid_file(self) -> Path:
+        """Path to PID file for background auto-save daemon."""
+        return self.config.workspaces_dir / ".auto_save.pid"
+
+    def is_auto_save_daemon_active(self) -> tuple[bool, int | None]:
+        """Check if background auto-save daemon is currently running. Returns (is_active, pid)."""
+        pid_file = self.get_auto_save_pid_file()
+        if not pid_file.exists():
+            return False, None
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            os.kill(pid, 0)
+            return True, pid
+        except (ValueError, ProcessLookupError):
+            try:
+                pid_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False, None
+        except PermissionError:
+            return True, pid
+        except Exception:
+            return False, None
+
+    def start_auto_save_daemon(
+        self,
+        interval: int | None = None,
+        project_identifier: str | None = None,
+        detached: bool = True,
+    ) -> int:
+        """Start auto-save daemon in background or foreground."""
+        active, existing_pid = self.is_auto_save_daemon_active()
+        if active:
+            raise WSException(f"Auto-save daemon is already running (PID {existing_pid}).")
+
+        effective_interval = interval
+        if effective_interval is None:
+            auto_cfg = getattr(self.config, "hub_auto_save", None)
+            effective_interval = auto_cfg.interval if auto_cfg and auto_cfg.interval > 0 else 900
+
+        if detached:
+            pid_file = self.get_auto_save_pid_file()
+            ensure_directory(pid_file.parent)
+            log_file = self.config.workspaces_dir / ".auto_save.log"
+
+            cmd = [
+                sys.executable,
+                "-m",
+                "ws.cli",
+                "hub",
+                "auto-save",
+                "run",
+                "--interval",
+                str(effective_interval),
+            ]
+            if project_identifier:
+                cmd.extend(["--project", project_identifier])
+
+            with open(log_file, "a", encoding="utf-8") as out:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(self.config.project_root),
+                    stdout=out,
+                    stderr=out,
+                    start_new_session=True,
+                )
+            pid_file.write_text(str(proc.pid), encoding="utf-8")
+            return proc.pid
+        else:
+            self.run_auto_save_loop(interval=effective_interval, project_identifier=project_identifier)
+            return os.getpid()
+
+    def stop_auto_save_daemon(self) -> bool:
+        """Stop running auto-save background daemon."""
+        active, pid = self.is_auto_save_daemon_active()
+        if not active or pid is None:
+            return False
+        import signal
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        pid_file = self.get_auto_save_pid_file()
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True
+
+    def run_auto_save_loop(
+        self,
+        interval: int = 900,
+        project_identifier: str | None = None,
+    ) -> None:
+        """Execute continuous auto-save loop."""
+        import time
+        logger.info("Starting auto-save loop (interval: %ds)...", interval)
+        try:
+            while True:
+                try:
+                    results = self.hub_auto_save_all_workspaces(project_identifier=project_identifier, silent=True)
+                    saved = [w for w, s in results.items() if s]
+                    if saved:
+                        logger.info("Auto-saved workspaces: %s", ", ".join(saved))
+                except Exception as e:
+                    logger.error("Error in auto-save loop: %s", e)
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            logger.info("Auto-save loop terminated by user.")
+
+    def get_auto_save_status(self) -> dict[str, Any]:
+        """Get diagnostic status of auto-save configuration, daemon, and workspace states."""
+        auto_cfg = getattr(self.config, "hub_auto_save", None)
+        active, pid = self.is_auto_save_daemon_active()
+        cache = self._load_auto_save_cache()
+
+        all_ws = [m.name for m in self.list_workspaces()]
+        ws_info: dict[str, Any] = {}
+        for w in all_ws:
+            c_entry = cache.get(w, {})
+            last_saved = c_entry.get("last_saved_at")
+            dirty = False
+            meta, ws_dir = self.get_workspace_info(w)
+            for _, spec in meta.repositories.items():
+                wt_p = ws_dir / spec.path
+                if wt_p.exists():
+                    u = self.git.check_worktree_uncommitted(wt_p)
+                    if u.get("has_uncommitted"):
+                        dirty = True
+                        break
+            ws_info[w] = {
+                "last_saved_at": last_saved,
+                "has_uncommitted": dirty,
+                "active_session": self.is_session_running(w),
+            }
+
+        return {
+            "enabled": auto_cfg.enabled if auto_cfg else False,
+            "interval": auto_cfg.interval if auto_cfg else 900,
+            "include_wip": auto_cfg.include_wip if auto_cfg else True,
+            "workspaces_setting": auto_cfg.workspaces if auto_cfg else "all",
+            "daemon_active": active,
+            "daemon_pid": pid,
+            "workspaces": ws_info,
+        }
+
 
     def hub_state_restore(
         self,

@@ -77,3 +77,44 @@ def ensure_directory(path: Path) -> Path:
     """Ensure directory exists and return resolved path."""
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def parse_duration(val: str | int | float | None) -> int:
+    """Parse duration value into seconds integer.
+
+    Supported formats:
+    - Integer / float: treated directly as seconds (e.g. 300 -> 300)
+    - String with unit: '30s', '5m', '15m', '1h', '2d'
+    - 'never', '0', 'none', '', None: returns 0 (disabled)
+    """
+    if val is None:
+        return 0
+    if isinstance(val, (int, float)):
+        return max(0, int(val))
+
+    s = str(val).strip().lower()
+    if not s or s in ("never", "none", "false", "off", "0", "0s", "0m", "0h"):
+        return 0
+
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*([a-z]+)?$", s)
+    if not m:
+        try:
+            return max(0, int(float(s)))
+        except ValueError:
+            return 0
+
+    amount = float(m.group(1))
+    unit = m.group(2) or "s"
+
+    if unit in ("s", "sec", "second", "seconds"):
+        return max(0, int(amount))
+    elif unit in ("m", "min", "minute", "minutes"):
+        return max(0, int(amount * 60))
+    elif unit in ("h", "hr", "hour", "hours"):
+        return max(0, int(amount * 3600))
+    elif unit in ("d", "day", "days"):
+        return max(0, int(amount * 86400))
+    elif unit in ("w", "week", "weeks"):
+        return max(0, int(amount * 604800))
+    return max(0, int(amount))
+

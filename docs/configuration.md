@@ -82,6 +82,7 @@ repositories:
 | `private`       | `dict[str, str]`        | Global host-specific variables that **never leave the local machine**.                      |
 | `setup.scripts` | `list[ScriptSpec]`      | Global setup scripts executed in the workspace root directory.                              |
 | `tmux`          | `dict` or `str`         | Project Tmux session configuration for workspace windows (`session`, `command`, `switch`).   |
+| `hub`           | `dict`                  | wshub settings: default project identifier and background `auto_save` configuration.        |
 | `repositories`  | `dict[str, RepoConfig]` | Map of repository definitions keyed by repository alias (`server`, `mobile`, etc.).         |
 
 ---
@@ -141,6 +142,34 @@ repositories:
       DATABASE_PASSWORD: "secret:postgres_super_pass"  # Encrypted in Vault
       DEBUG_CACHE: "private:/tmp/my-server-cache"       # Stays local only
 ```
+
+---
+
+### ☁️ Hub & Periodic Auto-Save (`hub:`)
+
+When collaborating via `wshub`, you can define project associations and automatic background state synchronization:
+
+```yaml
+hub:
+  project: "kyete/renttik"   # Default project identifier for hub push/pull/state
+  auto_save:
+    enabled: true             # Enable or disable auto-saving (default: false)
+    interval: "15m"           # Periodic interval (e.g. 5m, 15m, 1h, 30s, or 'never')
+    include_wip: true         # Snapshot uncommitted edits and untracked files (default: true)
+    workspaces: "all"         # "all", "active" (only workspaces with running services), or list ["dev", "feat-auth"]
+```
+
+#### Auto-Save Configuration Options
+
+| Option | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `enabled` | `boolean` | `false` | Enables periodic background state auto-saving. |
+| `interval` | `string` or `int` | `15m` | Interval between auto-save checks. Supports human durations (`"10m"`, `"1h"`, `"300s"`). |
+| `include_wip` | `boolean` | `true` | When true, includes uncommitted worktree modifications and untracked files. |
+| `workspaces` | `string` or `list[str]` | `"all"` | `"all"` saves all workspaces, `"active"` saves only workspaces with active sessions/supervisors, or an explicit list of workspace names. |
+
+> [!NOTE]
+> `ws` employs smart fingerprint caching. If a workspace's branch heads and uncommitted files have not changed since the last save, the upload is skipped to save network bandwidth and hub storage.
 
 ---
 

@@ -60,6 +60,10 @@ from ws.commands import (
     cmd_hub_sync,
     cmd_hub_state_save,
     cmd_hub_state_restore,
+    cmd_hub_auto_save_status,
+    cmd_hub_auto_save_start,
+    cmd_hub_auto_save_stop,
+    cmd_hub_auto_save_run,
     cmd_hub_secret_list,
     cmd_hub_secret_set,
     cmd_hub_secret_get,
@@ -67,6 +71,7 @@ from ws.commands import (
     cmd_hub_secret_upload,
     cmd_hub_secret_pull,
 )
+
 from ws.config import ConfigLoader
 from ws.exceptions import WSException
 from ws.models import RepoConfig, RepoSpec
@@ -795,6 +800,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_state_save.add_argument("workspace", help="Workspace name (@name)")
     p_state_save.add_argument("--project", help="Override project identifier")
     p_state_save.add_argument("--no-wip", action="store_true", help="Skip capturing uncommitted WIP changes")
+    p_state_save.add_argument("--auto", action="store_true", help="Mark save as automatic (skips if unchanged)")
     p_state_restore = hub_state_sub.add_parser("restore", help="Restore workspace state from wshub on this machine")
     p_state_restore.add_argument("workspace", help="Workspace name (@name)")
     p_state_restore.add_argument("--project", help="Override project identifier")
@@ -805,6 +811,28 @@ def build_parser() -> argparse.ArgumentParser:
     p_hub_resume.add_argument("workspace", help="Workspace name (@name)")
     p_hub_resume.add_argument("--project", help="Override project identifier")
     p_hub_resume.add_argument("--no-wip", action="store_true", help="Skip applying uncommitted WIP changes")
+
+    # ws hub auto-save <status|start|stop|run|once>
+    p_hub_autosave = hub_subparsers.add_parser("auto-save", aliases=["autosave"], help="Manage periodic automatic workspace saving to wshub")
+    hub_autosave_sub = p_hub_autosave.add_subparsers(dest="hub_autosave_subcommand", metavar="ACTION")
+
+    p_as_status = hub_autosave_sub.add_parser("status", help="Show status of automatic hub saving")
+
+    p_as_start = hub_autosave_sub.add_parser("start", help="Start background auto-save daemon")
+    p_as_start.add_argument("--interval", help="Auto-save interval duration (e.g. 5m, 15m, 1h)")
+    p_as_start.add_argument("--project", help="Override project identifier")
+    p_as_start.add_argument("-d", "--daemon", action="store_true", default=True, help="Run as detached background daemon (default: True)")
+
+    p_as_stop = hub_autosave_sub.add_parser("stop", help="Stop background auto-save daemon")
+
+    p_as_run = hub_autosave_sub.add_parser("run", help="Run auto-save loop in the foreground")
+    p_as_run.add_argument("--interval", help="Auto-save interval duration (e.g. 5m, 15m, 1h)")
+    p_as_run.add_argument("--project", help="Override project identifier")
+
+    p_as_once = hub_autosave_sub.add_parser("once", help="Check and save any changed workspaces immediately")
+    p_as_once.add_argument("--project", help="Override project identifier")
+    p_as_once.add_argument("--force", action="store_true", help="Force save even if no changes detected")
+
 
     # ws hub secret <list|set|get|delete|upload|pull>
     p_hub_sec = hub_subparsers.add_parser("secret", help="Manage zero-Git encrypted secrets in wshub vault")
@@ -1387,13 +1415,51 @@ def main(sys_args: Sequence[str] | None = None) -> int:
             elif hub_action in ("state", "resume"):
                 state_action = getattr(args, "hub_state_subcommand", None)
                 no_wip = getattr(args, "no_wip", False)
+                is_auto = getattr(args, "auto", False)
                 if hub_action == "resume" or state_action == "restore":
                     cmd_hub_state_restore(manager=manager, workspace=args.workspace, project=getattr(args, "project", None), no_wip=no_wip)
                 elif state_action == "save":
-                    cmd_hub_state_save(manager=manager, workspace=args.workspace, project=getattr(args, "project", None), no_wip=no_wip)
+                    if is_auto:
+                        clean_w = clean_workspace(args.workspace)
+                        saved = manager.hub_auto_save_workspace(clean_w, project_identifier=getattr(args, "project", None), include_wip=not no_wip, silent=False)
+                        if not saved:
+                            OutputHandler.print_info(f"Workspace @{clean_w} unchanged since last save (skipped).")
+                    else:
+                        cmd_hub_state_save(manager=manager, workspace=args.workspace, project=getattr(args, "project", None), no_wip=no_wip)
                 else:
                     OutputHandler.print_error("Please specify a state action: save or restore")
                     return 1
+            elif hub_action in ("auto-save", "autosave"):
+                as_action = getattr(args, "hub_autosave_subcommand", None)
+                if as_action == "status" or as_action is None:
+                    cmd_hub_auto_save_status(manager=manager)
+                elif as_action == "start":
+                    cmd_hub_auto_save_start(
+                        manager=manager,
+                        interval=getattr(args, "interval", None),
+                        project=getattr(args, "project", None),
+                        detached=getattr(args, "daemon", True),
+                    )
+                elif as_action == "stop":
+                    cmd_hub_auto_save_stop(manager=manager)
+                elif as_action == "run":
+                    cmd_hub_auto_save_run(
+                        manager=manager,
+                        interval=getattr(args, "interval", None),
+                        project=getattr(args, "project", None),
+                        once=False,
+                    )
+                elif as_action == "once":
+                    cmd_hub_auto_save_run(
+                        manager=manager,
+                        project=getattr(args, "project", None),
+                        once=True,
+                        force=getattr(args, "force", False),
+                    )
+                else:
+                    OutputHandler.print_error("Please specify an auto-save action: status, start, stop, run, once")
+                    return 1
+
             elif hub_action == "secret":
                 sec_action = getattr(args, "hub_sec_subcommand", None)
                 proj = getattr(args, "project", None)

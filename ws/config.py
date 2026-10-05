@@ -8,6 +8,7 @@ import yaml
 from ws.exceptions import ConfigException
 from ws.models import (
     AppConfig,
+    HubAutoSaveConfig,
     RepoConfig,
     TmuxConfig,
     clean_env_val,
@@ -152,6 +153,25 @@ class ConfigLoader:
                     raise
                 except Exception as e:
                     raise ConfigException(f"Invalid tmux configuration: {e}") from e
+
+            # Parse hub: block (project name and auto_save)
+            hub_raw = data.get("hub", {})
+            hub_auto_save = None
+            hub_project = None
+            if isinstance(hub_raw, dict):
+                hub_project = hub_raw.get("project") or hub_raw.get("name")
+                if "auto_save" in hub_raw:
+                    try:
+                        hub_auto_save = HubAutoSaveConfig.from_dict(hub_raw["auto_save"])
+                    except Exception as e:
+                        logger.warning("Failed to parse hub.auto_save configuration: %s", e)
+
+            # Fallback root-level auto_save: block
+            if not hub_auto_save and "auto_save" in data:
+                try:
+                    hub_auto_save = HubAutoSaveConfig.from_dict(data["auto_save"])
+                except Exception as e:
+                    logger.warning("Failed to parse auto_save configuration: %s", e)
         else:
             global_env = {}
             global_secret_env = {}
@@ -161,6 +181,8 @@ class ConfigLoader:
             global_secrets = []
             global_copy_files = []
             tmux_cfg = None
+            hub_auto_save = None
+            hub_project = None
             # Fallback auto-detection for .git bare repos in bares/ or current directory
             bares_dir = project_root / "bares"
             bare_dirs = sorted(bares_dir.glob("*.git")) if bares_dir.exists() else []
@@ -202,7 +224,10 @@ class ConfigLoader:
             secrets=global_secrets,
             copy_files=global_copy_files,
             tmux=tmux_cfg,
+            hub_auto_save=hub_auto_save,
+            hub_project=hub_project,
         )
+
 
     @classmethod
     def classify_project_assets(

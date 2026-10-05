@@ -715,6 +715,26 @@ ws hub state save @develop
 ws hub resume @develop
 ```
 
+### `ws hub auto-save`
+Controls background periodic auto-saving of workspace states to `wshub`. Works with change-detection caching to skip redundant uploads when worktrees are unchanged.
+
+```bash
+# Check daemon status, interval, and workspace snapshot history
+ws hub auto-save status
+
+# Trigger a one-time auto-save pass across configured workspaces
+ws hub auto-save once [--force]
+
+# Start background auto-save daemon
+ws hub auto-save start
+
+# Stop background auto-save daemon
+ws hub auto-save stop
+
+# Run auto-save loop in foreground (useful for systemd or container runtimes)
+ws hub auto-save run [--interval 15m]
+```
+
 ### `ws hub secret`
 Manages zero-Git encrypted project secrets and sensitive files (`.pem`, `.json`, certificates) in the wshub AES-256-GCM vault.
 
