@@ -175,21 +175,38 @@ ws status @develop
 
 ### `ws exec`
 
-Executes an arbitrary shell command across every repository worktree inside the workspace.
+Executes an arbitrary shell command across all or a subset of repository worktrees inside the workspace.
 
 ```bash
-ws exec @<name> -- <command...>
+ws exec [@<name>] [%repos...] [--all] [--repos r1,r2] [--] <command...>
 ```
+
+#### Options
+
+| Argument / Flag   | Default | Description                                              |
+| :---------------- | :------ | :------------------------------------------------------- |
+| `@<name>`         | Current | Workspace name (defaults to active detected workspace).  |
+| `%repos...`       | All     | Specific repositories to execute in (`%hub %web`).       |
+| `--all`           | All     | Explicitly target all repositories in the workspace.     |
+| `--repos <list>`  | All     | Comma-separated list of repository names.                |
+| `--`              | -       | Delimiter separating `ws` arguments from child command.  |
 
 #### Examples
 
 ```bash
-# Run git clean across all repos in @develop:
+# Run command across all repos in current workspace:
+ws exec -- git status
+
+# Run command across a subset of repos:
+ws exec %hub %web -- ga .
+
+# Run command across all repos in @develop:
 ws exec @develop -- git clean -fd
 
-# Run linter across all repos:
-ws exec @feat-auth -- npm run lint
+# Run command across a subset of repos in a specific workspace:
+ws exec @feat-auth %server %mobile -- npm test
 ```
+
 
 ---
 

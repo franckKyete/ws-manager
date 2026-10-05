@@ -158,8 +158,25 @@ def resolve_ws_and_repo_args(
     if name_arg:
         if name_arg.startswith(("%", "+", ":", "#", "$")):
             is_repo_spec = True
-        elif detected_ws and name_arg in manager.config.repositories and not manager.has_workspace(name_arg):
-            is_repo_spec = True
+        elif detected_ws and not manager.has_workspace(clean_workspace(name_arg)):
+            clean_name = clean_repo(name_arg)
+            if clean_name in manager.config.repositories:
+                is_repo_spec = True
+            elif any(
+                r_cfg.checkout == clean_name or Path(r_cfg.checkout).name == clean_name
+                for r_cfg in manager.config.repositories.values()
+            ):
+                is_repo_spec = True
+            else:
+                try:
+                    meta, _ = manager.get_workspace_info(detected_ws)
+                    if clean_name in meta.repositories or any(
+                        spec.path == clean_name or Path(spec.path).name == clean_name
+                        for spec in meta.repositories.values()
+                    ):
+                        is_repo_spec = True
+                except Exception:
+                    pass
 
     resolved_ws: str | None = None
     resolved_repo: str | None = None
@@ -168,6 +185,12 @@ def resolve_ws_and_repo_args(
     if is_repo_spec:
         resolved_ws = detected_ws
         actual_repo = clean_repo(name_arg)
+        if detected_ws and actual_repo:
+            try:
+                r_key, _, _ = manager.resolve_repo_spec(detected_ws, actual_repo)
+                actual_repo = r_key
+            except Exception:
+                pass
         resolved_repo = actual_repo
         resolved_repos = [actual_repo] if actual_repo else []
         if repos_arg:
@@ -564,10 +587,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = subparsers.add_parser("status", help="Show Git status across all workspace worktrees")
     p_status.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
 
-    # Command: ws exec @<name> -- <command...>
+    # Command: ws exec [@<name>] [%repos...] [--all] [--repos r1,r2] [--] <command...>
     p_exec = subparsers.add_parser("exec", help="Execute command inside each repo worktree of a workspace")
     p_exec.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_exec.add_argument("command", nargs=argparse.REMAINDER, help="Command to execute")
+    p_exec.add_argument("--all", action="store_true", help="Execute across all worktrees in workspace")
+    p_exec.add_argument("--repos", dest="repos_flag", type=str, help="Comma-separated list of repository names")
 
     # Command: ws push @<name> [%repos...] [--remote origin]
     p_push = subparsers.add_parser("push", help="Push committed changes for workspace repositories to remotes")
@@ -953,21 +978,81 @@ def main(sys_args: Sequence[str] | None = None) -> int:
 
         elif args.subcommand == "exec":
             detected_ws, _ = manager.detect_context()
-            exec_name = args.name
-            exec_cmd = list(args.command) if args.command else []
+            tokens = ([args.name] if args.name is not None else []) + (list(args.command) if args.command else [])
 
-            # If name is "--", it was just the delimiter
-            if exec_name == "--":
+            ws_name: str | None = None
+            target_repos: list[str] = []
+            exec_cmd: list[str] = []
+            all_flag: bool = getattr(args, "all", False)
+
+            if getattr(args, "repos_flag", None):
+                for r in args.repos_flag.split(","):
+                    r_clean = clean_repo(r.strip())
+                    if r_clean:
+                        target_repos.append(r_clean)
+
+            idx = 0
+            # 1. Parse optional workspace name (@name or registered workspace name before command)
+            if idx < len(tokens):
+                t = tokens[idx]
+                if t.startswith("@"):
+                    ws_name = clean_workspace(t)
+                    idx += 1
+                elif t == "--":
+                    # Delimiter reached immediately
+                    idx += 1
+                    exec_cmd = tokens[idx:]
+                    idx = len(tokens)
+                elif not t.startswith(("%", "+", ":", "#", "$", "-")) and manager.has_workspace(clean_workspace(t)):
+                    ws_name = clean_workspace(t)
+                    idx += 1
+
+            if not ws_name:
                 ws_name = detected_ws
-            elif exec_name and (exec_name.startswith("@") or manager.has_workspace(clean_workspace(exec_name))):
-                ws_name = clean_workspace(exec_name)
-            elif detected_ws:
-                # exec_name is part of the command itself (e.g. 'ws exec git status')
-                ws_name = detected_ws
-                if exec_name:
-                    exec_cmd = [exec_name] + exec_cmd
-            else:
-                ws_name = clean_workspace(exec_name)
+
+            # 2. Parse optional repository filters (%repo) before delimiter '--' or command
+            while idx < len(tokens):
+                t = tokens[idx]
+                if t == "--":
+                    idx += 1
+                    break
+                elif t in ("--all", "-a"):
+                    all_flag = True
+                    target_repos.clear()
+                    idx += 1
+                elif t.startswith(("%", "+", ":", "#", "$")):
+                    for sub_t in t.split(","):
+                        sub_clean = clean_repo(sub_t.strip())
+                        if sub_clean:
+                            target_repos.append(sub_clean)
+                    idx += 1
+                elif ws_name:
+                    # Check if token is a repo alias or checkout name
+                    clean_t = clean_repo(t)
+                    is_repo = False
+                    if clean_t in manager.config.repositories:
+                        is_repo = True
+                    elif any(r_cfg.checkout == clean_t for r_cfg in manager.config.repositories.values()):
+                        is_repo = True
+                    else:
+                        try:
+                            meta, _ = manager.get_workspace_info(ws_name)
+                            if clean_t in meta.repositories or any(spec.path == clean_t for spec in meta.repositories.values()):
+                                is_repo = True
+                        except Exception:
+                            pass
+                    if is_repo:
+                        target_repos.append(clean_t)
+                        idx += 1
+                    else:
+                        # Reached start of command
+                        break
+                else:
+                    break
+
+            # 3. Remaining tokens form the command
+            if idx < len(tokens):
+                exec_cmd.extend(tokens[idx:])
 
             if exec_cmd and exec_cmd[0] == "--":
                 exec_cmd = exec_cmd[1:]
@@ -980,7 +1065,18 @@ def main(sys_args: Sequence[str] | None = None) -> int:
             if not exec_cmd:
                 raise WSException("Command required for 'ws exec'.")
 
-            cmd_exec(manager=manager, name=ws_name, command=exec_cmd)
+            if all_flag or "all" in target_repos or "*" in target_repos:
+                target_repos = []
+            else:
+                target_repos = list(dict.fromkeys(target_repos))
+
+            res = cmd_exec(
+                manager=manager,
+                name=ws_name,
+                command=exec_cmd,
+                repos=target_repos if target_repos else None,
+            )
+            return res if isinstance(res, int) else 0
 
         # 4. Worktree & Repo management
         elif args.subcommand in ("repo", "workspace"):

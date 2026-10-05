@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import shlex
 import shutil
 import stat
 import subprocess
@@ -64,6 +65,30 @@ class RollbackStack:
                 logger.error("Failed to execute rollback step '%s': %s", description, e)
         self._actions.clear()
         return executed
+
+
+def run_shell_command(cmd_str: str, cwd: Path) -> int:
+    """Execute shell command in target directory, enabling shell alias and function expansion."""
+    shell = os.environ.get("SHELL", "/bin/bash")
+    shell_name = Path(shell).name
+    if "zsh" in shell_name:
+        script = (
+            'setopt aliases 2>/dev/null; '
+            '[ -f "$ZDOTDIR/.zshrc" ] && source "$ZDOTDIR/.zshrc" 2>/dev/null || '
+            '[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" 2>/dev/null; '
+            f'eval {shlex.quote(cmd_str)}'
+        )
+        proc = subprocess.run([shell, "-c", script], cwd=cwd)
+    elif "bash" in shell_name:
+        script = (
+            'shopt -s expand_aliases 2>/dev/null; '
+            '[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" 2>/dev/null; '
+            f'eval {shlex.quote(cmd_str)}'
+        )
+        proc = subprocess.run([shell, "-c", script], cwd=cwd)
+    else:
+        proc = subprocess.run(cmd_str, shell=True, executable=shell, cwd=cwd)
+    return proc.returncode
 
 
 class WorkspaceManager:
@@ -1087,6 +1112,59 @@ class WorkspaceManager:
 
 
 
+    def resolve_repo_spec(
+        self,
+        workspace_name: str,
+        repo_or_worktree: str,
+    ) -> tuple[str, RepoSpec, Path]:
+        """
+        Bidirectionally resolve repository alias or worktree checkout directory
+        to (canonical_name, RepoSpec, worktree_path).
+        """
+        meta, ws_dir = self.get_workspace_info(workspace_name)
+        clean_target = repo_or_worktree.lstrip("%+:#$")
+
+        # 1. Direct match in meta.repositories
+        if clean_target in meta.repositories:
+            spec = meta.repositories[clean_target]
+            return clean_target, spec, ws_dir / spec.path
+
+        # 2. Match by spec.path in meta.repositories
+        for r_name, spec in meta.repositories.items():
+            if spec.path == clean_target or Path(spec.path).name == clean_target:
+                return r_name, spec, ws_dir / spec.path
+
+        # 3. Match via project config alias
+        if clean_target in self.config.repositories:
+            r_cfg = self.config.repositories[clean_target]
+            for r_name, spec in meta.repositories.items():
+                if spec.path == r_cfg.checkout or r_name == r_cfg.checkout:
+                    return r_name, spec, ws_dir / spec.path
+            wt_path = ws_dir / r_cfg.checkout
+            if wt_path.is_dir():
+                return clean_target, RepoSpec(name=clean_target, branch="HEAD", create=False, path=r_cfg.checkout), wt_path
+
+        # 4. Match via project config checkout path
+        for cfg_alias, r_cfg in self.config.repositories.items():
+            if r_cfg.checkout == clean_target or Path(r_cfg.checkout).name == clean_target:
+                if cfg_alias in meta.repositories:
+                    spec = meta.repositories[cfg_alias]
+                    return cfg_alias, spec, ws_dir / spec.path
+                wt_path = ws_dir / clean_target
+                if wt_path.is_dir():
+                    return cfg_alias, RepoSpec(name=cfg_alias, branch="HEAD", create=False, path=clean_target), wt_path
+
+        # 5. Directory exists on disk inside workspace
+        wt_path = ws_dir / clean_target
+        if wt_path.is_dir():
+            return clean_target, RepoSpec(name=clean_target, branch="HEAD", create=False, path=clean_target), wt_path
+
+        available = list(meta.repositories.keys())
+        raise RepositoryNotFoundException(
+            f"Repository or worktree '{repo_or_worktree}' not found in workspace '{workspace_name}'. "
+            f"Available worktrees: {', '.join(available)}"
+        )
+
     def open_workspace(self, name: str, worktree: str | None = None) -> None:
         """Spawn an interactive subshell inside the workspace or a specific worktree directory."""
         ws_dir = self._get_workspace_dir(name)
@@ -1095,17 +1173,10 @@ class WorkspaceManager:
 
         target_dir = ws_dir
         if worktree:
-            meta, _ = self.get_workspace_info(name)
-            if worktree in meta.repositories:
-                spec = meta.repositories[worktree]
-                target_dir = ws_dir / spec.path
-            elif (ws_dir / worktree).is_dir():
-                target_dir = ws_dir / worktree
-            else:
-                raise WorkspaceNotFoundException(
-                    f"Worktree '{worktree}' not found in workspace '{name}'. "
-                    f"Available worktrees: {', '.join(meta.repositories.keys())}"
-                )
+            try:
+                _, _, target_dir = self.resolve_repo_spec(name, worktree)
+            except RepositoryNotFoundException as e:
+                raise WorkspaceNotFoundException(str(e)) from e
 
         shell = os.environ.get("SHELL", "/bin/bash")
         OutputHandler.print_info(f"Opening shell inside: [bold cyan]{target_dir}[/bold cyan]")
@@ -1130,22 +1201,42 @@ class WorkspaceManager:
                 statuses[r_name] = "missing worktree"
         return statuses
 
-    def exec_workspace(self, name: str, command: list[str]) -> dict[str, int]:
-        """Execute shell command in each repository worktree of a workspace."""
-        import subprocess
-
+    def exec_workspace(
+        self,
+        name: str,
+        command: list[str] | str,
+        repos: Sequence[str] | None = None,
+    ) -> dict[str, int]:
+        """Execute shell command in each or specified repository worktree of a workspace."""
         ws_dir = self._get_workspace_dir(name)
         if not ws_dir.exists():
             raise WorkspaceNotFoundException(f"Workspace '{name}' not found")
 
+        if isinstance(command, str):
+            cmd_str = command
+        elif not command:
+            cmd_str = ""
+        elif len(command) == 1:
+            cmd_str = command[0]
+        else:
+            cmd_str = shlex.join(command)
+
         meta, _ = self.get_workspace_info(name)
+        target_items: list[tuple[str, Path]] = []
+        if repos:
+            for r in repos:
+                r_key, _, wt_path = self.resolve_repo_spec(name, r)
+                target_items.append((r_key, wt_path))
+        else:
+            for r_name, spec in meta.repositories.items():
+                target_items.append((r_name, ws_dir / spec.path))
+
         results: dict[str, int] = {}
-        for r_name, spec in meta.repositories.items():
-            wt_path = ws_dir / spec.path
+        for r_name, wt_path in target_items:
             if wt_path.exists():
                 OutputHandler.print_info(f"Executing in [bold magenta]{r_name}[/bold magenta]...")
-                res = subprocess.run(command, cwd=wt_path)
-                results[r_name] = res.returncode
+                code = run_shell_command(cmd_str, cwd=wt_path)
+                results[r_name] = code
             else:
                 OutputHandler.print_warning(f"Skipping {r_name} (worktree missing)")
                 results[r_name] = -1
@@ -1339,22 +1430,26 @@ class WorkspaceManager:
     def lock_repo(self, workspace_name: str, repo_name: str) -> None:
         """Lock a repository in a workspace, marking tracked files read-only."""
         meta, ws_dir = self.get_workspace_info(workspace_name)
-
-        if repo_name not in meta.repositories:
+        try:
+            r_key, spec, worktree_path = self.resolve_repo_spec(workspace_name, repo_name)
+        except RepositoryNotFoundException:
             raise RepoNotInWorkspaceException(
                 f"Repository '{repo_name}' is not in workspace '{workspace_name}'"
             )
 
-        spec = meta.repositories[repo_name]
         if spec.frozen or spec.locked:
-            OutputHandler.print_info(f"Repository '#{repo_name}' is already locked")
+            OutputHandler.print_info(f"Repository '#{r_key}' is already locked")
             return
 
-        worktree_path = ws_dir / spec.path
         if worktree_path.exists():
             self.git.set_tracked_files_readonly(worktree_path, readonly=True)
             # Ensure env files remain writable
-            repo_cfg = self.config.repositories.get(repo_name)
+            repo_cfg = self.config.repositories.get(r_key)
+            if not repo_cfg:
+                for c_cfg in self.config.repositories.values():
+                    if c_cfg.checkout == r_key or c_cfg.checkout == spec.path:
+                        repo_cfg = c_cfg
+                        break
             env_candidates = [".env", ".env.local", ".env.development", ".env.test"]
             if repo_cfg:
                 env_candidates.append(repo_cfg.env_file)
@@ -1368,9 +1463,9 @@ class WorkspaceManager:
                     except Exception as e:
                         logger.debug("Failed ensuring %s is writable: %s", env_file, e)
 
-        meta.repositories[repo_name].frozen = True
+        meta.repositories[r_key].frozen = True
         self._save_metadata(ws_dir, meta)
-        OutputHandler.print_success(f"Locked repository '#{repo_name}' in workspace '@{workspace_name}'")
+        OutputHandler.print_success(f"Locked repository '#{r_key}' in workspace '@{workspace_name}'")
 
     def freeze_repo(self, workspace_name: str, repo_name: str) -> None:
         """Backward-compatible alias for lock_repo."""
@@ -1379,20 +1474,24 @@ class WorkspaceManager:
     def unlock_repo(self, workspace_name: str, repo_name: str) -> None:
         """Unlock a repository in a workspace, restoring write permissions on tracked and untracked env files."""
         meta, ws_dir = self.get_workspace_info(workspace_name)
-
-        if repo_name not in meta.repositories:
+        try:
+            r_key, spec, worktree_path = self.resolve_repo_spec(workspace_name, repo_name)
+        except RepositoryNotFoundException:
             raise RepoNotInWorkspaceException(
                 f"Repository '{repo_name}' is not in workspace '{workspace_name}'"
             )
 
-        spec = meta.repositories[repo_name]
         is_already_unlocked = not spec.frozen and not spec.locked
 
-        worktree_path = ws_dir / spec.path
         if worktree_path.exists():
             self.git.set_tracked_files_readonly(worktree_path, readonly=False)
             # Also restore permissions on untracked env files and copied files
-            repo_cfg = self.config.repositories.get(repo_name)
+            repo_cfg = self.config.repositories.get(r_key)
+            if not repo_cfg:
+                for c_cfg in self.config.repositories.values():
+                    if c_cfg.checkout == r_key or c_cfg.checkout == spec.path:
+                        repo_cfg = c_cfg
+                        break
             env_candidates = [".env", ".env.local", ".env.development", ".env.test"]
             if repo_cfg:
                 env_candidates.append(repo_cfg.env_file)
@@ -1406,12 +1505,12 @@ class WorkspaceManager:
                     except Exception as e:
                         logger.debug("Failed unlocking %s: %s", env_file, e)
 
-        meta.repositories[repo_name].frozen = False
+        meta.repositories[r_key].frozen = False
         self._save_metadata(ws_dir, meta)
         if is_already_unlocked:
-            OutputHandler.print_success(f"Restored write permissions for repository '#{repo_name}' in workspace '@{workspace_name}'")
+            OutputHandler.print_success(f"Restored write permissions for repository '#{r_key}' in workspace '@{workspace_name}'")
         else:
-            OutputHandler.print_success(f"Unlocked repository '#{repo_name}' in workspace '@{workspace_name}'")
+            OutputHandler.print_success(f"Unlocked repository '#{r_key}' in workspace '@{workspace_name}'")
 
     def unfreeze_repo(self, workspace_name: str, repo_name: str) -> None:
         """Backward-compatible alias for unlock_repo."""
@@ -1430,9 +1529,13 @@ class WorkspaceManager:
         meta, ws_dir = self.get_workspace_info(workspace_name)
 
         if repos:
-            target_repos = list(repos)
-            for r in target_repos:
-                if r not in meta.repositories:
+            target_repos = []
+            for r in repos:
+                try:
+                    r_name, _, _ = self.resolve_repo_spec(workspace_name, r)
+                    if r_name not in target_repos:
+                        target_repos.append(r_name)
+                except Exception:
                     raise RepoNotInWorkspaceException(
                         f"Repository '{r}' is not in workspace '{workspace_name}'"
                     )
@@ -1497,9 +1600,13 @@ class WorkspaceManager:
         meta, ws_dir = self.get_workspace_info(workspace_name)
 
         if repos:
-            target_repos = list(repos)
-            for r in target_repos:
-                if r not in meta.repositories:
+            target_repos = []
+            for r in repos:
+                try:
+                    r_name, _, _ = self.resolve_repo_spec(workspace_name, r)
+                    if r_name not in target_repos:
+                        target_repos.append(r_name)
+                except Exception:
                     raise RepoNotInWorkspaceException(
                         f"Repository '{r}' is not in workspace '{workspace_name}'"
                     )
@@ -1574,9 +1681,13 @@ class WorkspaceManager:
         meta, ws_dir = self.get_workspace_info(workspace_name)
 
         if repos:
-            target_repos = list(repos)
-            for r in target_repos:
-                if r not in meta.repositories:
+            target_repos = []
+            for r in repos:
+                try:
+                    r_name, _, _ = self.resolve_repo_spec(workspace_name, r)
+                    if r_name not in target_repos:
+                        target_repos.append(r_name)
+                except Exception:
                     raise RepoNotInWorkspaceException(
                         f"Repository '{r}' is not in workspace '{workspace_name}'"
                     )
@@ -1686,6 +1797,11 @@ class WorkspaceManager:
             spec = meta.repositories[r_name]
             wt_path = ws_dir / spec.path
             repo_cfg = self.config.repositories.get(r_name)
+            if not repo_cfg:
+                for c_cfg in self.config.repositories.values():
+                    if c_cfg.checkout == r_name or c_cfg.checkout == spec.path:
+                        repo_cfg = c_cfg
+                        break
 
             OutputHandler.print_setup_repo_start(r_name, wt_path)
 

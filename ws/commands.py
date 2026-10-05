@@ -168,6 +168,19 @@ def cmd_logs(
     if clean_repo:
         target_log = log_dir / f"{clean_repo}.log"
         if not target_log.exists():
+            # Check for alternate alias or checkout folder name
+            alt_name = None
+            if clean_repo in manager.config.repositories:
+                alt_name = manager.config.repositories[clean_repo].checkout
+            else:
+                for c_alias, c_cfg in manager.config.repositories.items():
+                    if c_cfg.checkout == clean_repo:
+                        alt_name = c_alias
+                        break
+            if alt_name and (log_dir / f"{alt_name}.log").exists():
+                target_log = log_dir / f"{alt_name}.log"
+
+        if not target_log.exists():
             OutputHandler.print_error(f"No log file found for service '%{clean_repo}' at {target_log}")
             return
         log_files = [target_log]
@@ -193,9 +206,19 @@ def cmd_status(manager: WorkspaceManager, name: str) -> None:
     manager.status_workspace(name=name)
 
 
-def cmd_exec(manager: WorkspaceManager, name: str, command: list[str]) -> None:
-    """Execute command across all repository worktrees in a workspace."""
-    manager.exec_workspace(name=name, command=command)
+def cmd_exec(
+    manager: WorkspaceManager,
+    name: str,
+    command: list[str] | str,
+    repos: Sequence[str] | None = None,
+) -> int:
+    """Execute command across specified or all repository worktrees in a workspace."""
+    results = manager.exec_workspace(name=name, command=command, repos=repos)
+    failed = [r for r, code in results.items() if code != 0]
+    if failed:
+        OutputHandler.print_warning(f"Command exited with non-zero status in: {', '.join(failed)}")
+        return 1
+    return 0
 
 
 def cmd_fetch(manager: WorkspaceManager) -> None:
