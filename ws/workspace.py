@@ -5,6 +5,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import shlex
 import shutil
 import stat
 import subprocess
@@ -31,7 +32,14 @@ from ws.exceptions import (
     WSException,
 )
 from ws.git import GitService
-from ws.models import AppConfig, RepoConfig, RepoSpec, WorkspaceMetadata
+from ws.models import (
+    AppConfig,
+    HubAutoSaveConfig,
+    RepoConfig,
+    RepoSpec,
+    TmuxConfig,
+    WorkspaceMetadata,
+)
 from ws.output import OutputHandler
 from ws.utils import ensure_directory, get_iso_timestamp
 
@@ -64,6 +72,30 @@ class RollbackStack:
                 logger.error("Failed to execute rollback step '%s': %s", description, e)
         self._actions.clear()
         return executed
+
+
+def run_shell_command(cmd_str: str, cwd: Path) -> int:
+    """Execute shell command in target directory, enabling shell alias and function expansion."""
+    shell = os.environ.get("SHELL", "/bin/bash")
+    shell_name = Path(shell).name
+    if "zsh" in shell_name:
+        script = (
+            'setopt aliases 2>/dev/null; '
+            '[ -f "$ZDOTDIR/.zshrc" ] && source "$ZDOTDIR/.zshrc" 2>/dev/null || '
+            '[ -f "$HOME/.zshrc" ] && source "$HOME/.zshrc" 2>/dev/null; '
+            f'eval {shlex.quote(cmd_str)}'
+        )
+        proc = subprocess.run([shell, "-c", script], cwd=cwd)
+    elif "bash" in shell_name:
+        script = (
+            'shopt -s expand_aliases 2>/dev/null; '
+            '[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc" 2>/dev/null; '
+            f'eval {shlex.quote(cmd_str)}'
+        )
+        proc = subprocess.run([shell, "-c", script], cwd=cwd)
+    else:
+        proc = subprocess.run(cmd_str, shell=True, executable=shell, cwd=cwd)
+    return proc.returncode
 
 
 class WorkspaceManager:
@@ -1087,6 +1119,59 @@ class WorkspaceManager:
 
 
 
+    def resolve_repo_spec(
+        self,
+        workspace_name: str,
+        repo_or_worktree: str,
+    ) -> tuple[str, RepoSpec, Path]:
+        """
+        Bidirectionally resolve repository alias or worktree checkout directory
+        to (canonical_name, RepoSpec, worktree_path).
+        """
+        meta, ws_dir = self.get_workspace_info(workspace_name)
+        clean_target = repo_or_worktree.lstrip("%+:#$")
+
+        # 1. Direct match in meta.repositories
+        if clean_target in meta.repositories:
+            spec = meta.repositories[clean_target]
+            return clean_target, spec, ws_dir / spec.path
+
+        # 2. Match by spec.path in meta.repositories
+        for r_name, spec in meta.repositories.items():
+            if spec.path == clean_target or Path(spec.path).name == clean_target:
+                return r_name, spec, ws_dir / spec.path
+
+        # 3. Match via project config alias
+        if clean_target in self.config.repositories:
+            r_cfg = self.config.repositories[clean_target]
+            for r_name, spec in meta.repositories.items():
+                if spec.path == r_cfg.checkout or r_name == r_cfg.checkout:
+                    return r_name, spec, ws_dir / spec.path
+            wt_path = ws_dir / r_cfg.checkout
+            if wt_path.is_dir():
+                return clean_target, RepoSpec(name=clean_target, branch="HEAD", create=False, path=r_cfg.checkout), wt_path
+
+        # 4. Match via project config checkout path
+        for cfg_alias, r_cfg in self.config.repositories.items():
+            if r_cfg.checkout == clean_target or Path(r_cfg.checkout).name == clean_target:
+                if cfg_alias in meta.repositories:
+                    spec = meta.repositories[cfg_alias]
+                    return cfg_alias, spec, ws_dir / spec.path
+                wt_path = ws_dir / clean_target
+                if wt_path.is_dir():
+                    return cfg_alias, RepoSpec(name=cfg_alias, branch="HEAD", create=False, path=clean_target), wt_path
+
+        # 5. Directory exists on disk inside workspace
+        wt_path = ws_dir / clean_target
+        if wt_path.is_dir():
+            return clean_target, RepoSpec(name=clean_target, branch="HEAD", create=False, path=clean_target), wt_path
+
+        available = list(meta.repositories.keys())
+        raise RepositoryNotFoundException(
+            f"Repository or worktree '{repo_or_worktree}' not found in workspace '{workspace_name}'. "
+            f"Available worktrees: {', '.join(available)}"
+        )
+
     def open_workspace(self, name: str, worktree: str | None = None) -> None:
         """Spawn an interactive subshell inside the workspace or a specific worktree directory."""
         ws_dir = self._get_workspace_dir(name)
@@ -1095,17 +1180,10 @@ class WorkspaceManager:
 
         target_dir = ws_dir
         if worktree:
-            meta, _ = self.get_workspace_info(name)
-            if worktree in meta.repositories:
-                spec = meta.repositories[worktree]
-                target_dir = ws_dir / spec.path
-            elif (ws_dir / worktree).is_dir():
-                target_dir = ws_dir / worktree
-            else:
-                raise WorkspaceNotFoundException(
-                    f"Worktree '{worktree}' not found in workspace '{name}'. "
-                    f"Available worktrees: {', '.join(meta.repositories.keys())}"
-                )
+            try:
+                _, _, target_dir = self.resolve_repo_spec(name, worktree)
+            except RepositoryNotFoundException as e:
+                raise WorkspaceNotFoundException(str(e)) from e
 
         shell = os.environ.get("SHELL", "/bin/bash")
         OutputHandler.print_info(f"Opening shell inside: [bold cyan]{target_dir}[/bold cyan]")
@@ -1130,22 +1208,42 @@ class WorkspaceManager:
                 statuses[r_name] = "missing worktree"
         return statuses
 
-    def exec_workspace(self, name: str, command: list[str]) -> dict[str, int]:
-        """Execute shell command in each repository worktree of a workspace."""
-        import subprocess
-
+    def exec_workspace(
+        self,
+        name: str,
+        command: list[str] | str,
+        repos: Sequence[str] | None = None,
+    ) -> dict[str, int]:
+        """Execute shell command in each or specified repository worktree of a workspace."""
         ws_dir = self._get_workspace_dir(name)
         if not ws_dir.exists():
             raise WorkspaceNotFoundException(f"Workspace '{name}' not found")
 
+        if isinstance(command, str):
+            cmd_str = command
+        elif not command:
+            cmd_str = ""
+        elif len(command) == 1:
+            cmd_str = command[0]
+        else:
+            cmd_str = shlex.join(command)
+
         meta, _ = self.get_workspace_info(name)
+        target_items: list[tuple[str, Path]] = []
+        if repos:
+            for r in repos:
+                r_key, _, wt_path = self.resolve_repo_spec(name, r)
+                target_items.append((r_key, wt_path))
+        else:
+            for r_name, spec in meta.repositories.items():
+                target_items.append((r_name, ws_dir / spec.path))
+
         results: dict[str, int] = {}
-        for r_name, spec in meta.repositories.items():
-            wt_path = ws_dir / spec.path
+        for r_name, wt_path in target_items:
             if wt_path.exists():
                 OutputHandler.print_info(f"Executing in [bold magenta]{r_name}[/bold magenta]...")
-                res = subprocess.run(command, cwd=wt_path)
-                results[r_name] = res.returncode
+                code = run_shell_command(cmd_str, cwd=wt_path)
+                results[r_name] = code
             else:
                 OutputHandler.print_warning(f"Skipping {r_name} (worktree missing)")
                 results[r_name] = -1
@@ -1234,10 +1332,33 @@ class WorkspaceManager:
                 url=url,
             )
 
-        saved_path = ConfigLoader.save_config(repositories=updated_repos)
+        root_dir_name = self.config.project_root.name or "workspace"
+        tmux_cfg = self.config.tmux or TmuxConfig(
+            session=root_dir_name,
+            command="nvim",
+            switch=True,
+        )
+        hub_auto_save = self.config.hub_auto_save or HubAutoSaveConfig(
+            enabled=True,
+            interval=300,
+            include_wip=True,
+            workspaces="all",
+        )
+
+        saved_path = ConfigLoader.save_config(
+            repositories=updated_repos,
+            config_path=self.config.config_file_path,
+            tmux=tmux_cfg,
+            hub_auto_save=hub_auto_save,
+            hub_project=self.config.hub_project,
+        )
         OutputHandler.print_success(f"Saved configuration to [bold white]{saved_path}[/bold white]")
 
         self.config.repositories = updated_repos
+        self.config.tmux = tmux_cfg
+        self.config.hub_auto_save = hub_auto_save
+        if not self.config.config_file_path:
+            self.config.config_file_path = saved_path.resolve()
         return self.config
 
     def _save_metadata(self, ws_dir: Path, metadata: WorkspaceMetadata) -> None:
@@ -1339,22 +1460,26 @@ class WorkspaceManager:
     def lock_repo(self, workspace_name: str, repo_name: str) -> None:
         """Lock a repository in a workspace, marking tracked files read-only."""
         meta, ws_dir = self.get_workspace_info(workspace_name)
-
-        if repo_name not in meta.repositories:
+        try:
+            r_key, spec, worktree_path = self.resolve_repo_spec(workspace_name, repo_name)
+        except RepositoryNotFoundException:
             raise RepoNotInWorkspaceException(
                 f"Repository '{repo_name}' is not in workspace '{workspace_name}'"
             )
 
-        spec = meta.repositories[repo_name]
         if spec.frozen or spec.locked:
-            OutputHandler.print_info(f"Repository '#{repo_name}' is already locked")
+            OutputHandler.print_info(f"Repository '#{r_key}' is already locked")
             return
 
-        worktree_path = ws_dir / spec.path
         if worktree_path.exists():
             self.git.set_tracked_files_readonly(worktree_path, readonly=True)
             # Ensure env files remain writable
-            repo_cfg = self.config.repositories.get(repo_name)
+            repo_cfg = self.config.repositories.get(r_key)
+            if not repo_cfg:
+                for c_cfg in self.config.repositories.values():
+                    if c_cfg.checkout == r_key or c_cfg.checkout == spec.path:
+                        repo_cfg = c_cfg
+                        break
             env_candidates = [".env", ".env.local", ".env.development", ".env.test"]
             if repo_cfg:
                 env_candidates.append(repo_cfg.env_file)
@@ -1368,9 +1493,9 @@ class WorkspaceManager:
                     except Exception as e:
                         logger.debug("Failed ensuring %s is writable: %s", env_file, e)
 
-        meta.repositories[repo_name].frozen = True
+        meta.repositories[r_key].frozen = True
         self._save_metadata(ws_dir, meta)
-        OutputHandler.print_success(f"Locked repository '#{repo_name}' in workspace '@{workspace_name}'")
+        OutputHandler.print_success(f"Locked repository '#{r_key}' in workspace '@{workspace_name}'")
 
     def freeze_repo(self, workspace_name: str, repo_name: str) -> None:
         """Backward-compatible alias for lock_repo."""
@@ -1379,20 +1504,24 @@ class WorkspaceManager:
     def unlock_repo(self, workspace_name: str, repo_name: str) -> None:
         """Unlock a repository in a workspace, restoring write permissions on tracked and untracked env files."""
         meta, ws_dir = self.get_workspace_info(workspace_name)
-
-        if repo_name not in meta.repositories:
+        try:
+            r_key, spec, worktree_path = self.resolve_repo_spec(workspace_name, repo_name)
+        except RepositoryNotFoundException:
             raise RepoNotInWorkspaceException(
                 f"Repository '{repo_name}' is not in workspace '{workspace_name}'"
             )
 
-        spec = meta.repositories[repo_name]
         is_already_unlocked = not spec.frozen and not spec.locked
 
-        worktree_path = ws_dir / spec.path
         if worktree_path.exists():
             self.git.set_tracked_files_readonly(worktree_path, readonly=False)
             # Also restore permissions on untracked env files and copied files
-            repo_cfg = self.config.repositories.get(repo_name)
+            repo_cfg = self.config.repositories.get(r_key)
+            if not repo_cfg:
+                for c_cfg in self.config.repositories.values():
+                    if c_cfg.checkout == r_key or c_cfg.checkout == spec.path:
+                        repo_cfg = c_cfg
+                        break
             env_candidates = [".env", ".env.local", ".env.development", ".env.test"]
             if repo_cfg:
                 env_candidates.append(repo_cfg.env_file)
@@ -1406,12 +1535,12 @@ class WorkspaceManager:
                     except Exception as e:
                         logger.debug("Failed unlocking %s: %s", env_file, e)
 
-        meta.repositories[repo_name].frozen = False
+        meta.repositories[r_key].frozen = False
         self._save_metadata(ws_dir, meta)
         if is_already_unlocked:
-            OutputHandler.print_success(f"Restored write permissions for repository '#{repo_name}' in workspace '@{workspace_name}'")
+            OutputHandler.print_success(f"Restored write permissions for repository '#{r_key}' in workspace '@{workspace_name}'")
         else:
-            OutputHandler.print_success(f"Unlocked repository '#{repo_name}' in workspace '@{workspace_name}'")
+            OutputHandler.print_success(f"Unlocked repository '#{r_key}' in workspace '@{workspace_name}'")
 
     def unfreeze_repo(self, workspace_name: str, repo_name: str) -> None:
         """Backward-compatible alias for unlock_repo."""
@@ -1430,9 +1559,13 @@ class WorkspaceManager:
         meta, ws_dir = self.get_workspace_info(workspace_name)
 
         if repos:
-            target_repos = list(repos)
-            for r in target_repos:
-                if r not in meta.repositories:
+            target_repos = []
+            for r in repos:
+                try:
+                    r_name, _, _ = self.resolve_repo_spec(workspace_name, r)
+                    if r_name not in target_repos:
+                        target_repos.append(r_name)
+                except Exception:
                     raise RepoNotInWorkspaceException(
                         f"Repository '{r}' is not in workspace '{workspace_name}'"
                     )
@@ -1497,9 +1630,13 @@ class WorkspaceManager:
         meta, ws_dir = self.get_workspace_info(workspace_name)
 
         if repos:
-            target_repos = list(repos)
-            for r in target_repos:
-                if r not in meta.repositories:
+            target_repos = []
+            for r in repos:
+                try:
+                    r_name, _, _ = self.resolve_repo_spec(workspace_name, r)
+                    if r_name not in target_repos:
+                        target_repos.append(r_name)
+                except Exception:
                     raise RepoNotInWorkspaceException(
                         f"Repository '{r}' is not in workspace '{workspace_name}'"
                     )
@@ -1574,9 +1711,13 @@ class WorkspaceManager:
         meta, ws_dir = self.get_workspace_info(workspace_name)
 
         if repos:
-            target_repos = list(repos)
-            for r in target_repos:
-                if r not in meta.repositories:
+            target_repos = []
+            for r in repos:
+                try:
+                    r_name, _, _ = self.resolve_repo_spec(workspace_name, r)
+                    if r_name not in target_repos:
+                        target_repos.append(r_name)
+                except Exception:
                     raise RepoNotInWorkspaceException(
                         f"Repository '{r}' is not in workspace '{workspace_name}'"
                     )
@@ -1686,6 +1827,11 @@ class WorkspaceManager:
             spec = meta.repositories[r_name]
             wt_path = ws_dir / spec.path
             repo_cfg = self.config.repositories.get(r_name)
+            if not repo_cfg:
+                for c_cfg in self.config.repositories.values():
+                    if c_cfg.checkout == r_name or c_cfg.checkout == spec.path:
+                        repo_cfg = c_cfg
+                        break
 
             OutputHandler.print_setup_repo_start(r_name, wt_path)
 
@@ -2162,8 +2308,9 @@ class WorkspaceManager:
         from ws.hub import HubClient
         client = HubClient()
 
-        if override_identifier:
-            return client.parse_project_identifier(override_identifier)
+        target_id = override_identifier or getattr(self.config, "hub_project", None)
+        if target_id:
+            return client.parse_project_identifier(target_id)
 
         # Check if project name can be inferred from config or directory name
         proj_dir_name = self.config.project_root.name
@@ -2300,7 +2447,12 @@ class WorkspaceManager:
 
         return dest_dir
 
-    def hub_publish(self, project_identifier: str | None = None, description: str | None = None) -> dict[str, Any]:
+    def hub_publish(
+        self,
+        project_identifier: str | None = None,
+        description: str | None = None,
+        silent: bool = False,
+    ) -> dict[str, Any]:
         """Publish local workspace project definition, encrypted vault secrets, and sensitive files to wshub."""
         from ws.hub import HubClient
         from ws.config import ConfigLoader
@@ -2310,6 +2462,18 @@ class WorkspaceManager:
         config_file = self.config.config_file_path or (self.config.project_root / "repositories.yml")
         if not config_file.exists():
             raise ConfigException("No 'repositories.yml' found in project root to publish.")
+
+        # Persist project identifier in repositories.yml and config if not already set
+        proj_ident = f"{namespace}/{name}"
+        if getattr(self.config, "hub_project", None) != proj_ident:
+            try:
+                ConfigLoader.update_hub_config(config_file, hub_project=proj_ident)
+                self.config.hub_project = proj_ident
+                if not hasattr(self.config, "hub") or not isinstance(self.config.hub, dict):
+                    self.config.hub = {}
+                self.config.hub["project"] = proj_ident
+            except Exception as e:
+                logger.debug("Could not persist hub project identifier to %s: %s", config_file, e)
 
         # Classify assets into sanitized blueprint, vault secrets, sensitive files, and private vars
         sanitized_yaml, extracted_secrets, files_to_upload, private_count = ConfigLoader.classify_project_assets(self.config)
@@ -2328,8 +2492,19 @@ class WorkspaceManager:
 
         scripts_json = json.dumps(scripts_dict) if scripts_dict else None
 
-        OutputHandler.print_info(f"Publishing project [bold cyan]{namespace}/{name}[/bold cyan] to wshub...")
-        with OutputHandler.spinner(f"Registering project blueprint {namespace}/{name}..."):
+        if not silent:
+            OutputHandler.print_info(f"Publishing project [bold cyan]{namespace}/{name}[/bold cyan] to wshub...")
+            with OutputHandler.spinner(f"Registering project blueprint {namespace}/{name}..."):
+                result = client.create_project(
+                    namespace=namespace,
+                    name=name,
+                    blueprint_yaml=sanitized_yaml,
+                    description=description,
+                    scripts_json=scripts_json,
+                    changelog="Initial publish from local workspace",
+                )
+            OutputHandler.print_success(f"Published project [bold green]{namespace}/{name}[/bold green] (Revision v1)")
+        else:
             result = client.create_project(
                 namespace=namespace,
                 name=name,
@@ -2338,22 +2513,46 @@ class WorkspaceManager:
                 scripts_json=scripts_json,
                 changelog="Initial publish from local workspace",
             )
-        OutputHandler.print_success(f"Published project [bold green]{namespace}/{name}[/bold green] (Revision v1)")
+            logger.info("Published project %s/%s (Revision v1)", namespace, name)
 
         # 1. Sync Vault Secrets
         total_secrets = 0
         if extracted_secrets:
-            with OutputHandler.spinner("Encrypting and storing secrets in wshub vault..."):
+            if not silent:
+                with OutputHandler.spinner("Encrypting and storing secrets in wshub vault..."):
+                    for scope, sec_dict in extracted_secrets.items():
+                        repo_param = None if scope == "global" else scope
+                        client.set_secrets_bulk(namespace, name, sec_dict, repo_name=repo_param)
+                        total_secrets += len(sec_dict)
+                OutputHandler.print_success(f"🔒 Stored and encrypted [bold cyan]{total_secrets}[/bold cyan] secret(s) in Vault")
+            else:
                 for scope, sec_dict in extracted_secrets.items():
                     repo_param = None if scope == "global" else scope
                     client.set_secrets_bulk(namespace, name, sec_dict, repo_name=repo_param)
                     total_secrets += len(sec_dict)
-            OutputHandler.print_success(f"🔒 Stored and encrypted [bold cyan]{total_secrets}[/bold cyan] secret(s) in Vault")
+                logger.info("Stored and encrypted %d secret(s) in Vault", total_secrets)
 
         # 2. Sync Sensitive Files
         if files_to_upload:
-            with OutputHandler.spinner(f"Encrypting and uploading {len(files_to_upload)} file(s)..."):
-                files_dir = (self.config.project_root / "files").resolve()
+            files_dir = (self.config.project_root / "files").resolve()
+            if not silent:
+                with OutputHandler.spinner(f"Encrypting and uploading {len(files_to_upload)} file(s)..."):
+                    for f_path in files_to_upload:
+                        try:
+                            resolved_f = f_path.resolve()
+                            if resolved_f.is_relative_to(files_dir):
+                                rel_path = str(resolved_f.relative_to(files_dir))
+                            else:
+                                rel_path = str(resolved_f.relative_to(self.config.project_root.resolve()))
+                                if rel_path.startswith("files/") or rel_path.startswith("files\\"):
+                                    rel_path = rel_path[6:]
+                        except ValueError:
+                            rel_path = f_path.name
+                        with open(f_path, "rb") as f:
+                            file_bytes = f.read()
+                        client.upload_file(namespace, name, rel_file_path=rel_path, content_bytes=file_bytes)
+                OutputHandler.print_success(f"📁 Encrypted and uploaded [bold cyan]{len(files_to_upload)}[/bold cyan] sensitive file(s)")
+            else:
                 for f_path in files_to_upload:
                     try:
                         resolved_f = f_path.resolve()
@@ -2368,17 +2567,22 @@ class WorkspaceManager:
                     with open(f_path, "rb") as f:
                         file_bytes = f.read()
                     client.upload_file(namespace, name, rel_file_path=rel_path, content_bytes=file_bytes)
-            OutputHandler.print_success(f"📁 Encrypted and uploaded [bold cyan]{len(files_to_upload)}[/bold cyan] sensitive file(s)")
+                logger.info("Encrypted and uploaded %d sensitive file(s)", len(files_to_upload))
 
         # 3. Report private vars omitted
-        if private_count > 0:
+        if private_count > 0 and not silent:
             OutputHandler.print_info(f"🚫 Skipped [dim]{private_count}[/dim] private variable(s) (kept local)")
 
         return result
 
-    def hub_push(self, message: str = "Update configuration", project_identifier: str | None = None) -> dict[str, Any]:
+    def hub_push(
+        self,
+        message: str = "Update configuration",
+        project_identifier: str | None = None,
+        silent: bool = False,
+    ) -> dict[str, Any]:
         """Push local project blueprint changes, secrets, and files to wshub as a new revision."""
-        from ws.hub import HubClient
+        from ws.hub import HubClient, HubException
         from ws.config import ConfigLoader
         client = HubClient()
         namespace, name = self._get_project_namespace_and_name(project_identifier)
@@ -2386,6 +2590,17 @@ class WorkspaceManager:
         config_file = self.config.config_file_path or (self.config.project_root / "repositories.yml")
         if not config_file.exists():
             raise ConfigException("No 'repositories.yml' found in project root.")
+
+        proj_ident = f"{namespace}/{name}"
+        if getattr(self.config, "hub_project", None) != proj_ident:
+            try:
+                ConfigLoader.update_hub_config(config_file, hub_project=proj_ident)
+                self.config.hub_project = proj_ident
+                if not hasattr(self.config, "hub") or not isinstance(self.config.hub, dict):
+                    self.config.hub = {}
+                self.config.hub["project"] = proj_ident
+            except Exception as e:
+                logger.debug("Could not persist hub project identifier to %s: %s", config_file, e)
 
         sanitized_yaml, extracted_secrets, files_to_upload, private_count = ConfigLoader.classify_project_assets(self.config)
 
@@ -2401,30 +2616,73 @@ class WorkspaceManager:
                         pass
         scripts_json = json.dumps(scripts_dict) if scripts_dict else None
 
-        with OutputHandler.spinner(f"Pushing revision to {namespace}/{name}..."):
-            result = client.push_revision(
-                namespace=namespace,
-                name=name,
-                blueprint_yaml=sanitized_yaml,
-                scripts_json=scripts_json,
-                changelog=message,
-            )
+        try:
+            if not silent:
+                with OutputHandler.spinner(f"Pushing revision to {namespace}/{name}..."):
+                    result = client.push_revision(
+                        namespace=namespace,
+                        name=name,
+                        blueprint_yaml=sanitized_yaml,
+                        scripts_json=scripts_json,
+                        changelog=message,
+                    )
+            else:
+                result = client.push_revision(
+                    namespace=namespace,
+                    name=name,
+                    blueprint_yaml=sanitized_yaml,
+                    scripts_json=scripts_json,
+                    changelog=message,
+                )
+        except HubException as e:
+            if e.status_code == 404 or "not found" in str(e).lower():
+                logger.info("Project %s/%s not found on hub; auto-publishing project...", namespace, name)
+                if not silent:
+                    OutputHandler.print_info(f"Project [bold cyan]{namespace}/{name}[/bold cyan] has not been published yet. Automatically publishing to wshub...")
+                return self.hub_publish(
+                    project_identifier=project_identifier,
+                    description="Automatically published on push",
+                    silent=silent,
+                )
+            raise
+
         version = result.get("revision", {}).get("version", "?")
-        OutputHandler.print_success(f"Pushed revision [bold green]v{version}[/bold green] to [cyan]{namespace}/{name}[/cyan]")
+        if not silent:
+            OutputHandler.print_success(f"Pushed revision [bold green]v{version}[/bold green] to [cyan]{namespace}/{name}[/cyan]")
+        else:
+            logger.info("Pushed revision v%s to %s/%s", version, namespace, name)
 
         # 1. Update Vault Secrets
         total_secrets = 0
         if extracted_secrets:
-            with OutputHandler.spinner("Updating encrypted secrets in vault..."):
+            if not silent:
+                with OutputHandler.spinner("Updating encrypted secrets in vault..."):
+                    for scope, sec_dict in extracted_secrets.items():
+                        repo_param = None if scope == "global" else scope
+                        client.set_secrets_bulk(namespace, name, sec_dict, repo_name=repo_param)
+                        total_secrets += len(sec_dict)
+                OutputHandler.print_success(f"🔒 Synced [bold cyan]{total_secrets}[/bold cyan] secret(s) in Vault")
+            else:
                 for scope, sec_dict in extracted_secrets.items():
                     repo_param = None if scope == "global" else scope
                     client.set_secrets_bulk(namespace, name, sec_dict, repo_name=repo_param)
                     total_secrets += len(sec_dict)
-            OutputHandler.print_success(f"🔒 Synced [bold cyan]{total_secrets}[/bold cyan] secret(s) in Vault")
+                logger.info("Synced %d secret(s) in Vault", total_secrets)
 
         # 2. Update Files
         if files_to_upload:
-            with OutputHandler.spinner(f"Uploading {len(files_to_upload)} file(s)..."):
+            if not silent:
+                with OutputHandler.spinner(f"Uploading {len(files_to_upload)} file(s)..."):
+                    for f_path in files_to_upload:
+                        try:
+                            rel_path = str(f_path.relative_to(self.config.project_root))
+                        except ValueError:
+                            rel_path = f_path.name
+                        with open(f_path, "rb") as f:
+                            file_bytes = f.read()
+                        client.upload_file(namespace, name, rel_file_path=rel_path, content_bytes=file_bytes)
+                OutputHandler.print_success(f"📁 Synced [bold cyan]{len(files_to_upload)}[/bold cyan] sensitive file(s)")
+            else:
                 for f_path in files_to_upload:
                     try:
                         rel_path = str(f_path.relative_to(self.config.project_root))
@@ -2433,9 +2691,9 @@ class WorkspaceManager:
                     with open(f_path, "rb") as f:
                         file_bytes = f.read()
                     client.upload_file(namespace, name, rel_file_path=rel_path, content_bytes=file_bytes)
-            OutputHandler.print_success(f"📁 Synced [bold cyan]{len(files_to_upload)}[/bold cyan] sensitive file(s)")
+                logger.info("Synced %d sensitive file(s)", len(files_to_upload))
 
-        if private_count > 0:
+        if private_count > 0 and not silent:
             OutputHandler.print_info(f"🚫 Skipped [dim]{private_count}[/dim] private variable(s) (kept local)")
 
         return result
@@ -2519,6 +2777,8 @@ class WorkspaceManager:
         workspace_name: str,
         project_identifier: str | None = None,
         include_wip: bool = True,
+        silent: bool = False,
+        is_auto: bool = False,
     ) -> dict[str, Any]:
         """Save active workspace state (branches, locks, local env, and uncommitted WIP) to wshub."""
         from ws.hub import HubClient
@@ -2527,6 +2787,10 @@ class WorkspaceManager:
 
         meta, ws_dir = self.get_workspace_info(workspace_name)
         state_dict = meta.to_dict()
+
+        if is_auto:
+            state_dict["auto_saved"] = True
+            state_dict["saved_at"] = get_iso_timestamp()
 
         wip_summary: list[tuple[str, int, int]] = []
         if include_wip:
@@ -2560,22 +2824,404 @@ class WorkspaceManager:
             if wip_dict:
                 state_dict["wip"] = wip_dict
 
-        with OutputHandler.spinner(f"Saving state for @{meta.name} to wshub..."):
-            result = client.save_workspace_state(
-                namespace=namespace,
-                name=name,
-                workspace_name=meta.name,
-                state_dict=state_dict,
-            )
-        OutputHandler.print_success(f"Saved workspace state [bold cyan]@{meta.name}[/bold cyan] to [cyan]{namespace}/{name}[/cyan]")
-        for r_name, mod_cnt, untr_cnt in wip_summary:
-            parts = []
-            if mod_cnt > 0:
-                parts.append(f"{mod_cnt} modified file{'s' if mod_cnt != 1 else ''}")
-            if untr_cnt > 0:
-                parts.append(f"{untr_cnt} untracked file{'s' if untr_cnt != 1 else ''}")
-            OutputHandler.print_info(f"  🔒 Captured uncommitted work in [cyan]%{r_name}[/cyan] ({', '.join(parts)})")
+        from ws.hub import HubException
+
+        try:
+            if silent:
+                result = client.save_workspace_state(
+                    namespace=namespace,
+                    name=name,
+                    workspace_name=meta.name,
+                    state_dict=state_dict,
+                )
+                logger.info("Saved workspace state @%s to %s/%s (auto=%s)", meta.name, namespace, name, is_auto)
+            else:
+                with OutputHandler.spinner(f"Saving state for @{meta.name} to wshub..."):
+                    result = client.save_workspace_state(
+                        namespace=namespace,
+                        name=name,
+                        workspace_name=meta.name,
+                        state_dict=state_dict,
+                    )
+        except HubException as e:
+            if e.status_code == 404 or "not found" in str(e).lower():
+                logger.info("Project %s/%s not found on hub; auto-publishing before saving state...", namespace, name)
+                if not silent:
+                    OutputHandler.print_info(f"Project [bold cyan]{namespace}/{name}[/bold cyan] has not been saved to hub yet. Automatically publishing to wshub...")
+                self.hub_publish(
+                    project_identifier=project_identifier,
+                    description="Automatically published on state save",
+                    silent=silent,
+                )
+                if silent:
+                    result = client.save_workspace_state(
+                        namespace=namespace,
+                        name=name,
+                        workspace_name=meta.name,
+                        state_dict=state_dict,
+                    )
+                    logger.info("Saved workspace state @%s to %s/%s (auto=%s) after publish", meta.name, namespace, name, is_auto)
+                else:
+                    with OutputHandler.spinner(f"Saving state for @{meta.name} to wshub..."):
+                        result = client.save_workspace_state(
+                            namespace=namespace,
+                            name=name,
+                            workspace_name=meta.name,
+                            state_dict=state_dict,
+                        )
+            else:
+                raise
+
+        if not silent:
+            prefix = "Auto-saved" if is_auto else "Saved"
+            OutputHandler.print_success(f"{prefix} workspace state [bold cyan]@{meta.name}[/bold cyan] to [cyan]{namespace}/{name}[/cyan]")
+            for r_name, mod_cnt, untr_cnt in wip_summary:
+                parts = []
+                if mod_cnt > 0:
+                    parts.append(f"{mod_cnt} modified file{'s' if mod_cnt != 1 else ''}")
+                if untr_cnt > 0:
+                    parts.append(f"{untr_cnt} untracked file{'s' if untr_cnt != 1 else ''}")
+                OutputHandler.print_info(f"  🔒 Captured uncommitted work in [cyan]%{r_name}[/cyan] ({', '.join(parts)})")
         return result
+
+    def _get_auto_save_cache_file(self) -> Path:
+        """Path to local auto-save cache file recording fingerprints and timestamps."""
+        return self.config.workspaces_dir / ".auto_save_cache.json"
+
+    def _load_auto_save_cache(self) -> dict[str, Any]:
+        """Load cached fingerprints and last save timestamps."""
+        cache_file = self._get_auto_save_cache_file()
+        if cache_file.exists():
+            try:
+                with open(cache_file, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception as e:
+                logger.warning("Failed reading auto-save cache: %s", e)
+        return {}
+
+    def _save_auto_save_cache(self, cache: dict[str, Any]) -> None:
+        """Persist auto-save cache to disk."""
+        cache_file = self._get_auto_save_cache_file()
+        try:
+            ensure_directory(cache_file.parent)
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump(cache, f, indent=2)
+        except Exception as e:
+            logger.warning("Failed writing auto-save cache: %s", e)
+
+    def get_workspace_fingerprint(self, workspace_name: str, include_wip: bool = True) -> str:
+        """Compute SHA-256 fingerprint representing the current state of a workspace."""
+        import hashlib
+        meta, ws_dir = self.get_workspace_info(workspace_name)
+        h = hashlib.sha256()
+        h.update(meta.name.encode("utf-8"))
+        for r_name, spec in sorted(meta.repositories.items()):
+            h.update(f"{r_name}:{spec.branch}:{spec.frozen}:{spec.path}".encode("utf-8"))
+            wt_path = ws_dir / spec.path
+            if wt_path.exists():
+                head = self.git.get_head_commit(wt_path) or ""
+                h.update(f"head:{head}".encode("utf-8"))
+                if include_wip:
+                    uncommitted = self.git.check_worktree_uncommitted(wt_path)
+                    h.update(f"has_uncommitted:{uncommitted['has_uncommitted']}".encode("utf-8"))
+                    for m in sorted(uncommitted.get("modified", [])):
+                        h.update(f"mod:{m}".encode("utf-8"))
+                    for u in sorted(uncommitted.get("untracked", [])):
+                        f_p = wt_path / u
+                        if f_p.is_file():
+                            try:
+                                st = f_p.stat()
+                                h.update(f"untr:{u}:{st.st_size}:{int(st.st_mtime)}".encode("utf-8"))
+                            except OSError:
+                                h.update(f"untr:{u}".encode("utf-8"))
+        return h.hexdigest()
+
+    def hub_auto_save_workspace(
+        self,
+        workspace_name: str,
+        project_identifier: str | None = None,
+        include_wip: bool = True,
+        force: bool = False,
+        silent: bool = True,
+    ) -> bool:
+        """
+        Auto-save workspace state to wshub if changes are detected (or force is True).
+        Returns True if saved, False if skipped because no changes occurred.
+        """
+        if not self.has_workspace(workspace_name):
+            return False
+
+        current_fp = self.get_workspace_fingerprint(workspace_name, include_wip=include_wip)
+        cache = self._load_auto_save_cache()
+        entry = cache.get(workspace_name, {})
+        last_fp = entry.get("fingerprint")
+
+        if not force and last_fp == current_fp:
+            logger.debug("Workspace '@%s' unchanged since last save. Skipping auto-save.", workspace_name)
+            return False
+
+        auto_cfg = getattr(self.config, "hub_auto_save", None)
+        should_notify = auto_cfg.notify if auto_cfg and hasattr(auto_cfg, "notify") else True
+
+        namespace, project_name = self._get_project_namespace_and_name(project_identifier)
+        proj_display = f"{namespace}/{project_name}"
+
+        try:
+            # Execute save
+            self.hub_state_save(
+                workspace_name=workspace_name,
+                project_identifier=project_identifier,
+                include_wip=include_wip,
+                silent=silent,
+                is_auto=True,
+            )
+
+            # Update cache
+            cache[workspace_name] = {
+                "fingerprint": current_fp,
+                "last_saved_at": get_iso_timestamp(),
+            }
+            self._save_auto_save_cache(cache)
+
+            if should_notify:
+                from ws.notify import notify_auto_save_success
+                notify_auto_save_success(workspace_name=workspace_name, project=proj_display)
+
+            return True
+        except Exception as e:
+            if should_notify:
+                from ws.notify import notify_auto_save_failure
+                notify_auto_save_failure(workspace_name=workspace_name, error=str(e), project=proj_display)
+            raise
+
+    def hub_auto_save_all_workspaces(
+        self,
+        project_identifier: str | None = None,
+        force: bool = False,
+        silent: bool = True,
+    ) -> dict[str, bool]:
+        """
+        Evaluate and auto-save target workspaces.
+        Returns dict mapping workspace name -> bool (True if saved, False if skipped).
+        """
+        auto_cfg = getattr(self.config, "hub_auto_save", None)
+        target_setting = auto_cfg.workspaces if auto_cfg else "all"
+        include_wip = auto_cfg.include_wip if auto_cfg else True
+
+        all_ws_meta = self.list_workspaces()
+        all_names = [m.name for m in all_ws_meta]
+
+        if isinstance(target_setting, list):
+            target_names = [w for w in target_setting if w in all_names]
+        elif target_setting == "active":
+            target_names = [w for w in all_names if self.is_session_running(w)]
+        else:
+            target_names = all_names
+
+        results: dict[str, bool] = {}
+        for w_name in target_names:
+            try:
+                saved = self.hub_auto_save_workspace(
+                    workspace_name=w_name,
+                    project_identifier=project_identifier,
+                    include_wip=include_wip,
+                    force=force,
+                    silent=silent,
+                )
+                results[w_name] = saved
+            except Exception as e:
+                logger.error("Auto-save failed for workspace '@%s': %s", w_name, e)
+                results[w_name] = False
+        return results
+
+    def get_auto_save_pid_file(self) -> Path:
+        """Path to PID file for background auto-save daemon."""
+        return self.config.workspaces_dir / ".auto_save.pid"
+
+    def is_auto_save_daemon_active(self) -> tuple[bool, int | None]:
+        """Check if background auto-save daemon is currently running. Returns (is_active, pid)."""
+        pid_file = self.get_auto_save_pid_file()
+        if not pid_file.exists():
+            return False, None
+        try:
+            pid = int(pid_file.read_text(encoding="utf-8").strip())
+            os.kill(pid, 0)
+            return True, pid
+        except (ValueError, ProcessLookupError):
+            try:
+                pid_file.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False, None
+        except PermissionError:
+            return True, pid
+        except Exception:
+            return False, None
+
+    def start_auto_save_daemon(
+        self,
+        interval: int | None = None,
+        project_identifier: str | None = None,
+        detached: bool = True,
+    ) -> int:
+        """Start auto-save daemon in background or foreground."""
+        active, existing_pid = self.is_auto_save_daemon_active()
+        if active and existing_pid != os.getpid():
+            raise WSException(f"Auto-save daemon is already running (PID {existing_pid}).")
+
+        effective_interval = interval
+        if effective_interval is None:
+            auto_cfg = getattr(self.config, "hub_auto_save", None)
+            effective_interval = auto_cfg.interval if auto_cfg and auto_cfg.interval > 0 else 900
+
+        if detached:
+            pid_file = self.get_auto_save_pid_file()
+            ensure_directory(pid_file.parent)
+            log_file = self.config.workspaces_dir / ".auto_save.log"
+
+            cmd = [
+                sys.executable,
+                "-u",
+                "-m",
+                "ws.cli",
+            ]
+            if self.config.config_file_path:
+                cmd.extend(["-c", str(self.config.config_file_path)])
+            cmd.extend([
+                "hub",
+                "auto-save",
+                "run",
+                "--interval",
+                str(effective_interval),
+            ])
+            if project_identifier:
+                cmd.extend(["--project", project_identifier])
+
+            with open(log_file, "a", encoding="utf-8") as out:
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=str(self.config.project_root),
+                    stdout=out,
+                    stderr=out,
+                    start_new_session=True,
+                )
+            pid_file.write_text(str(proc.pid), encoding="utf-8")
+            return proc.pid
+        else:
+            pid_file = self.get_auto_save_pid_file()
+            ensure_directory(pid_file.parent)
+            pid_file.write_text(str(os.getpid()), encoding="utf-8")
+            try:
+                self.run_auto_save_loop(interval=effective_interval, project_identifier=project_identifier)
+            finally:
+                if pid_file.exists():
+                    try:
+                        if pid_file.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                            pid_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+            return os.getpid()
+
+    def stop_auto_save_daemon(self) -> bool:
+        """Stop running auto-save background daemon."""
+        active, pid = self.is_auto_save_daemon_active()
+        if not active or pid is None:
+            return False
+        import signal
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        pid_file = self.get_auto_save_pid_file()
+        try:
+            pid_file.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return True
+
+    def run_auto_save_loop(
+        self,
+        interval: int = 900,
+        project_identifier: str | None = None,
+    ) -> None:
+        """Execute continuous auto-save loop."""
+        import time
+        import signal
+
+        workspace_logger = logging.getLogger("ws.workspace")
+        workspace_logger.setLevel(logging.INFO)
+        if not workspace_logger.handlers:
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setLevel(logging.INFO)
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+            )
+            workspace_logger.addHandler(handler)
+
+        logger.info("Starting auto-save loop (interval: %ds)...", interval)
+
+        def _handle_sigterm(signum, frame):
+            logger.info("Auto-save daemon received termination signal (SIGTERM).")
+            sys.exit(0)
+
+        prev_handler = signal.signal(signal.SIGTERM, _handle_sigterm)
+        try:
+            while True:
+                try:
+                    results = self.hub_auto_save_all_workspaces(project_identifier=project_identifier, silent=True)
+                    saved = [w for w, s in results.items() if s]
+                    if saved:
+                        logger.info("Auto-saved workspaces: %s", ", ".join(f"@{w}" for w in saved))
+                    else:
+                        logger.info("Auto-save check: all workspaces up to date (skipped).")
+                except Exception as e:
+                    logger.error("Error in auto-save loop: %s", e)
+                time.sleep(interval)
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Auto-save loop terminated.")
+        finally:
+            try:
+                signal.signal(signal.SIGTERM, prev_handler)
+            except Exception:
+                pass
+
+    def get_auto_save_status(self) -> dict[str, Any]:
+        """Get diagnostic status of auto-save configuration, daemon, and workspace states."""
+        auto_cfg = getattr(self.config, "hub_auto_save", None)
+        active, pid = self.is_auto_save_daemon_active()
+        cache = self._load_auto_save_cache()
+
+        all_ws = [m.name for m in self.list_workspaces()]
+        ws_info: dict[str, Any] = {}
+        for w in all_ws:
+            c_entry = cache.get(w, {})
+            last_saved = c_entry.get("last_saved_at")
+            dirty = False
+            meta, ws_dir = self.get_workspace_info(w)
+            for _, spec in meta.repositories.items():
+                wt_p = ws_dir / spec.path
+                if wt_p.exists():
+                    u = self.git.check_worktree_uncommitted(wt_p)
+                    if u.get("has_uncommitted"):
+                        dirty = True
+                        break
+            ws_info[w] = {
+                "last_saved_at": last_saved,
+                "has_uncommitted": dirty,
+                "active_session": self.is_session_running(w),
+            }
+
+        return {
+            "enabled": auto_cfg.enabled if auto_cfg else False,
+            "interval": auto_cfg.interval if auto_cfg else 900,
+            "include_wip": auto_cfg.include_wip if auto_cfg else True,
+            "workspaces_setting": auto_cfg.workspaces if auto_cfg else "all",
+            "notify": auto_cfg.notify if auto_cfg and hasattr(auto_cfg, "notify") else True,
+            "daemon_active": active,
+            "daemon_pid": pid,
+            "workspaces": ws_info,
+        }
+
 
     def hub_state_restore(
         self,

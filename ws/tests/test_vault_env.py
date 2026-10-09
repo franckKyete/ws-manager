@@ -289,3 +289,72 @@ def test_clone_from_hub_extracts_files_without_nesting(
     # Ensure double nesting does not exist
     assert not (target_dir / "files" / "files").exists()
 
+
+def test_classify_project_assets_preserves_hub_section(tmp_path):
+    """Test that ConfigLoader.classify_project_assets preserves hub project and auto_save in blueprint YAML."""
+    proj_dir = tmp_path / "finance-proj"
+    proj_dir.mkdir()
+    config_file = proj_dir / "repositories.yml"
+
+    raw_yaml = """
+hub:
+  project: "kyete/finance-tracker-ws"
+  auto_save:
+    enabled: true
+    interval: 5m
+    include_wip: true
+    workspaces: all
+    notify: true
+    silent: true
+
+repositories:
+  server:
+    bare: bares/server.git
+    checkout: server
+"""
+    config_file.write_text(raw_yaml, encoding="utf-8")
+
+    app_cfg = ConfigLoader.load_config(config_path=config_file)
+    assert app_cfg.hub_project == "kyete/finance-tracker-ws"
+    assert app_cfg.hub_auto_save is not None
+    assert app_cfg.hub_auto_save.enabled is True
+    assert app_cfg.hub_auto_save.interval == 300
+
+    sanitized_yaml, _, _, _ = ConfigLoader.classify_project_assets(app_cfg)
+    parsed = yaml.safe_load(sanitized_yaml)
+
+    assert "hub" in parsed
+    assert parsed["hub"]["project"] == "kyete/finance-tracker-ws"
+    assert parsed["hub"]["auto_save"]["enabled"] is True
+    assert parsed["hub"]["auto_save"]["interval"] == "5m"
+    assert parsed["hub"]["auto_save"]["include_wip"] is True
+    assert parsed["hub"]["auto_save"]["workspaces"] == "all"
+    assert parsed["hub"]["auto_save"]["silent"] is True
+
+
+def test_update_hub_config_persists_cleanly(tmp_path):
+    """Test update_hub_config updates hub section on disk without modifying repositories."""
+    config_file = tmp_path / "repositories.yml"
+    config_file.write_text(
+        """
+repositories:
+  backend:
+    bare: bares/backend.git
+    checkout: backend
+""",
+        encoding="utf-8",
+    )
+
+    ConfigLoader.update_hub_config(
+        config_path=config_file,
+        hub_project="org/sample-app",
+        hub_auto_save={"enabled": True, "interval": "10m"},
+    )
+
+    loaded = ConfigLoader.load_config(config_path=config_file)
+    assert loaded.hub_project == "org/sample-app"
+    assert loaded.hub_auto_save.enabled is True
+    assert loaded.hub_auto_save.interval == 600
+    assert "backend" in loaded.repositories
+
+

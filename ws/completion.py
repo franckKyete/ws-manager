@@ -333,6 +333,8 @@ _ws_commands() {
         'doctor:Run system diagnostics and health checks'
         'hub:Collaborate, clone, publish, sync, and manage secrets with wshub'
         'clone:Clone and replicate a project from wshub'
+        'daemon:Manage or run global background daemon'
+        'service:Manage systemd user service (ws.service)'
         'completion:Generate or install shell completion scripts'
     )
     _describe -t commands 'command' commands
@@ -542,7 +544,51 @@ _ws() {
                         '--delete-branch[Also delete branch from bare store]'
                     ;;
                 project)
-                    _arguments '1:action:(init add fetch sync)' '*:args:_files'
+                    _arguments '1:action:(init add fetch sync list register unregister)' '*:args:_files'
+                    ;;
+                daemon)
+                    _arguments \
+                        '--tick[Worker loop tick interval in seconds]:tick:' \
+                        '1:action:(run)'
+                    ;;
+                service)
+                    _arguments \
+                        '1:action:(install uninstall start stop restart enable disable status logs)' \
+                        '(-f --follow)'{-f,--follow}'[Follow live journal logs]' \
+                        '(-n --lines)'{-n,--lines}'[Number of lines to display]:lines:'
+                    ;;
+                hub)
+                    local hub_action="${words[2]}"
+                    case "$hub_action" in
+                        auto-save|autosave)
+                            _arguments \
+                                '2:action:(status start stop run once daemon service)' \
+                                '--interval[Auto-save interval duration]:interval:' \
+                                '--project[Override project identifier]:project:' \
+                                '--force[Force save even if no changes detected]'
+                            ;;
+                        service)
+                            _arguments \
+                                '2:action:(install uninstall start stop restart enable disable status logs)'
+                            ;;
+                        state|resume)
+                            _arguments \
+                                '2:action:(save restore)' \
+                                '3:workspace:_ws_workspaces' \
+                                '--no-wip[Skip uncommitted changes]'
+                            ;;
+                        secret)
+                            _arguments \
+                                '2:action:(list set get delete upload pull)' \
+                                '--project[Override project identifier]:project:'
+                            ;;
+                        *)
+                            _arguments '1:action:(login whoami logout clone publish push pull status sync state resume auto-save secret service)'
+                            ;;
+                    esac
+                    ;;
+                clone)
+                    _arguments '1:project:' '2:target directory:_files -/'
                     ;;
                 completion)
                     _arguments '1:shell:(zsh bash fish install)'
@@ -579,7 +625,7 @@ _ws_completion() {
         cword=$COMP_CWORD
     fi
 
-    local commands="create new list ls info end close delete rm remove status exec push pull start launch run attach stop kill restart logs bridge shell enter open env setup repo lock unlock project init add fetch sync doctor hub clone completion"
+    local commands="create new list ls info focus switch end close delete rm remove status exec push pull start launch run attach stop kill restart logs bridge shell enter open env setup repo lock unlock project init add fetch sync doctor antigravity hub clone daemon service completion"
 
     # Top-level command completion
     if [[ $cword -eq 1 ]]; then
@@ -606,7 +652,7 @@ _ws_completion() {
     case "$subcmd" in
         create|new)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=( $(compgen -W "--file -f --setup --all --existing" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--file -f --setup --cmd --command --no-tmux --all --existing" -- "$cur") )
             elif [[ $cword -eq 2 ]]; then
                 local workspaces=$(ws _complete workspaces_all 2>/dev/null | cut -d: -f1)
                 COMPREPLY=( $(compgen -W "${workspaces}" -- "$cur") )
@@ -671,6 +717,75 @@ _ws_completion() {
                 COMPREPLY=( $(compgen -W "${repos}" -- "$cur") )
             fi
             ;;
+        exec)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--all --repos" -- "$cur") )
+            elif [[ $cword -eq 2 ]]; then
+                local workspaces=$(ws _complete workspaces_all 2>/dev/null | cut -d: -f1)
+                local repos=$(ws _complete repos_all 2>/dev/null | cut -d: -f1)
+                COMPREPLY=( $(compgen -W "${workspaces} ${repos}" -- "$cur") )
+            fi
+            ;;
+        repo|workspace)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "add remove lock unlock" -- "$cur") )
+            elif [[ $cword -eq 3 ]]; then
+                local workspaces=$(ws _complete workspaces_all 2>/dev/null | cut -d: -f1)
+                COMPREPLY=( $(compgen -W "${workspaces}" -- "$cur") )
+            else
+                local repos=$(ws _complete repos_all "${words[3]}" 2>/dev/null | cut -d: -f1)
+                COMPREPLY=( $(compgen -W "${repos}" -- "$cur") )
+            fi
+            ;;
+        project)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "init add fetch sync list register unregister" -- "$cur") )
+            fi
+            ;;
+        daemon)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--tick" -- "$cur") )
+            elif [[ $cword -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "run" -- "$cur") )
+            fi
+            ;;
+        service)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "-f --follow -n --lines" -- "$cur") )
+            elif [[ $cword -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "install uninstall start stop restart enable disable status logs" -- "$cur") )
+            fi
+            ;;
+        hub)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "login whoami logout clone publish push pull status sync state resume auto-save secret service" -- "$cur") )
+            elif [[ $cword -eq 3 ]]; then
+                case "${words[2]}" in
+                    auto-save|autosave)
+                        COMPREPLY=( $(compgen -W "status start stop run once daemon service" -- "$cur") )
+                        ;;
+                    service)
+                        COMPREPLY=( $(compgen -W "install uninstall start stop restart enable disable status logs" -- "$cur") )
+                        ;;
+                    secret)
+                        COMPREPLY=( $(compgen -W "list set get delete upload pull" -- "$cur") )
+                        ;;
+                    state|resume)
+                        COMPREPLY=( $(compgen -W "save restore" -- "$cur") )
+                        ;;
+                esac
+            elif [[ $cword -ge 4 && ( "${words[2]}" == "auto-save" || "${words[2]}" == "autosave" ) ]]; then
+                if [[ "${words[3]}" == "service" && $cword -eq 4 ]]; then
+                    COMPREPLY=( $(compgen -W "install uninstall start stop restart enable disable status logs" -- "$cur") )
+                elif [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--interval --project --force -d --daemon --tick" -- "$cur") )
+                fi
+            elif [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--project --force --no-wip" -- "$cur") )
+            fi
+            ;;
+        clone)
+            ;;
         completion)
             COMPREPLY=( $(compgen -W "zsh bash fish install" -- "$cur") )
             ;;
@@ -706,27 +821,56 @@ end
 
 complete -c ws -f
 complete -c ws -n "__fish_use_subcommand" -a "create" -d "Create workspace with Git worktrees"
+complete -c ws -n "__fish_use_subcommand" -a "new" -d "Create workspace with Git worktrees"
 complete -c ws -n "__fish_use_subcommand" -a "list" -d "List all workspaces"
+complete -c ws -n "__fish_use_subcommand" -a "ls" -d "List all workspaces"
 complete -c ws -n "__fish_use_subcommand" -a "info" -d "Display workspace details & processes"
+complete -c ws -n "__fish_use_subcommand" -a "focus" -d "Focus or switch to workspace tmux window"
+complete -c ws -n "__fish_use_subcommand" -a "switch" -d "Switch to workspace tmux window"
 complete -c ws -n "__fish_use_subcommand" -a "end" -d "Safely end and close workspace"
 complete -c ws -n "__fish_use_subcommand" -a "close" -d "Safely close workspace"
 complete -c ws -n "__fish_use_subcommand" -a "delete" -d "Delete workspace and prune worktrees"
+complete -c ws -n "__fish_use_subcommand" -a "rm" -d "Delete workspace"
+complete -c ws -n "__fish_use_subcommand" -a "remove" -d "Delete workspace"
 complete -c ws -n "__fish_use_subcommand" -a "status" -d "Show combined Git status"
+complete -c ws -n "__fish_use_subcommand" -a "exec" -d "Execute command across workspace worktrees"
 complete -c ws -n "__fish_use_subcommand" -a "start" -d "Start services in TUI or multiplexer"
+complete -c ws -n "__fish_use_subcommand" -a "launch" -d "Start services in TUI or multiplexer"
+complete -c ws -n "__fish_use_subcommand" -a "run" -d "Start services in TUI or multiplexer"
 complete -c ws -n "__fish_use_subcommand" -a "attach" -d "Attach to running daemon session"
 complete -c ws -n "__fish_use_subcommand" -a "stop" -d "Stop running workspace session"
+complete -c ws -n "__fish_use_subcommand" -a "kill" -d "Stop running workspace session"
 complete -c ws -n "__fish_use_subcommand" -a "restart" -d "Restart services in active workspace"
 complete -c ws -n "__fish_use_subcommand" -a "logs" -d "View or tail service logs"
 complete -c ws -n "__fish_use_subcommand" -a "bridge" -d "Raw terminal PTY bridge"
 complete -c ws -n "__fish_use_subcommand" -a "shell" -d "Open interactive subshell"
+complete -c ws -n "__fish_use_subcommand" -a "enter" -d "Open interactive subshell"
+complete -c ws -n "__fish_use_subcommand" -a "open" -d "Open interactive subshell"
 complete -c ws -n "__fish_use_subcommand" -a "env" -d "Inspect or sync environment variables"
 complete -c ws -n "__fish_use_subcommand" -a "setup" -d "Run setup scripts and sync .env"
+complete -c ws -n "__fish_use_subcommand" -a "repo" -d "Manage repositories inside workspace"
 complete -c ws -n "__fish_use_subcommand" -a "lock" -d "Lock worktree tracked files read-only"
 complete -c ws -n "__fish_use_subcommand" -a "unlock" -d "Unlock worktree tracked files writable"
 complete -c ws -n "__fish_use_subcommand" -a "push" -d "Push committed changes to remotes"
 complete -c ws -n "__fish_use_subcommand" -a "pull" -d "Pull remote updates"
+complete -c ws -n "__fish_use_subcommand" -a "project" -d "Manage project bare repository store"
+complete -c ws -n "__fish_use_subcommand" -a "init" -d "Initialize project and clone bare repositories"
+complete -c ws -n "__fish_use_subcommand" -a "add" -d "Add and clone a new bare repository"
+complete -c ws -n "__fish_use_subcommand" -a "fetch" -d "Fetch updates in all bare repositories"
+complete -c ws -n "__fish_use_subcommand" -a "sync" -d "Sync and prune worktrees"
 complete -c ws -n "__fish_use_subcommand" -a "doctor" -d "Run health check diagnostics"
+complete -c ws -n "__fish_use_subcommand" -a "hub" -d "Collaborate, clone, publish, sync, and manage secrets with wshub"
+complete -c ws -n "__fish_use_subcommand" -a "clone" -d "Clone and replicate a project from wshub"
+complete -c ws -n "__fish_use_subcommand" -a "daemon" -d "Manage or run global background daemon"
+complete -c ws -n "__fish_use_subcommand" -a "service" -d "Manage systemd user service (ws.service)"
 complete -c ws -n "__fish_use_subcommand" -a "completion" -d "Generate completion scripts"
+
+# Subcommands
+complete -c ws -n "__fish_seen_subcommand_from project" -a "init add fetch sync list register unregister"
+complete -c ws -n "__fish_seen_subcommand_from daemon" -a "run" -d "Run global daemon in foreground"
+complete -c ws -n "__fish_seen_subcommand_from service" -a "install uninstall start stop restart enable disable status logs"
+complete -c ws -n "__fish_seen_subcommand_from hub" -a "login whoami logout clone publish push pull status sync state resume auto-save secret service"
+complete -c ws -n "__fish_seen_subcommand_from repo" -a "add remove lock unlock"
 
 # Dynamic workspace and repo arguments
 complete -c ws -n "__fish_seen_subcommand_from start attach info end close delete status restart logs bridge shell env setup lock unlock push pull" -a "(__fish_ws_workspaces)"
@@ -747,6 +891,10 @@ complete -c ws -n "__fish_seen_subcommand_from start setup env" -l iface -a "(__
 complete -c ws -n "__fish_seen_subcommand_from start setup env" -l ip -d "Explicit LAN IP address override"
 complete -c ws -n "__fish_seen_subcommand_from start setup env" -l lan-ip -d "Explicit LAN IP address override"
 complete -c ws -n "__fish_seen_subcommand_from attach" -s s -l switch -d "Zero-downtime presentation switch"
+complete -c ws -n "__fish_seen_subcommand_from daemon" -l tick -d "Worker loop tick interval in seconds"
+complete -c ws -n "__fish_seen_subcommand_from service" -s f -l follow -d "Follow live logs"
+complete -c ws -n "__fish_seen_subcommand_from service" -s n -l lines -d "Number of lines to display"
+complete -c ws -n "__fish_seen_subcommand_from completion" -a "zsh bash fish install"
 """
 
 

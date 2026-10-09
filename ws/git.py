@@ -236,6 +236,12 @@ class GitService:
         res = self._run(["rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree_path, check=False)
         return res.stdout.strip() if res.returncode == 0 else "unknown"
 
+    def get_head_commit(self, worktree_path: Path) -> str | None:
+        """Get current HEAD commit hash of worktree."""
+        res = self._run(["rev-parse", "HEAD"], cwd=worktree_path, check=False)
+        return res.stdout.strip() if res.returncode == 0 else None
+
+
     def list_worktrees(self, bare_path: Path) -> list[tuple[str, str]]:
         """List registered worktrees for a bare repository.
 

@@ -168,6 +168,19 @@ def cmd_logs(
     if clean_repo:
         target_log = log_dir / f"{clean_repo}.log"
         if not target_log.exists():
+            # Check for alternate alias or checkout folder name
+            alt_name = None
+            if clean_repo in manager.config.repositories:
+                alt_name = manager.config.repositories[clean_repo].checkout
+            else:
+                for c_alias, c_cfg in manager.config.repositories.items():
+                    if c_cfg.checkout == clean_repo:
+                        alt_name = c_alias
+                        break
+            if alt_name and (log_dir / f"{alt_name}.log").exists():
+                target_log = log_dir / f"{alt_name}.log"
+
+        if not target_log.exists():
             OutputHandler.print_error(f"No log file found for service '%{clean_repo}' at {target_log}")
             return
         log_files = [target_log]
@@ -193,9 +206,19 @@ def cmd_status(manager: WorkspaceManager, name: str) -> None:
     manager.status_workspace(name=name)
 
 
-def cmd_exec(manager: WorkspaceManager, name: str, command: list[str]) -> None:
-    """Execute command across all repository worktrees in a workspace."""
-    manager.exec_workspace(name=name, command=command)
+def cmd_exec(
+    manager: WorkspaceManager,
+    name: str,
+    command: list[str] | str,
+    repos: Sequence[str] | None = None,
+) -> int:
+    """Execute command across specified or all repository worktrees in a workspace."""
+    results = manager.exec_workspace(name=name, command=command, repos=repos)
+    failed = [r for r, code in results.items() if code != 0]
+    if failed:
+        OutputHandler.print_warning(f"Command exited with non-zero status in: {', '.join(failed)}")
+        return 1
+    return 0
 
 
 def cmd_fetch(manager: WorkspaceManager) -> None:
@@ -739,6 +762,107 @@ def cmd_hub_state_restore(manager: WorkspaceManager, workspace: str, project: st
         OutputHandler.print_error(f"Failed restoring state: {e}")
 
 
+def cmd_hub_auto_save_status(manager: WorkspaceManager) -> None:
+    """Execute 'ws hub auto-save status' command."""
+    from ws.utils import format_relative_time
+    from ws.systemd import get_service_status
+    from ws.daemon import is_standalone_daemon_running
+    from rich.table import Table
+
+    status = manager.get_auto_save_status()
+    enabled = status["enabled"]
+    interval_sec = status["interval"]
+    workspaces = status["workspaces"]
+
+    interval_str = f"{interval_sec // 60}m" if interval_sec % 60 == 0 else f"{interval_sec}s"
+    enabled_str = "[bold green]enabled[/bold green]" if enabled else "[yellow]disabled[/yellow]"
+
+    svc = get_service_status()
+    if svc.get("active"):
+        daemon_str = "[bold green]active (systemd: ws.service)[/bold green]"
+    else:
+        active_s, pid_s = is_standalone_daemon_running()
+        if active_s:
+            daemon_str = f"[bold green]active (standalone PID {pid_s})[/bold green]"
+        elif status["daemon_active"]:
+            daemon_str = f"[bold green]active (PID {status['daemon_pid']})[/bold green]"
+        else:
+            daemon_str = "[dim]inactive (run 'ws service start' or 'ws service install')[/dim]"
+
+    notify = status.get("notify", True)
+    notify_str = "[bold green]on[/bold green]" if notify else "[dim]off[/dim]"
+
+    OutputHandler.print_info(
+        f"wshub Auto-Save: {enabled_str} (Interval: {interval_str}, Daemon: {daemon_str}, Notifications: {notify_str})"
+    )
+
+    table = Table(title="Workspace Auto-Save Status")
+    table.add_column("Workspace", style="bold cyan")
+    table.add_column("Last Saved", style="white")
+    table.add_column("Uncommitted WIP", style="magenta")
+    table.add_column("Session", style="dim")
+
+    for w_name, info in sorted(workspaces.items()):
+        last_saved = info.get("last_saved_at")
+        last_str = format_relative_time(last_saved) if last_saved else "[dim]never[/dim]"
+        dirty_str = "[yellow]dirty (uncommitted)[/yellow]" if info.get("has_uncommitted") else "[green]clean[/green]"
+        sess_str = "[green]active[/green]" if info.get("active_session") else "[dim]idle[/dim]"
+        table.add_row(f"@{w_name}", last_str, dirty_str, sess_str)
+
+    console.print(table)
+
+
+def cmd_hub_auto_save_start(
+    manager: WorkspaceManager,
+    interval: str | int | None = None,
+    project: str | None = None,
+    detached: bool = True,
+) -> None:
+    """Execute 'ws hub auto-save start' command."""
+    from ws.utils import parse_duration
+    sec = parse_duration(interval) if interval is not None else None
+    try:
+        pid = manager.start_auto_save_daemon(interval=sec, project_identifier=project, detached=detached)
+        OutputHandler.print_success(f"Started wshub auto-save background daemon (PID [bold cyan]{pid}[/bold cyan])")
+    except Exception as e:
+        OutputHandler.print_error(f"Failed starting auto-save daemon: {e}")
+
+
+def cmd_hub_auto_save_stop(manager: WorkspaceManager) -> None:
+    """Execute 'ws hub auto-save stop' command."""
+    active, pid = manager.is_auto_save_daemon_active()
+    if not active:
+        OutputHandler.print_info("No active auto-save daemon found.")
+        return
+    stopped = manager.stop_auto_save_daemon()
+    if stopped:
+        OutputHandler.print_success(f"Stopped auto-save daemon (PID {pid})")
+    else:
+        OutputHandler.print_error(f"Failed stopping auto-save daemon (PID {pid})")
+
+
+def cmd_hub_auto_save_run(
+    manager: WorkspaceManager,
+    interval: str | int | None = None,
+    project: str | None = None,
+    once: bool = False,
+    force: bool = False,
+) -> None:
+    """Execute 'ws hub auto-save run' or 'ws hub auto-save once' command."""
+    from ws.utils import parse_duration
+    if once:
+        results = manager.hub_auto_save_all_workspaces(project_identifier=project, force=force, silent=False)
+        saved = [w for w, s in results.items() if s]
+        if saved:
+            OutputHandler.print_success(f"Saved workspaces: {', '.join(f'@{w}' for w in saved)}")
+        else:
+            OutputHandler.print_info("No changes detected across workspaces (skipped).")
+    else:
+        sec = parse_duration(interval) if interval is not None else None
+        manager.start_auto_save_daemon(interval=sec, project_identifier=project, detached=False)
+
+
+
 def cmd_hub_secret_list(manager: WorkspaceManager, project: str | None = None) -> None:
     """Execute 'ws hub secret list' command."""
     from ws.hub import HubClient
@@ -874,5 +998,178 @@ def cmd_hub_secret_pull(manager: WorkspaceManager, project: str | None = None) -
         OutputHandler.print_error(f"Failed pulling secret files: {e}")
 
 
+# ==================== Global Daemon & Service Commands ====================
+
+def cmd_daemon_run(tick: int = 15) -> None:
+    """Execute 'ws daemon run' or 'ws daemon' command."""
+    from ws.daemon import run_daemon_loop
+    run_daemon_loop(tick_seconds=tick)
 
 
+def cmd_service_install(ws_exec: str | None = None) -> None:
+    """Execute 'ws service install' command."""
+    from ws.systemd import install_service
+    success, msg = install_service(ws_exec=ws_exec)
+    if success:
+        OutputHandler.print_success(msg)
+    else:
+        OutputHandler.print_error(msg)
+
+
+def cmd_service_uninstall() -> None:
+    """Execute 'ws service uninstall' command."""
+    from ws.systemd import uninstall_service
+    success, msg = uninstall_service()
+    if success:
+        OutputHandler.print_success(msg)
+    else:
+        OutputHandler.print_error(msg)
+
+
+def cmd_service_control(action: str) -> None:
+    """Execute 'ws service start|stop|restart|enable|disable' command."""
+    from ws.systemd import control_service
+    success, msg = control_service(action)
+    if success:
+        OutputHandler.print_success(msg)
+    else:
+        OutputHandler.print_error(msg)
+
+
+def cmd_service_status() -> None:
+    """Execute 'ws service status' command."""
+    from ws.systemd import get_service_status
+    from ws.daemon import is_standalone_daemon_running, get_global_cache
+    from ws.registry import list_registered_projects
+    from ws.config import ConfigLoader
+    from ws.utils import format_relative_time
+    from rich.table import Table
+
+    svc = get_service_status()
+    if svc["installed"]:
+        status_style = "bold green" if svc["active"] else "yellow"
+        active_text = "active (running)" if svc["active"] else "inactive"
+        enabled_text = "enabled (auto-start on boot)" if svc["enabled"] else "disabled"
+        OutputHandler.print_info(f"Systemd Service: [{status_style}]ws.service is {active_text}[/{status_style}] ({enabled_text})")
+        OutputHandler.print_info(f"Unit File: [dim]{svc['unit_path']}[/dim]")
+    else:
+        active_s, pid_s = is_standalone_daemon_running()
+        if active_s:
+            OutputHandler.print_info(f"Daemon Status: [bold green]active (standalone PID {pid_s})[/bold green]")
+        else:
+            OutputHandler.print_info("Systemd Service: [dim]ws.service is not installed[/dim] (run [bold cyan]ws service install[/bold cyan])")
+
+    # Display registered projects table
+    projects = list_registered_projects(prune_missing=True)
+    if projects:
+        cache = get_global_cache()
+        table = Table(title="Registered Projects Monitored by Daemon")
+        table.add_column("Project", style="bold cyan")
+        table.add_column("Directory", style="dim")
+        table.add_column("Auto-Save", style="white")
+        table.add_column("Interval", style="white")
+        table.add_column("Last Saved", style="green")
+
+        for p in sorted(projects, key=lambda x: x.name):
+            p_str = str(p)
+            cfg_path = p / "repositories.yml"
+            auto_save_str = "[dim]disabled[/dim]"
+            interval_str = "-"
+
+            if cfg_path.exists():
+                try:
+                    cfg = ConfigLoader.load_config(config_path=cfg_path, allow_empty=True)
+                    auto_cfg = getattr(cfg, "hub_auto_save", None)
+                    if auto_cfg and auto_cfg.enabled:
+                        auto_save_str = "[bold green]enabled[/bold green]"
+                        sec = auto_cfg.interval
+                        interval_str = f"{sec // 60}m" if sec % 60 == 0 else f"{sec}s"
+                except Exception:
+                    pass
+
+            p_entry = cache.get(p_str, {})
+            last_saved = p_entry.get("last_saved_at")
+            last_str = format_relative_time(last_saved) if last_saved else "[dim]never[/dim]"
+
+            table.add_row(p.name, p_str, auto_save_str, interval_str, last_str)
+
+        console.print(table)
+    else:
+        OutputHandler.print_info("No projects registered in global registry (~/.config/ws/projects.yml).")
+
+
+def cmd_service_logs(follow: bool = True, lines: int = 50) -> None:
+    """Execute 'ws service logs' command."""
+    from ws.systemd import stream_service_logs
+    stream_service_logs(follow=follow, lines=lines)
+
+
+def cmd_project_register(path: str | None = None) -> None:
+    """Execute 'ws project register' command."""
+    from ws.registry import register_project
+    target = Path(path).resolve() if path else Path.cwd().resolve()
+    if not (target / "repositories.yml").exists() and not (target / "config.yml").exists():
+        OutputHandler.print_warning(f"No repositories.yml found at {target}, registering anyway.")
+    added = register_project(target)
+    if added:
+        OutputHandler.print_success(f"Registered project [bold cyan]{target.name}[/bold cyan] ({target})")
+    else:
+        OutputHandler.print_info(f"Project '{target.name}' is already registered.")
+
+
+def cmd_project_unregister(path: str | None = None) -> None:
+    """Execute 'ws project unregister' command."""
+    from ws.registry import unregister_project
+    target = Path(path).resolve() if path else Path.cwd().resolve()
+    removed = unregister_project(target)
+    if removed:
+        OutputHandler.print_success(f"Unregistered project at {target}")
+    else:
+        OutputHandler.print_info(f"Project at {target} was not registered.")
+
+
+def cmd_project_list() -> None:
+    """Execute 'ws project list' command."""
+    from ws.registry import list_registered_projects
+    from ws.config import ConfigLoader
+    from ws.daemon import get_global_cache
+    from ws.utils import format_relative_time
+    from rich.table import Table
+
+    projects = list_registered_projects(prune_missing=True)
+    if not projects:
+        OutputHandler.print_info("No projects registered in global registry (~/.config/ws/projects.yml).")
+        return
+
+    cache = get_global_cache()
+    table = Table(title="Registered Projects")
+    table.add_column("Project", style="bold cyan")
+    table.add_column("Path", style="dim")
+    table.add_column("Auto-Save", style="white")
+    table.add_column("Interval", style="white")
+    table.add_column("Last Saved", style="green")
+
+    for p in sorted(projects, key=lambda x: x.name):
+        p_str = str(p)
+        cfg_path = p / "repositories.yml"
+        auto_save_str = "[dim]disabled[/dim]"
+        interval_str = "-"
+
+        if cfg_path.exists():
+            try:
+                cfg = ConfigLoader.load_config(config_path=cfg_path, allow_empty=True)
+                auto_cfg = getattr(cfg, "hub_auto_save", None)
+                if auto_cfg and auto_cfg.enabled:
+                    auto_save_str = "[bold green]enabled[/bold green]"
+                    sec = auto_cfg.interval
+                    interval_str = f"{sec // 60}m" if sec % 60 == 0 else f"{sec}s"
+            except Exception:
+                pass
+
+        p_entry = cache.get(p_str, {})
+        last_saved = p_entry.get("last_saved_at")
+        last_str = format_relative_time(last_saved) if last_saved else "[dim]never[/dim]"
+
+        table.add_row(p.name, p_str, auto_save_str, interval_str, last_str)
+
+    console.print(table)

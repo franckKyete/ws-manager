@@ -60,13 +60,27 @@ from ws.commands import (
     cmd_hub_sync,
     cmd_hub_state_save,
     cmd_hub_state_restore,
+    cmd_hub_auto_save_status,
+    cmd_hub_auto_save_start,
+    cmd_hub_auto_save_stop,
+    cmd_hub_auto_save_run,
     cmd_hub_secret_list,
     cmd_hub_secret_set,
     cmd_hub_secret_get,
     cmd_hub_secret_delete,
     cmd_hub_secret_upload,
     cmd_hub_secret_pull,
+    cmd_daemon_run,
+    cmd_service_install,
+    cmd_service_uninstall,
+    cmd_service_control,
+    cmd_service_status,
+    cmd_service_logs,
+    cmd_project_register,
+    cmd_project_unregister,
+    cmd_project_list,
 )
+
 from ws.config import ConfigLoader
 from ws.exceptions import WSException
 from ws.models import RepoConfig, RepoSpec
@@ -84,6 +98,7 @@ KNOWN_COMMANDS = {
     "project", "init", "add", "fetch", "sync", "doctor", "antigravity",
     "completion", "_complete",
     "hub", "clone",
+    "daemon", "service",
 }
 
 
@@ -158,8 +173,25 @@ def resolve_ws_and_repo_args(
     if name_arg:
         if name_arg.startswith(("%", "+", ":", "#", "$")):
             is_repo_spec = True
-        elif detected_ws and name_arg in manager.config.repositories and not manager.has_workspace(name_arg):
-            is_repo_spec = True
+        elif detected_ws and not manager.has_workspace(clean_workspace(name_arg)):
+            clean_name = clean_repo(name_arg)
+            if clean_name in manager.config.repositories:
+                is_repo_spec = True
+            elif any(
+                r_cfg.checkout == clean_name or Path(r_cfg.checkout).name == clean_name
+                for r_cfg in manager.config.repositories.values()
+            ):
+                is_repo_spec = True
+            else:
+                try:
+                    meta, _ = manager.get_workspace_info(detected_ws)
+                    if clean_name in meta.repositories or any(
+                        spec.path == clean_name or Path(spec.path).name == clean_name
+                        for spec in meta.repositories.values()
+                    ):
+                        is_repo_spec = True
+                except Exception:
+                    pass
 
     resolved_ws: str | None = None
     resolved_repo: str | None = None
@@ -168,6 +200,12 @@ def resolve_ws_and_repo_args(
     if is_repo_spec:
         resolved_ws = detected_ws
         actual_repo = clean_repo(name_arg)
+        if detected_ws and actual_repo:
+            try:
+                r_key, _, _ = manager.resolve_repo_spec(detected_ws, actual_repo)
+                actual_repo = r_key
+            except Exception:
+                pass
         resolved_repo = actual_repo
         resolved_repos = [actual_repo] if actual_repo else []
         if repos_arg:
@@ -564,10 +602,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_status = subparsers.add_parser("status", help="Show Git status across all workspace worktrees")
     p_status.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
 
-    # Command: ws exec @<name> -- <command...>
+    # Command: ws exec [@<name>] [%repos...] [--all] [--repos r1,r2] [--] <command...>
     p_exec = subparsers.add_parser("exec", help="Execute command inside each repo worktree of a workspace")
     p_exec.add_argument("name", nargs="?", default=None, help="Workspace name (@<name>)")
     p_exec.add_argument("command", nargs=argparse.REMAINDER, help="Command to execute")
+    p_exec.add_argument("--all", action="store_true", help="Execute across all worktrees in workspace")
+    p_exec.add_argument("--repos", dest="repos_flag", type=str, help="Comma-separated list of repository names")
 
     # Command: ws push @<name> [%repos...] [--remote origin]
     p_push = subparsers.add_parser("push", help="Push committed changes for workspace repositories to remotes")
@@ -705,6 +745,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     proj_subparsers.add_parser("fetch", help="Fetch updates in all bare repositories")
     proj_subparsers.add_parser("sync", help="Sync and prune worktrees")
+    proj_subparsers.add_parser("list", aliases=["ls"], help="List all registered projects")
+
+    p_proj_reg = proj_subparsers.add_parser("register", help="Register a project in the global registry")
+    p_proj_reg.add_argument("path", nargs="?", default=None, help="Project directory (default: current directory)")
+
+    p_proj_unreg = proj_subparsers.add_parser("unregister", help="Unregister a project from the global registry")
+    p_proj_unreg.add_argument("path", nargs="?", default=None, help="Project directory (default: current directory)")
 
     # Direct top-level shortcuts for project commands
     p_init = subparsers.add_parser("init", help="Initialize project and clone bare repositories")
@@ -770,6 +817,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_state_save.add_argument("workspace", help="Workspace name (@name)")
     p_state_save.add_argument("--project", help="Override project identifier")
     p_state_save.add_argument("--no-wip", action="store_true", help="Skip capturing uncommitted WIP changes")
+    p_state_save.add_argument("--auto", action="store_true", help="Mark save as automatic (skips if unchanged)")
     p_state_restore = hub_state_sub.add_parser("restore", help="Restore workspace state from wshub on this machine")
     p_state_restore.add_argument("workspace", help="Workspace name (@name)")
     p_state_restore.add_argument("--project", help="Override project identifier")
@@ -780,6 +828,45 @@ def build_parser() -> argparse.ArgumentParser:
     p_hub_resume.add_argument("workspace", help="Workspace name (@name)")
     p_hub_resume.add_argument("--project", help="Override project identifier")
     p_hub_resume.add_argument("--no-wip", action="store_true", help="Skip applying uncommitted WIP changes")
+
+    # ws hub auto-save <status|start|stop|run|once>
+    p_hub_autosave = hub_subparsers.add_parser("auto-save", aliases=["autosave"], help="Manage periodic automatic workspace saving to wshub")
+    hub_autosave_sub = p_hub_autosave.add_subparsers(dest="hub_autosave_subcommand", metavar="ACTION")
+
+    p_as_status = hub_autosave_sub.add_parser("status", help="Show status of automatic hub saving")
+
+    p_as_start = hub_autosave_sub.add_parser("start", help="Start background auto-save daemon")
+    p_as_start.add_argument("--interval", help="Auto-save interval duration (e.g. 5m, 15m, 1h)")
+    p_as_start.add_argument("--project", help="Override project identifier")
+    p_as_start.add_argument("-d", "--daemon", action="store_true", default=True, help="Run as detached background daemon (default: True)")
+
+    p_as_stop = hub_autosave_sub.add_parser("stop", help="Stop background auto-save daemon")
+
+    p_as_run = hub_autosave_sub.add_parser("run", help="Run auto-save loop in the foreground")
+    p_as_run.add_argument("--interval", help="Auto-save interval duration (e.g. 5m, 15m, 1h)")
+    p_as_run.add_argument("--project", help="Override project identifier")
+
+    p_as_once = hub_autosave_sub.add_parser("once", help="Check and save any changed workspaces immediately")
+    p_as_once.add_argument("--project", help="Override project identifier")
+    p_as_once.add_argument("--force", action="store_true", help="Force save even if no changes detected")
+
+    p_as_daemon = hub_autosave_sub.add_parser("daemon", help="Run global auto-save daemon in foreground")
+    p_as_daemon.add_argument("--tick", type=int, default=15, help="Worker loop tick interval in seconds (default: 15)")
+
+    p_as_svc = hub_autosave_sub.add_parser("service", help="Manage systemd user service (ws.service)")
+    as_svc_sub = p_as_svc.add_subparsers(dest="service_action", metavar="ACTION")
+    as_svc_sub.add_parser("install", help="Install, enable, and start ws.service")
+    as_svc_sub.add_parser("uninstall", help="Stop, disable, and remove ws.service")
+    as_svc_sub.add_parser("start", help="Start ws.service via systemctl")
+    as_svc_sub.add_parser("stop", help="Stop ws.service via systemctl")
+    as_svc_sub.add_parser("restart", help="Restart ws.service via systemctl")
+    as_svc_sub.add_parser("enable", help="Enable ws.service on boot")
+    as_svc_sub.add_parser("disable", help="Disable ws.service on boot")
+    as_svc_sub.add_parser("status", help="Show systemd status of ws.service")
+    p_as_s_logs = as_svc_sub.add_parser("logs", help="Stream journalctl logs for ws.service")
+    p_as_s_logs.add_argument("-f", "--follow", action="store_true", default=True, help="Follow live logs")
+    p_as_s_logs.add_argument("-n", "--lines", type=int, default=50, help="Number of lines to display")
+
 
     # ws hub secret <list|set|get|delete|upload|pull>
     p_hub_sec = hub_subparsers.add_parser("secret", help="Manage zero-Git encrypted secrets in wshub vault")
@@ -825,6 +912,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_int.add_argument("query_type", help="Query type")
     p_int.add_argument("query_args", nargs="*", help="Query arguments")
 
+    # Command: ws daemon [run]
+    p_daemon = subparsers.add_parser("daemon", help="Manage or run global background daemon")
+    p_daemon.add_argument("--tick", type=int, default=15, help="Worker loop tick interval in seconds (default: 15)")
+    daemon_sub = p_daemon.add_subparsers(dest="daemon_action", metavar="ACTION")
+    daemon_sub.add_parser("run", help="Run global daemon in foreground (used by ws.service)")
+
+    # Command: ws service [install|uninstall|start|stop|restart|enable|disable|status|logs]
+    p_svc = subparsers.add_parser("service", help="Manage systemd user service (ws.service)")
+    svc_sub = p_svc.add_subparsers(dest="service_action", metavar="ACTION")
+    svc_sub.add_parser("install", help="Install, enable, and start ws.service")
+    svc_sub.add_parser("uninstall", help="Stop, disable, and remove ws.service")
+    svc_sub.add_parser("start", help="Start ws.service via systemctl")
+    svc_sub.add_parser("stop", help="Stop ws.service via systemctl")
+    svc_sub.add_parser("restart", help="Restart ws.service via systemctl")
+    svc_sub.add_parser("enable", help="Enable ws.service on boot")
+    svc_sub.add_parser("disable", help="Disable ws.service on boot")
+    svc_sub.add_parser("status", help="Show systemd status of ws.service")
+    p_s_logs = svc_sub.add_parser("logs", help="Stream journalctl logs for ws.service")
+    p_s_logs.add_argument("-f", "--follow", action="store_true", default=True, help="Follow live logs")
+    p_s_logs.add_argument("-n", "--lines", type=int, default=50, help="Number of lines to display")
+
     return parser
 
 
@@ -857,7 +965,7 @@ def main(sys_args: Sequence[str] | None = None) -> int:
         return 0
 
     try:
-        allow_empty_config = args.subcommand in ("init", "add", "doctor", "project", "hub", "clone")
+        allow_empty_config = args.subcommand in ("init", "add", "doctor", "project", "hub", "clone", "daemon", "service")
         app_config = ConfigLoader.load_config(
             config_path=args.config,
             workspaces_dir=args.workspaces_dir,
@@ -878,8 +986,14 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                     cmd_fetch(manager=manager)
                 elif sub == "sync":
                     cmd_sync(manager=manager)
+                elif sub in ("list", "ls"):
+                    cmd_project_list()
+                elif sub == "register":
+                    cmd_project_register(path=getattr(args, "path", None))
+                elif sub == "unregister":
+                    cmd_project_unregister(path=getattr(args, "path", None))
                 else:
-                    OutputHandler.print_error("Please specify a project action: init, add, fetch, sync")
+                    OutputHandler.print_error("Please specify a project action: init, add, fetch, sync, list, register, unregister")
                     return 1
             elif args.subcommand == "init":
                 cmd_init(manager=manager, repo_inputs=args.urls)
@@ -953,21 +1067,81 @@ def main(sys_args: Sequence[str] | None = None) -> int:
 
         elif args.subcommand == "exec":
             detected_ws, _ = manager.detect_context()
-            exec_name = args.name
-            exec_cmd = list(args.command) if args.command else []
+            tokens = ([args.name] if args.name is not None else []) + (list(args.command) if args.command else [])
 
-            # If name is "--", it was just the delimiter
-            if exec_name == "--":
+            ws_name: str | None = None
+            target_repos: list[str] = []
+            exec_cmd: list[str] = []
+            all_flag: bool = getattr(args, "all", False)
+
+            if getattr(args, "repos_flag", None):
+                for r in args.repos_flag.split(","):
+                    r_clean = clean_repo(r.strip())
+                    if r_clean:
+                        target_repos.append(r_clean)
+
+            idx = 0
+            # 1. Parse optional workspace name (@name or registered workspace name before command)
+            if idx < len(tokens):
+                t = tokens[idx]
+                if t.startswith("@"):
+                    ws_name = clean_workspace(t)
+                    idx += 1
+                elif t == "--":
+                    # Delimiter reached immediately
+                    idx += 1
+                    exec_cmd = tokens[idx:]
+                    idx = len(tokens)
+                elif not t.startswith(("%", "+", ":", "#", "$", "-")) and manager.has_workspace(clean_workspace(t)):
+                    ws_name = clean_workspace(t)
+                    idx += 1
+
+            if not ws_name:
                 ws_name = detected_ws
-            elif exec_name and (exec_name.startswith("@") or manager.has_workspace(clean_workspace(exec_name))):
-                ws_name = clean_workspace(exec_name)
-            elif detected_ws:
-                # exec_name is part of the command itself (e.g. 'ws exec git status')
-                ws_name = detected_ws
-                if exec_name:
-                    exec_cmd = [exec_name] + exec_cmd
-            else:
-                ws_name = clean_workspace(exec_name)
+
+            # 2. Parse optional repository filters (%repo) before delimiter '--' or command
+            while idx < len(tokens):
+                t = tokens[idx]
+                if t == "--":
+                    idx += 1
+                    break
+                elif t in ("--all", "-a"):
+                    all_flag = True
+                    target_repos.clear()
+                    idx += 1
+                elif t.startswith(("%", "+", ":", "#", "$")):
+                    for sub_t in t.split(","):
+                        sub_clean = clean_repo(sub_t.strip())
+                        if sub_clean:
+                            target_repos.append(sub_clean)
+                    idx += 1
+                elif ws_name:
+                    # Check if token is a repo alias or checkout name
+                    clean_t = clean_repo(t)
+                    is_repo = False
+                    if clean_t in manager.config.repositories:
+                        is_repo = True
+                    elif any(r_cfg.checkout == clean_t for r_cfg in manager.config.repositories.values()):
+                        is_repo = True
+                    else:
+                        try:
+                            meta, _ = manager.get_workspace_info(ws_name)
+                            if clean_t in meta.repositories or any(spec.path == clean_t for spec in meta.repositories.values()):
+                                is_repo = True
+                        except Exception:
+                            pass
+                    if is_repo:
+                        target_repos.append(clean_t)
+                        idx += 1
+                    else:
+                        # Reached start of command
+                        break
+                else:
+                    break
+
+            # 3. Remaining tokens form the command
+            if idx < len(tokens):
+                exec_cmd.extend(tokens[idx:])
 
             if exec_cmd and exec_cmd[0] == "--":
                 exec_cmd = exec_cmd[1:]
@@ -980,7 +1154,18 @@ def main(sys_args: Sequence[str] | None = None) -> int:
             if not exec_cmd:
                 raise WSException("Command required for 'ws exec'.")
 
-            cmd_exec(manager=manager, name=ws_name, command=exec_cmd)
+            if all_flag or "all" in target_repos or "*" in target_repos:
+                target_repos = []
+            else:
+                target_repos = list(dict.fromkeys(target_repos))
+
+            res = cmd_exec(
+                manager=manager,
+                name=ws_name,
+                command=exec_cmd,
+                repos=target_repos if target_repos else None,
+            )
+            return res if isinstance(res, int) else 0
 
         # 4. Worktree & Repo management
         elif args.subcommand in ("repo", "workspace"):
@@ -1291,13 +1476,68 @@ def main(sys_args: Sequence[str] | None = None) -> int:
             elif hub_action in ("state", "resume"):
                 state_action = getattr(args, "hub_state_subcommand", None)
                 no_wip = getattr(args, "no_wip", False)
+                is_auto = getattr(args, "auto", False)
                 if hub_action == "resume" or state_action == "restore":
                     cmd_hub_state_restore(manager=manager, workspace=args.workspace, project=getattr(args, "project", None), no_wip=no_wip)
                 elif state_action == "save":
-                    cmd_hub_state_save(manager=manager, workspace=args.workspace, project=getattr(args, "project", None), no_wip=no_wip)
+                    if is_auto:
+                        clean_w = clean_workspace(args.workspace)
+                        saved = manager.hub_auto_save_workspace(clean_w, project_identifier=getattr(args, "project", None), include_wip=not no_wip, silent=False)
+                        if not saved:
+                            OutputHandler.print_info(f"Workspace @{clean_w} unchanged since last save (skipped).")
+                    else:
+                        cmd_hub_state_save(manager=manager, workspace=args.workspace, project=getattr(args, "project", None), no_wip=no_wip)
                 else:
                     OutputHandler.print_error("Please specify a state action: save or restore")
                     return 1
+            elif hub_action in ("auto-save", "autosave"):
+                as_action = getattr(args, "hub_autosave_subcommand", None)
+                if as_action == "status" or as_action is None:
+                    cmd_hub_auto_save_status(manager=manager)
+                elif as_action == "start":
+                    cmd_hub_auto_save_start(
+                        manager=manager,
+                        interval=getattr(args, "interval", None),
+                        project=getattr(args, "project", None),
+                        detached=getattr(args, "daemon", True),
+                    )
+                elif as_action == "stop":
+                    cmd_hub_auto_save_stop(manager=manager)
+                elif as_action == "run":
+                    cmd_hub_auto_save_run(
+                        manager=manager,
+                        interval=getattr(args, "interval", None),
+                        project=getattr(args, "project", None),
+                        once=False,
+                    )
+                elif as_action == "once":
+                    cmd_hub_auto_save_run(
+                        manager=manager,
+                        project=getattr(args, "project", None),
+                        once=True,
+                        force=getattr(args, "force", False),
+                    )
+                elif as_action == "daemon":
+                    cmd_daemon_run(tick=getattr(args, "tick", 15))
+                elif as_action == "service":
+                    s_action = getattr(args, "service_action", None)
+                    if not s_action or s_action == "status":
+                        cmd_service_status()
+                    elif s_action == "install":
+                        cmd_service_install()
+                    elif s_action == "uninstall":
+                        cmd_service_uninstall()
+                    elif s_action in ("start", "stop", "restart", "enable", "disable"):
+                        cmd_service_control(action=s_action)
+                    elif s_action == "logs":
+                        cmd_service_logs(follow=getattr(args, "follow", True), lines=getattr(args, "lines", 50))
+                    else:
+                        OutputHandler.print_error(f"Unknown service action: {s_action}")
+                        return 1
+                else:
+                    OutputHandler.print_error("Please specify an auto-save action: status, start, stop, run, once, daemon, service")
+                    return 1
+
             elif hub_action == "secret":
                 sec_action = getattr(args, "hub_sec_subcommand", None)
                 proj = getattr(args, "project", None)
@@ -1318,6 +1558,27 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                     return 1
             else:
                 p_hub.print_help()
+
+        # ==================== Global Daemon & Service Commands ====================
+        elif args.subcommand == "daemon":
+            tick = getattr(args, "tick", 15)
+            cmd_daemon_run(tick=tick)
+
+        elif args.subcommand == "service":
+            action = getattr(args, "service_action", None)
+            if not action or action == "status":
+                cmd_service_status()
+            elif action == "install":
+                cmd_service_install()
+            elif action == "uninstall":
+                cmd_service_uninstall()
+            elif action in ("start", "stop", "restart", "enable", "disable"):
+                cmd_service_control(action=action)
+            elif action == "logs":
+                cmd_service_logs(follow=getattr(args, "follow", True), lines=getattr(args, "lines", 50))
+            else:
+                OutputHandler.print_error(f"Unknown service action: {action}")
+                return 1
 
         else:
             parser.print_help()

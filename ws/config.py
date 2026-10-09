@@ -8,6 +8,7 @@ import yaml
 from ws.exceptions import ConfigException
 from ws.models import (
     AppConfig,
+    HubAutoSaveConfig,
     RepoConfig,
     TmuxConfig,
     clean_env_val,
@@ -73,6 +74,11 @@ class ConfigLoader:
 
         if file_path:
             logger.debug("Loading config from %s", file_path)
+            try:
+                from ws.registry import register_project
+                register_project(project_root)
+            except Exception:
+                pass
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = yaml.safe_load(f) or {}
@@ -152,6 +158,32 @@ class ConfigLoader:
                     raise
                 except Exception as e:
                     raise ConfigException(f"Invalid tmux configuration: {e}") from e
+
+            # Parse hub: block (project name and auto_save)
+            hub_raw = data.get("hub", {})
+            hub_auto_save = None
+            hub_project = None
+            hub_dict: dict[str, Any] = {}
+            if isinstance(hub_raw, dict):
+                hub_dict = dict(hub_raw)
+                hub_project = hub_raw.get("project") or hub_raw.get("name")
+                if "auto_save" in hub_raw:
+                    try:
+                        hub_auto_save = HubAutoSaveConfig.from_dict(hub_raw["auto_save"])
+                    except Exception as e:
+                        logger.warning("Failed to parse hub.auto_save configuration: %s", e)
+
+            # Fallback root-level auto_save: block
+            if not hub_auto_save and "auto_save" in data:
+                try:
+                    hub_auto_save = HubAutoSaveConfig.from_dict(data["auto_save"])
+                except Exception as e:
+                    logger.warning("Failed to parse auto_save configuration: %s", e)
+
+            if hub_project and "project" not in hub_dict:
+                hub_dict["project"] = hub_project
+            if hub_auto_save and "auto_save" not in hub_dict:
+                hub_dict["auto_save"] = hub_auto_save.to_dict(human_interval=True)
         else:
             global_env = {}
             global_secret_env = {}
@@ -161,6 +193,9 @@ class ConfigLoader:
             global_secrets = []
             global_copy_files = []
             tmux_cfg = None
+            hub_auto_save = None
+            hub_project = None
+            hub_dict = {}
             # Fallback auto-detection for .git bare repos in bares/ or current directory
             bares_dir = project_root / "bares"
             bare_dirs = sorted(bares_dir.glob("*.git")) if bares_dir.exists() else []
@@ -202,7 +237,11 @@ class ConfigLoader:
             secrets=global_secrets,
             copy_files=global_copy_files,
             tmux=tmux_cfg,
+            hub_auto_save=hub_auto_save,
+            hub_project=hub_project,
+            hub=hub_dict,
         )
+
 
     @classmethod
     def classify_project_assets(
@@ -261,6 +300,21 @@ class ConfigLoader:
         if app_config.tmux:
             sanitized_data["tmux"] = app_config.tmux.to_dict()
 
+        # Hub section (project identifier, auto_save, and any custom metadata)
+        hub_data = dict(app_config.hub) if getattr(app_config, "hub", None) else {}
+        if app_config.hub_project:
+            hub_data["project"] = app_config.hub_project
+        if app_config.hub_auto_save:
+            auto_dict = (
+                dict(hub_data["auto_save"])
+                if isinstance(hub_data.get("auto_save"), dict)
+                else {}
+            )
+            auto_dict.update(app_config.hub_auto_save.to_dict(human_interval=True))
+            hub_data["auto_save"] = auto_dict
+        if hub_data:
+            sanitized_data["hub"] = hub_data
+
         sanitized_data["repositories"] = sanitized_repos
         sanitized_yaml = yaml.dump(sanitized_data, sort_keys=False, default_flow_style=False)
 
@@ -289,13 +343,133 @@ class ConfigLoader:
         return sanitized_yaml, extracted_secrets, files_to_upload, private_vars_count
 
     @classmethod
-    def save_config(cls, repositories: dict[str, RepoConfig], config_path: Path | str | None = None) -> Path:
-        """Save repositories dictionary to YAML configuration file."""
-        target_path = Path(config_path) if config_path else Path("repositories.yml")
-        data = {
-            "repositories": {k: v.to_dict() for k, v in repositories.items()}
-        }
+    def update_hub_config(
+        cls,
+        config_path: Path | str,
+        hub_project: str | None = None,
+        hub_auto_save: HubAutoSaveConfig | dict[str, Any] | None = None,
+        hub_extra: dict[str, Any] | None = None,
+    ) -> Path:
+        """Update or insert hub configuration into an existing config file without touching repositories."""
+        target_path = Path(config_path)
+        existing_data: dict[str, Any] = {}
+        if target_path.exists() and target_path.is_file():
+            try:
+                with open(target_path, "r", encoding="utf-8") as f:
+                    existing_data = yaml.safe_load(f) or {}
+                    if not isinstance(existing_data, dict):
+                        existing_data = {}
+            except Exception as e:
+                logger.warning("Could not read existing config at %s: %s", target_path, e)
+
+        data: dict[str, Any] = dict(existing_data)
+        existing_hub = data.get("hub")
+        hub_dict = dict(existing_hub) if isinstance(existing_hub, dict) else {}
+        if hub_extra:
+            hub_dict.update(hub_extra)
+        if hub_project is not None:
+            hub_dict["project"] = hub_project
+        if hub_auto_save is not None:
+            new_auto = (
+                hub_auto_save.to_dict(human_interval=True)
+                if hasattr(hub_auto_save, "to_dict")
+                else hub_auto_save
+            )
+            if "auto_save" in hub_dict and isinstance(hub_dict["auto_save"], dict):
+                merged_auto = dict(hub_dict["auto_save"])
+                merged_auto.update(new_auto)
+                hub_dict["auto_save"] = merged_auto
+            else:
+                hub_dict["auto_save"] = new_auto
+
+        if hub_dict:
+            data["hub"] = hub_dict
+
+        ordered_keys = ["env", "secret", "private", "setup", "tmux", "hub", "repositories"]
+        ordered_data: dict[str, Any] = {}
+        for k in ordered_keys:
+            if k in data:
+                ordered_data[k] = data[k]
+        for k, v in data.items():
+            if k not in ordered_data:
+                ordered_data[k] = v
+
         with open(target_path, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, sort_keys=False, default_flow_style=False)
+            yaml.dump(ordered_data, f, sort_keys=False, default_flow_style=False)
+        return target_path
+
+    # Alias for backward-compatibility with caller sites
+    save_hub_auto_save_settings = update_hub_config
+
+    @classmethod
+    def save_config(
+        cls,
+        repositories: dict[str, RepoConfig],
+        config_path: Path | str | None = None,
+        tmux: TmuxConfig | dict[str, Any] | None = None,
+        hub_auto_save: HubAutoSaveConfig | dict[str, Any] | None = None,
+        hub_project: str | None = None,
+    ) -> Path:
+        """Save configuration file preserving existing top-level sections with defaults."""
+        target_path = Path(config_path) if config_path else Path("repositories.yml")
+        existing_data: dict[str, Any] = {}
+        if target_path.exists() and target_path.is_file():
+            try:
+                with open(target_path, "r", encoding="utf-8") as f:
+                    existing_data = yaml.safe_load(f) or {}
+                    if not isinstance(existing_data, dict):
+                        existing_data = {}
+            except Exception as e:
+                logger.warning("Could not read existing config at %s: %s", target_path, e)
+
+        data: dict[str, Any] = dict(existing_data)
+
+        # 1. Update tmux if provided
+        if tmux is not None:
+            new_tmux = tmux.to_dict() if hasattr(tmux, "to_dict") else tmux
+            existing_tmux = existing_data.get("tmux")
+            if isinstance(existing_tmux, dict):
+                merged_tmux = dict(existing_tmux)
+                merged_tmux.update(new_tmux)
+                data["tmux"] = merged_tmux
+            else:
+                data["tmux"] = new_tmux
+
+        # 2. Update hub if provided
+        if hub_auto_save is not None or hub_project is not None:
+            existing_hub = existing_data.get("hub")
+            hub_dict = dict(existing_hub) if isinstance(existing_hub, dict) else {}
+            if hub_project and "project" not in hub_dict:
+                hub_dict["project"] = hub_project
+            if hub_auto_save is not None:
+                new_auto = (
+                    hub_auto_save.to_dict(human_interval=True)
+                    if hasattr(hub_auto_save, "to_dict")
+                    else hub_auto_save
+                )
+                if "auto_save" in hub_dict and isinstance(hub_dict["auto_save"], dict):
+                    merged_auto = dict(hub_dict["auto_save"])
+                    merged_auto.update(new_auto)
+                    hub_dict["auto_save"] = merged_auto
+                else:
+                    hub_dict["auto_save"] = new_auto
+            if hub_dict:
+                data["hub"] = hub_dict
+
+        # 3. Update repositories
+        data["repositories"] = {k: v.to_dict() for k, v in repositories.items()}
+
+        # 4. Enforce clean key order in output
+        ordered_keys = ["env", "secret", "private", "setup", "tmux", "hub", "repositories"]
+        ordered_data: dict[str, Any] = {}
+        for k in ordered_keys:
+            if k in data:
+                ordered_data[k] = data[k]
+        for k, v in data.items():
+            if k not in ordered_data:
+                ordered_data[k] = v
+
+        with open(target_path, "w", encoding="utf-8") as f:
+            yaml.dump(ordered_data, f, sort_keys=False, default_flow_style=False)
         return target_path
 

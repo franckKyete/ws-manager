@@ -114,3 +114,88 @@ If you only want to sync the branch references without uncommitted code:
 ws hub state save @develop --no-wip
 ws hub resume @develop --no-wip
 ```
+
+---
+
+### 6. Automatic Workspace State Saving (`ws hub auto-save`)
+
+Instead of remembering to manually run `ws hub state save`, `ws` can periodically snapshot and save your workspaces in the background.
+
+#### Smart Deduplication
+Auto-save continuously computes a workspace fingerprint incorporating:
+- Current branch `HEAD` commit SHA for each repository.
+- Modified / staged files detected via Git status.
+- Untracked file timestamps and sizes.
+
+If nothing has changed since the last snapshot, the upload is **completely skipped**, ensuring zero wasteful network calls.
+
+#### Configuration in `repositories.yml`
+```yaml
+hub:
+  project: "kyete/renttik"
+  auto_save:
+    enabled: true        # Enable auto-save (default: false)
+    interval: "15m"      # e.g., "5m", "15m", "1h", "300s", or "never"
+    include_wip: true    # include uncommitted / untracked work (default: true)
+    workspaces: "all"    # "all", "active" (workspaces with active sessions), or list of names
+```
+
+#### Global Multi-Project Auto-Save & Systemd Service (`ws.service`)
+`ws` runs a single machine-wide background daemon that automatically monitors all registered projects with `hub.auto_save.enabled: true`:
+
+```bash
+# Install and enable the systemd user service (starts on boot)
+ws service install
+
+# Check status of ws.service and see all monitored projects
+ws service status
+
+# Start / Stop / Restart the service
+ws service start
+ws service stop
+ws service restart
+
+# Stream live journal logs
+ws service logs
+
+# View auto-save status and workspace topology for the current project
+ws hub auto-save status
+
+# Trigger an immediate one-time auto-save pass right now
+ws hub auto-save once [--force]
+```
+
+#### Project Registry
+Projects are automatically registered whenever you run `ws` inside them. You can also manage the registry explicitly:
+```bash
+# List all registered projects monitored by the daemon
+ws project list
+
+# Register a project directory
+ws project register [/path/to/project]
+
+# Unregister a project directory
+ws project unregister [/path/to/project]
+```
+
+#### D-Bus Desktop Notifications
+Auto-save automatically sends desktop notifications over D-Bus (`org.freedesktop.Notifications`) when snapshots occur:
+- **Success (`document-save` icon)**: Confirms when a workspace has been safely snapshotted and uploaded to `wshub`.
+- **Failure (`dialog-error` icon)**: Alerts you immediately if an upload fails (e.g. `wshub` server offline or connection lost), without interrupting your terminal or local work.
+- Notifications can be muted anytime by setting `notify: false` under `hub.auto_save` in `repositories.yml`.
+
+#### Automatic Publishing on First Save
+When saving a workspace state (`ws hub state save`, `ws hub auto-save once`, or background auto-save) or pushing revisions for a project that has never been registered on `wshub`, `ws` automatically:
+1. Detects that the project is new on the hub.
+2. Performs 3-tier asset classification and publishes the project blueprint, encrypted vault secrets, and sensitive files.
+3. Automatically completes the workspace state save or blueprint push.
+
+#### Real-Time Configuration File Watcher
+The background daemon (`ws.service`) includes a lightweight real-time file watcher that continuously monitors all registered projects:
+- **`repositories.yml` Edited**: Automatically pushes an updated blueprint revision to `wshub` and issues a desktop notification.
+- **`workspace.yml` Edited**: Automatically saves the workspace state (branches, locks, uncommitted WIP) to `wshub` and updates the deduplication fingerprint cache.
+- **Syntax Safety**: Detects partial or incomplete YAML syntax while editing and only triggers once valid configuration is saved.
+
+
+
+
