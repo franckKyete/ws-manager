@@ -29,7 +29,7 @@ It elevates the **workspace** (a synchronized set of Git repositories) as the pr
 
 ```mermaid
 graph TD
-    User["👤 Developer"] --> CLI["🐍 ws CLI"]
+    User["👤 Developer"] --> CLI["🦀 ws CLI (Rust)"]
     CLI --> Config["📄 repositories.yml"]
     
     subgraph "Git Storage Layer"
@@ -40,7 +40,7 @@ graph TD
     subgraph "Runtime Supervision Layer"
         Daemon["⚡ Background Daemon (.ws/session.sock)"]
         PTY["📟 Master PTYs (Child Processes)"]
-        RustEngine["🦀 Rust _native VT100 Engine (10k Buffer)"]
+        RustEngine["🦀 Rust VT100 Engine (10k Buffer)"]
     end
 
     subgraph "Presentation Layer"
@@ -64,7 +64,7 @@ graph TD
 ```bash
 git clone https://github.com/franckKyete/ws-manager.git
 cd ws-manager
-pip install .
+cargo install --path crates/ws-cli
 ```
 
 ### 2. Initialize Bare Repositories (`ws project init`)
@@ -118,10 +118,7 @@ Explore the full documentation suite in the [`docs/`](docs/index.md) directory:
 Run the automated test suite:
 
 ```bash
-# Run Python pytest suite (51 tests)
-python3 -m pytest ws/tests/ -v
-
-# Run Rust engine test suite (8 unit tests, 1 doctest)
+# Run pure Rust workspace test suite
 cargo test --workspace
 ```
 

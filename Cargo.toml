@@ -1,7 +1,10 @@
 [workspace]
 members = [
-    "crates/ws-tui",
     "crates/vt100",
+    "crates/ws-tui",
+    "crates/ws-core",
+    "crates/ws-cli",
 ]
+default-members = ["crates/ws-cli"]
 
 resolver = "2"

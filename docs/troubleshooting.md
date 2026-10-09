@@ -14,7 +14,6 @@ ws doctor
 
 `ws doctor` checks:
 
-- ✅ Python version (>= 3.10)
 - ✅ Git binary version and `git worktree` support (>= 2.20)
 - ✅ Multiplexer binaries (`tmux`, `zellij`)
 - ✅ Bare repositories directory integrity in `bares/`
@@ -34,7 +33,7 @@ Running `ws lock @develop #server` results in:
 
 #### Cause:
 
-In Bash and Zsh, `#` is the shell comment character when preceded by a space. The shell strips `#server` before passing arguments to Python.
+In Bash and Zsh, `#` is the shell comment character when preceded by a space. The shell strips `#server` before passing arguments to the CLI.
 
 #### Resolution:
 

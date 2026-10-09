@@ -7,9 +7,8 @@ This guide walks you through system requirements, installation, initial project 
 ## 📋 System Requirements
 
 - **Operating System**: Linux (Ubuntu, Debian, Fedora, Arch, etc.) or macOS.
-- **Python**: Python 3.10 or higher.
 - **Git**: Git 2.20 or higher (with `git worktree` support).
-- **Rust / Cargo** _(Optional, for building the native terminal engine)_: Rust 1.75+.
+- **Rust / Cargo**: Rust 1.75+ (`cargo`).
 - **Terminal Multiplexers** _(Optional)_:
   - `tmux` 3.0+ (for `ws start --tmux`)
   - `zellij` 0.39+ (for `ws start --zellij`)
@@ -18,7 +17,7 @@ This guide walks you through system requirements, installation, initial project 
 
 ## 📦 Installation
 
-### Option 1: Global Installation via `pip` / `pipx` (Recommended)
+### Option 1: Global Installation via `cargo install` (Recommended)
 
 Installing `ws` globally makes the `ws` binary available across your entire system:
 
@@ -27,11 +26,8 @@ Installing `ws` globally makes the `ws` binary available across your entire syst
 git clone https://github.com/franckKyete/ws-manager.git
 cd ws-manager
 
-# Install using pip
-pip install .
-
-# Or install using pipx (isolated virtual environment)
-pipx install .
+# Install using Cargo
+cargo install --path crates/ws-cli
 ```
 
 Verify your installation:
@@ -43,7 +39,7 @@ ws doctor
 
 ---
 
-### Option 2: Editable Installation for Development
+### Option 2: Build for Development
 
 If you are developing or customizing `ws`:
 
@@ -52,17 +48,16 @@ If you are developing or customizing `ws`:
 git clone https://github.com/franckKyete/ws-manager.git
 cd ws-manager
 
-# Install in editable mode with development dependencies
-pip install -e ".[dev]"
-
-# (Optional) Compile native Rust engine in development mode
+# Build workspace in development mode
 cargo build --workspace
+
+# Run tests
+cargo test --workspace
 ```
 
 Run the automated test suite to ensure everything is operational:
 
 ```bash
-python3 -m pytest ws/tests/ -v
 cargo test --workspace
 ```
 

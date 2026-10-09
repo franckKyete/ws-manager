@@ -1,6 +1,6 @@
 # 🏛️ Architecture & System Internals
 
-`ws` is designed as a high-performance, hybrid Python/Rust tool that combines the safety of Git worktrees with an enterprise-grade process supervision daemon and headless terminal screen emulator.
+`ws` is designed as a high-performance, 100% native Rust system that combines the safety of Git worktrees with an enterprise-grade process supervision daemon and headless terminal screen emulator.
 
 ---
 
@@ -9,7 +9,7 @@
 ```mermaid
 graph TD
     User["👤 Developer (CLI / Subshell)"]
-    CLI["🐍 ws CLI (Python)"]
+    CLI["🦀 ws CLI (Rust)"]
     Config["📄 repositories.yml / workspace.yml"]
 
     subgraph "Git Storage Layer"
