@@ -157,6 +157,7 @@ hub:
     interval: "15m"           # Periodic interval (e.g. 5m, 15m, 1h, 30s, or 'never')
     include_wip: true         # Snapshot uncommitted edits and untracked files (default: true)
     workspaces: "all"         # "all", "active" (only workspaces with running services), or list ["dev", "feat-auth"]
+    notify: true              # Desktop notifications via D-Bus on success and failure (default: true)
 ```
 
 #### Auto-Save Configuration Options
@@ -167,6 +168,7 @@ hub:
 | `interval` | `string` or `int` | `15m` | Interval between auto-save checks. Supports human durations (`"10m"`, `"1h"`, `"300s"`). |
 | `include_wip` | `boolean` | `true` | When true, includes uncommitted worktree modifications and untracked files. |
 | `workspaces` | `string` or `list[str]` | `"all"` | `"all"` saves all workspaces, `"active"` saves only workspaces with active sessions/supervisors, or an explicit list of workspace names. |
+| `notify` | `boolean` | `true` | Dispatches desktop notifications via D-Bus upon auto-save success and failure. |
 
 > [!NOTE]
 > `ws` employs smart fingerprint caching. If a workspace's branch heads and uncommitted files have not changed since the last save, the upload is skipped to save network bandwidth and hub storage.

@@ -23,6 +23,10 @@ def test_generate_completion_scripts():
     assert 'local cmd="${words[1]}"' in zsh_script
     assert "repos_all" in zsh_script
     assert "start|launch|run" in zsh_script
+    assert "daemon:Manage or run global background daemon" in zsh_script
+    assert "service:Manage systemd user service" in zsh_script
+    assert "project" in zsh_script
+    assert "hub" in zsh_script
     assert "compdef _ws ws" in zsh_script
 
     bash_script = generate_completion_script("bash")
@@ -31,12 +35,20 @@ def test_generate_completion_scripts():
     assert "declare -F _init_completion" in bash_script
     assert "workspaces_all" in bash_script
     assert "repos_all" in bash_script
+    assert "daemon" in bash_script
+    assert "service" in bash_script
+    assert "project" in bash_script
+    assert "auto-save" in bash_script
 
     fish_script = generate_completion_script("fish")
     assert "complete -c ws" in fish_script
     assert "__fish_ws_workspaces" in fish_script
     assert "workspaces_all" in fish_script
     assert "repos_all" in fish_script
+    assert "daemon" in fish_script
+    assert "service" in fish_script
+    assert "project" in fish_script
+    assert "hub" in fish_script
 
     with pytest.raises(ValueError, match="Unsupported shell"):
         generate_completion_script("unsupported_shell")

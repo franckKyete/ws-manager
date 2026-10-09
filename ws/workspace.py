@@ -32,7 +32,14 @@ from ws.exceptions import (
     WSException,
 )
 from ws.git import GitService
-from ws.models import AppConfig, RepoConfig, RepoSpec, WorkspaceMetadata
+from ws.models import (
+    AppConfig,
+    HubAutoSaveConfig,
+    RepoConfig,
+    RepoSpec,
+    TmuxConfig,
+    WorkspaceMetadata,
+)
 from ws.output import OutputHandler
 from ws.utils import ensure_directory, get_iso_timestamp
 
@@ -1325,10 +1332,33 @@ class WorkspaceManager:
                 url=url,
             )
 
-        saved_path = ConfigLoader.save_config(repositories=updated_repos)
+        root_dir_name = self.config.project_root.name or "workspace"
+        tmux_cfg = self.config.tmux or TmuxConfig(
+            session=root_dir_name,
+            command="nvim",
+            switch=True,
+        )
+        hub_auto_save = self.config.hub_auto_save or HubAutoSaveConfig(
+            enabled=True,
+            interval=300,
+            include_wip=True,
+            workspaces="all",
+        )
+
+        saved_path = ConfigLoader.save_config(
+            repositories=updated_repos,
+            config_path=self.config.config_file_path,
+            tmux=tmux_cfg,
+            hub_auto_save=hub_auto_save,
+            hub_project=self.config.hub_project,
+        )
         OutputHandler.print_success(f"Saved configuration to [bold white]{saved_path}[/bold white]")
 
         self.config.repositories = updated_repos
+        self.config.tmux = tmux_cfg
+        self.config.hub_auto_save = hub_auto_save
+        if not self.config.config_file_path:
+            self.config.config_file_path = saved_path.resolve()
         return self.config
 
     def _save_metadata(self, ws_dir: Path, metadata: WorkspaceMetadata) -> None:
@@ -2278,8 +2308,9 @@ class WorkspaceManager:
         from ws.hub import HubClient
         client = HubClient()
 
-        if override_identifier:
-            return client.parse_project_identifier(override_identifier)
+        target_id = override_identifier or getattr(self.config, "hub_project", None)
+        if target_id:
+            return client.parse_project_identifier(target_id)
 
         # Check if project name can be inferred from config or directory name
         proj_dir_name = self.config.project_root.name
@@ -2416,7 +2447,12 @@ class WorkspaceManager:
 
         return dest_dir
 
-    def hub_publish(self, project_identifier: str | None = None, description: str | None = None) -> dict[str, Any]:
+    def hub_publish(
+        self,
+        project_identifier: str | None = None,
+        description: str | None = None,
+        silent: bool = False,
+    ) -> dict[str, Any]:
         """Publish local workspace project definition, encrypted vault secrets, and sensitive files to wshub."""
         from ws.hub import HubClient
         from ws.config import ConfigLoader
@@ -2426,6 +2462,18 @@ class WorkspaceManager:
         config_file = self.config.config_file_path or (self.config.project_root / "repositories.yml")
         if not config_file.exists():
             raise ConfigException("No 'repositories.yml' found in project root to publish.")
+
+        # Persist project identifier in repositories.yml and config if not already set
+        proj_ident = f"{namespace}/{name}"
+        if getattr(self.config, "hub_project", None) != proj_ident:
+            try:
+                ConfigLoader.update_hub_config(config_file, hub_project=proj_ident)
+                self.config.hub_project = proj_ident
+                if not hasattr(self.config, "hub") or not isinstance(self.config.hub, dict):
+                    self.config.hub = {}
+                self.config.hub["project"] = proj_ident
+            except Exception as e:
+                logger.debug("Could not persist hub project identifier to %s: %s", config_file, e)
 
         # Classify assets into sanitized blueprint, vault secrets, sensitive files, and private vars
         sanitized_yaml, extracted_secrets, files_to_upload, private_count = ConfigLoader.classify_project_assets(self.config)
@@ -2444,8 +2492,19 @@ class WorkspaceManager:
 
         scripts_json = json.dumps(scripts_dict) if scripts_dict else None
 
-        OutputHandler.print_info(f"Publishing project [bold cyan]{namespace}/{name}[/bold cyan] to wshub...")
-        with OutputHandler.spinner(f"Registering project blueprint {namespace}/{name}..."):
+        if not silent:
+            OutputHandler.print_info(f"Publishing project [bold cyan]{namespace}/{name}[/bold cyan] to wshub...")
+            with OutputHandler.spinner(f"Registering project blueprint {namespace}/{name}..."):
+                result = client.create_project(
+                    namespace=namespace,
+                    name=name,
+                    blueprint_yaml=sanitized_yaml,
+                    description=description,
+                    scripts_json=scripts_json,
+                    changelog="Initial publish from local workspace",
+                )
+            OutputHandler.print_success(f"Published project [bold green]{namespace}/{name}[/bold green] (Revision v1)")
+        else:
             result = client.create_project(
                 namespace=namespace,
                 name=name,
@@ -2454,22 +2513,46 @@ class WorkspaceManager:
                 scripts_json=scripts_json,
                 changelog="Initial publish from local workspace",
             )
-        OutputHandler.print_success(f"Published project [bold green]{namespace}/{name}[/bold green] (Revision v1)")
+            logger.info("Published project %s/%s (Revision v1)", namespace, name)
 
         # 1. Sync Vault Secrets
         total_secrets = 0
         if extracted_secrets:
-            with OutputHandler.spinner("Encrypting and storing secrets in wshub vault..."):
+            if not silent:
+                with OutputHandler.spinner("Encrypting and storing secrets in wshub vault..."):
+                    for scope, sec_dict in extracted_secrets.items():
+                        repo_param = None if scope == "global" else scope
+                        client.set_secrets_bulk(namespace, name, sec_dict, repo_name=repo_param)
+                        total_secrets += len(sec_dict)
+                OutputHandler.print_success(f"🔒 Stored and encrypted [bold cyan]{total_secrets}[/bold cyan] secret(s) in Vault")
+            else:
                 for scope, sec_dict in extracted_secrets.items():
                     repo_param = None if scope == "global" else scope
                     client.set_secrets_bulk(namespace, name, sec_dict, repo_name=repo_param)
                     total_secrets += len(sec_dict)
-            OutputHandler.print_success(f"🔒 Stored and encrypted [bold cyan]{total_secrets}[/bold cyan] secret(s) in Vault")
+                logger.info("Stored and encrypted %d secret(s) in Vault", total_secrets)
 
         # 2. Sync Sensitive Files
         if files_to_upload:
-            with OutputHandler.spinner(f"Encrypting and uploading {len(files_to_upload)} file(s)..."):
-                files_dir = (self.config.project_root / "files").resolve()
+            files_dir = (self.config.project_root / "files").resolve()
+            if not silent:
+                with OutputHandler.spinner(f"Encrypting and uploading {len(files_to_upload)} file(s)..."):
+                    for f_path in files_to_upload:
+                        try:
+                            resolved_f = f_path.resolve()
+                            if resolved_f.is_relative_to(files_dir):
+                                rel_path = str(resolved_f.relative_to(files_dir))
+                            else:
+                                rel_path = str(resolved_f.relative_to(self.config.project_root.resolve()))
+                                if rel_path.startswith("files/") or rel_path.startswith("files\\"):
+                                    rel_path = rel_path[6:]
+                        except ValueError:
+                            rel_path = f_path.name
+                        with open(f_path, "rb") as f:
+                            file_bytes = f.read()
+                        client.upload_file(namespace, name, rel_file_path=rel_path, content_bytes=file_bytes)
+                OutputHandler.print_success(f"📁 Encrypted and uploaded [bold cyan]{len(files_to_upload)}[/bold cyan] sensitive file(s)")
+            else:
                 for f_path in files_to_upload:
                     try:
                         resolved_f = f_path.resolve()
@@ -2484,17 +2567,22 @@ class WorkspaceManager:
                     with open(f_path, "rb") as f:
                         file_bytes = f.read()
                     client.upload_file(namespace, name, rel_file_path=rel_path, content_bytes=file_bytes)
-            OutputHandler.print_success(f"📁 Encrypted and uploaded [bold cyan]{len(files_to_upload)}[/bold cyan] sensitive file(s)")
+                logger.info("Encrypted and uploaded %d sensitive file(s)", len(files_to_upload))
 
         # 3. Report private vars omitted
-        if private_count > 0:
+        if private_count > 0 and not silent:
             OutputHandler.print_info(f"🚫 Skipped [dim]{private_count}[/dim] private variable(s) (kept local)")
 
         return result
 
-    def hub_push(self, message: str = "Update configuration", project_identifier: str | None = None) -> dict[str, Any]:
+    def hub_push(
+        self,
+        message: str = "Update configuration",
+        project_identifier: str | None = None,
+        silent: bool = False,
+    ) -> dict[str, Any]:
         """Push local project blueprint changes, secrets, and files to wshub as a new revision."""
-        from ws.hub import HubClient
+        from ws.hub import HubClient, HubException
         from ws.config import ConfigLoader
         client = HubClient()
         namespace, name = self._get_project_namespace_and_name(project_identifier)
@@ -2502,6 +2590,17 @@ class WorkspaceManager:
         config_file = self.config.config_file_path or (self.config.project_root / "repositories.yml")
         if not config_file.exists():
             raise ConfigException("No 'repositories.yml' found in project root.")
+
+        proj_ident = f"{namespace}/{name}"
+        if getattr(self.config, "hub_project", None) != proj_ident:
+            try:
+                ConfigLoader.update_hub_config(config_file, hub_project=proj_ident)
+                self.config.hub_project = proj_ident
+                if not hasattr(self.config, "hub") or not isinstance(self.config.hub, dict):
+                    self.config.hub = {}
+                self.config.hub["project"] = proj_ident
+            except Exception as e:
+                logger.debug("Could not persist hub project identifier to %s: %s", config_file, e)
 
         sanitized_yaml, extracted_secrets, files_to_upload, private_count = ConfigLoader.classify_project_assets(self.config)
 
@@ -2517,30 +2616,73 @@ class WorkspaceManager:
                         pass
         scripts_json = json.dumps(scripts_dict) if scripts_dict else None
 
-        with OutputHandler.spinner(f"Pushing revision to {namespace}/{name}..."):
-            result = client.push_revision(
-                namespace=namespace,
-                name=name,
-                blueprint_yaml=sanitized_yaml,
-                scripts_json=scripts_json,
-                changelog=message,
-            )
+        try:
+            if not silent:
+                with OutputHandler.spinner(f"Pushing revision to {namespace}/{name}..."):
+                    result = client.push_revision(
+                        namespace=namespace,
+                        name=name,
+                        blueprint_yaml=sanitized_yaml,
+                        scripts_json=scripts_json,
+                        changelog=message,
+                    )
+            else:
+                result = client.push_revision(
+                    namespace=namespace,
+                    name=name,
+                    blueprint_yaml=sanitized_yaml,
+                    scripts_json=scripts_json,
+                    changelog=message,
+                )
+        except HubException as e:
+            if e.status_code == 404 or "not found" in str(e).lower():
+                logger.info("Project %s/%s not found on hub; auto-publishing project...", namespace, name)
+                if not silent:
+                    OutputHandler.print_info(f"Project [bold cyan]{namespace}/{name}[/bold cyan] has not been published yet. Automatically publishing to wshub...")
+                return self.hub_publish(
+                    project_identifier=project_identifier,
+                    description="Automatically published on push",
+                    silent=silent,
+                )
+            raise
+
         version = result.get("revision", {}).get("version", "?")
-        OutputHandler.print_success(f"Pushed revision [bold green]v{version}[/bold green] to [cyan]{namespace}/{name}[/cyan]")
+        if not silent:
+            OutputHandler.print_success(f"Pushed revision [bold green]v{version}[/bold green] to [cyan]{namespace}/{name}[/cyan]")
+        else:
+            logger.info("Pushed revision v%s to %s/%s", version, namespace, name)
 
         # 1. Update Vault Secrets
         total_secrets = 0
         if extracted_secrets:
-            with OutputHandler.spinner("Updating encrypted secrets in vault..."):
+            if not silent:
+                with OutputHandler.spinner("Updating encrypted secrets in vault..."):
+                    for scope, sec_dict in extracted_secrets.items():
+                        repo_param = None if scope == "global" else scope
+                        client.set_secrets_bulk(namespace, name, sec_dict, repo_name=repo_param)
+                        total_secrets += len(sec_dict)
+                OutputHandler.print_success(f"🔒 Synced [bold cyan]{total_secrets}[/bold cyan] secret(s) in Vault")
+            else:
                 for scope, sec_dict in extracted_secrets.items():
                     repo_param = None if scope == "global" else scope
                     client.set_secrets_bulk(namespace, name, sec_dict, repo_name=repo_param)
                     total_secrets += len(sec_dict)
-            OutputHandler.print_success(f"🔒 Synced [bold cyan]{total_secrets}[/bold cyan] secret(s) in Vault")
+                logger.info("Synced %d secret(s) in Vault", total_secrets)
 
         # 2. Update Files
         if files_to_upload:
-            with OutputHandler.spinner(f"Uploading {len(files_to_upload)} file(s)..."):
+            if not silent:
+                with OutputHandler.spinner(f"Uploading {len(files_to_upload)} file(s)..."):
+                    for f_path in files_to_upload:
+                        try:
+                            rel_path = str(f_path.relative_to(self.config.project_root))
+                        except ValueError:
+                            rel_path = f_path.name
+                        with open(f_path, "rb") as f:
+                            file_bytes = f.read()
+                        client.upload_file(namespace, name, rel_file_path=rel_path, content_bytes=file_bytes)
+                OutputHandler.print_success(f"📁 Synced [bold cyan]{len(files_to_upload)}[/bold cyan] sensitive file(s)")
+            else:
                 for f_path in files_to_upload:
                     try:
                         rel_path = str(f_path.relative_to(self.config.project_root))
@@ -2549,9 +2691,9 @@ class WorkspaceManager:
                     with open(f_path, "rb") as f:
                         file_bytes = f.read()
                     client.upload_file(namespace, name, rel_file_path=rel_path, content_bytes=file_bytes)
-            OutputHandler.print_success(f"📁 Synced [bold cyan]{len(files_to_upload)}[/bold cyan] sensitive file(s)")
+                logger.info("Synced %d sensitive file(s)", len(files_to_upload))
 
-        if private_count > 0:
+        if private_count > 0 and not silent:
             OutputHandler.print_info(f"🚫 Skipped [dim]{private_count}[/dim] private variable(s) (kept local)")
 
         return result
@@ -2682,22 +2824,55 @@ class WorkspaceManager:
             if wip_dict:
                 state_dict["wip"] = wip_dict
 
-        if silent:
-            result = client.save_workspace_state(
-                namespace=namespace,
-                name=name,
-                workspace_name=meta.name,
-                state_dict=state_dict,
-            )
-            logger.info("Saved workspace state @%s to %s/%s (auto=%s)", meta.name, namespace, name, is_auto)
-        else:
-            with OutputHandler.spinner(f"Saving state for @{meta.name} to wshub..."):
+        from ws.hub import HubException
+
+        try:
+            if silent:
                 result = client.save_workspace_state(
                     namespace=namespace,
                     name=name,
                     workspace_name=meta.name,
                     state_dict=state_dict,
                 )
+                logger.info("Saved workspace state @%s to %s/%s (auto=%s)", meta.name, namespace, name, is_auto)
+            else:
+                with OutputHandler.spinner(f"Saving state for @{meta.name} to wshub..."):
+                    result = client.save_workspace_state(
+                        namespace=namespace,
+                        name=name,
+                        workspace_name=meta.name,
+                        state_dict=state_dict,
+                    )
+        except HubException as e:
+            if e.status_code == 404 or "not found" in str(e).lower():
+                logger.info("Project %s/%s not found on hub; auto-publishing before saving state...", namespace, name)
+                if not silent:
+                    OutputHandler.print_info(f"Project [bold cyan]{namespace}/{name}[/bold cyan] has not been saved to hub yet. Automatically publishing to wshub...")
+                self.hub_publish(
+                    project_identifier=project_identifier,
+                    description="Automatically published on state save",
+                    silent=silent,
+                )
+                if silent:
+                    result = client.save_workspace_state(
+                        namespace=namespace,
+                        name=name,
+                        workspace_name=meta.name,
+                        state_dict=state_dict,
+                    )
+                    logger.info("Saved workspace state @%s to %s/%s (auto=%s) after publish", meta.name, namespace, name, is_auto)
+                else:
+                    with OutputHandler.spinner(f"Saving state for @{meta.name} to wshub..."):
+                        result = client.save_workspace_state(
+                            namespace=namespace,
+                            name=name,
+                            workspace_name=meta.name,
+                            state_dict=state_dict,
+                        )
+            else:
+                raise
+
+        if not silent:
             prefix = "Auto-saved" if is_auto else "Saved"
             OutputHandler.print_success(f"{prefix} workspace state [bold cyan]@{meta.name}[/bold cyan] to [cyan]{namespace}/{name}[/cyan]")
             for r_name, mod_cnt, untr_cnt in wip_summary:
@@ -2785,22 +2960,39 @@ class WorkspaceManager:
             logger.debug("Workspace '@%s' unchanged since last save. Skipping auto-save.", workspace_name)
             return False
 
-        # Execute save
-        self.hub_state_save(
-            workspace_name=workspace_name,
-            project_identifier=project_identifier,
-            include_wip=include_wip,
-            silent=silent,
-            is_auto=True,
-        )
+        auto_cfg = getattr(self.config, "hub_auto_save", None)
+        should_notify = auto_cfg.notify if auto_cfg and hasattr(auto_cfg, "notify") else True
 
-        # Update cache
-        cache[workspace_name] = {
-            "fingerprint": current_fp,
-            "last_saved_at": get_iso_timestamp(),
-        }
-        self._save_auto_save_cache(cache)
-        return True
+        namespace, project_name = self._get_project_namespace_and_name(project_identifier)
+        proj_display = f"{namespace}/{project_name}"
+
+        try:
+            # Execute save
+            self.hub_state_save(
+                workspace_name=workspace_name,
+                project_identifier=project_identifier,
+                include_wip=include_wip,
+                silent=silent,
+                is_auto=True,
+            )
+
+            # Update cache
+            cache[workspace_name] = {
+                "fingerprint": current_fp,
+                "last_saved_at": get_iso_timestamp(),
+            }
+            self._save_auto_save_cache(cache)
+
+            if should_notify:
+                from ws.notify import notify_auto_save_success
+                notify_auto_save_success(workspace_name=workspace_name, project=proj_display)
+
+            return True
+        except Exception as e:
+            if should_notify:
+                from ws.notify import notify_auto_save_failure
+                notify_auto_save_failure(workspace_name=workspace_name, error=str(e), project=proj_display)
+            raise
 
     def hub_auto_save_all_workspaces(
         self,
@@ -2874,7 +3066,7 @@ class WorkspaceManager:
     ) -> int:
         """Start auto-save daemon in background or foreground."""
         active, existing_pid = self.is_auto_save_daemon_active()
-        if active:
+        if active and existing_pid != os.getpid():
             raise WSException(f"Auto-save daemon is already running (PID {existing_pid}).")
 
         effective_interval = interval
@@ -2889,14 +3081,19 @@ class WorkspaceManager:
 
             cmd = [
                 sys.executable,
+                "-u",
                 "-m",
                 "ws.cli",
+            ]
+            if self.config.config_file_path:
+                cmd.extend(["-c", str(self.config.config_file_path)])
+            cmd.extend([
                 "hub",
                 "auto-save",
                 "run",
                 "--interval",
                 str(effective_interval),
-            ]
+            ])
             if project_identifier:
                 cmd.extend(["--project", project_identifier])
 
@@ -2911,7 +3108,18 @@ class WorkspaceManager:
             pid_file.write_text(str(proc.pid), encoding="utf-8")
             return proc.pid
         else:
-            self.run_auto_save_loop(interval=effective_interval, project_identifier=project_identifier)
+            pid_file = self.get_auto_save_pid_file()
+            ensure_directory(pid_file.parent)
+            pid_file.write_text(str(os.getpid()), encoding="utf-8")
+            try:
+                self.run_auto_save_loop(interval=effective_interval, project_identifier=project_identifier)
+            finally:
+                if pid_file.exists():
+                    try:
+                        if pid_file.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                            pid_file.unlink(missing_ok=True)
+                    except Exception:
+                        pass
             return os.getpid()
 
     def stop_auto_save_daemon(self) -> bool:
@@ -2938,19 +3146,44 @@ class WorkspaceManager:
     ) -> None:
         """Execute continuous auto-save loop."""
         import time
+        import signal
+
+        workspace_logger = logging.getLogger("ws.workspace")
+        workspace_logger.setLevel(logging.INFO)
+        if not workspace_logger.handlers:
+            handler = logging.StreamHandler(sys.stdout)
+            handler.setLevel(logging.INFO)
+            handler.setFormatter(
+                logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+            )
+            workspace_logger.addHandler(handler)
+
         logger.info("Starting auto-save loop (interval: %ds)...", interval)
+
+        def _handle_sigterm(signum, frame):
+            logger.info("Auto-save daemon received termination signal (SIGTERM).")
+            sys.exit(0)
+
+        prev_handler = signal.signal(signal.SIGTERM, _handle_sigterm)
         try:
             while True:
                 try:
                     results = self.hub_auto_save_all_workspaces(project_identifier=project_identifier, silent=True)
                     saved = [w for w, s in results.items() if s]
                     if saved:
-                        logger.info("Auto-saved workspaces: %s", ", ".join(saved))
+                        logger.info("Auto-saved workspaces: %s", ", ".join(f"@{w}" for w in saved))
+                    else:
+                        logger.info("Auto-save check: all workspaces up to date (skipped).")
                 except Exception as e:
                     logger.error("Error in auto-save loop: %s", e)
                 time.sleep(interval)
-        except KeyboardInterrupt:
-            logger.info("Auto-save loop terminated by user.")
+        except (KeyboardInterrupt, SystemExit):
+            logger.info("Auto-save loop terminated.")
+        finally:
+            try:
+                signal.signal(signal.SIGTERM, prev_handler)
+            except Exception:
+                pass
 
     def get_auto_save_status(self) -> dict[str, Any]:
         """Get diagnostic status of auto-save configuration, daemon, and workspace states."""
@@ -2983,6 +3216,7 @@ class WorkspaceManager:
             "interval": auto_cfg.interval if auto_cfg else 900,
             "include_wip": auto_cfg.include_wip if auto_cfg else True,
             "workspaces_setting": auto_cfg.workspaces if auto_cfg else "all",
+            "notify": auto_cfg.notify if auto_cfg and hasattr(auto_cfg, "notify") else True,
             "daemon_active": active,
             "daemon_pid": pid,
             "workspaces": ws_info,

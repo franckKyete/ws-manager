@@ -119,11 +119,23 @@ ws project init server=git@github.com:example-org/api-server.git \
 This command:
 
 1. Clones bare repositories into `bares/server.git` and `bares/mobile.git`.
-2. Generates a root `repositories.yml` configuration file.
+2. Generates a root `repositories.yml` configuration file with sensible `tmux` and `hub` defaults.
 
 Inspect the generated `repositories.yml`:
 
 ```yaml
+tmux:
+  session: my-polyrepo-project
+  command: nvim
+  switch: true
+
+hub:
+  auto_save:
+    enabled: true
+    interval: 5m
+    include_wip: true
+    workspaces: all
+
 repositories:
   server:
     bare: bares/server.git

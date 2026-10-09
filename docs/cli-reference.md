@@ -566,10 +566,12 @@ ws setup @develop --all --interface wlan0
 
 ### `ws project init` / `ws init`
 
-Initializes bare Git repositories in `bares/` and generates `repositories.yml`.
+Initializes bare Git repositories in `bares/` and generates `repositories.yml` with sensible defaults for `tmux` (`session` set to project folder, `command: nvim`, `switch: true`) and `hub` (`auto_save` every 5m). Existing configurations are preserved if already present.
 
 ```bash
 ws project init [alias=URL ...]
+# Or top-level shortcut:
+ws init [alias=URL ...]
 ```
 
 #### Example
@@ -715,8 +717,47 @@ ws hub state save @develop
 ws hub resume @develop
 ```
 
+### `ws service` & `ws daemon`
+Manages the machine-wide `ws.service` user systemd unit which continuously monitors all registered projects on your machine and performs periodic Hub auto-saving.
+
+```bash
+# Install, enable, and start ws.service (runs on boot)
+ws service install
+
+# Check status of ws.service and see all monitored projects
+ws service status
+
+# Start, stop, or restart the background service
+ws service start
+ws service stop
+ws service restart
+
+# Stream live systemd journal logs
+ws service logs
+
+# Run the global daemon in foreground (used by ws.service)
+# Includes real-time configuration file watcher for repositories.yml and workspace.yml
+ws daemon run [--tick 15]
+```
+
+The daemon automatically watches `repositories.yml` and `workspace.yml` in real time, auto-pushing blueprint revisions on `repositories.yml` edits and auto-saving workspace states on `workspace.yml` edits. Projects not yet published on `wshub` are automatically published on first save or push.
+
+### `ws project`
+Manages project bare repositories and the global project registry for the background daemon.
+
+```bash
+# List all registered projects monitored by ws.service
+ws project list
+
+# Register a project directory in the global registry
+ws project register [/path/to/project]
+
+# Unregister a project directory
+ws project unregister [/path/to/project]
+```
+
 ### `ws hub auto-save`
-Controls background periodic auto-saving of workspace states to `wshub`. Works with change-detection caching to skip redundant uploads when worktrees are unchanged.
+Controls periodic auto-saving of workspace states to `wshub`. Works with change-detection caching to skip redundant uploads when worktrees are unchanged.
 
 ```bash
 # Check daemon status, interval, and workspace snapshot history
@@ -725,14 +766,9 @@ ws hub auto-save status
 # Trigger a one-time auto-save pass across configured workspaces
 ws hub auto-save once [--force]
 
-# Start background auto-save daemon
-ws hub auto-save start
-
-# Stop background auto-save daemon
-ws hub auto-save stop
-
-# Run auto-save loop in foreground (useful for systemd or container runtimes)
-ws hub auto-save run [--interval 15m]
+# Manage systemd service via alias
+ws hub auto-save service install
+ws hub auto-save service status
 ```
 
 ### `ws hub secret`

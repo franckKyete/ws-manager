@@ -7,8 +7,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ws.config import ConfigLoader
+from ws.exceptions import WSException
 from ws.models import AppConfig, HubAutoSaveConfig, RepoConfig, RepoSpec, WorkspaceMetadata
-from ws.utils import parse_duration
+from ws.utils import format_duration, parse_duration
 from ws.workspace import WorkspaceManager
 
 
@@ -25,6 +26,20 @@ def test_parse_duration():
     assert parse_duration("none") == 0
     assert parse_duration("false") == 0
     assert parse_duration(None) == 0
+
+
+def test_format_duration():
+    assert format_duration(300) == "5m"
+    assert format_duration(900) == "15m"
+    assert format_duration(3600) == "1h"
+    assert format_duration(7200) == "2h"
+    assert format_duration(30) == "30s"
+    assert format_duration(86400) == "1d"
+    assert format_duration(172800) == "2d"
+    assert format_duration(0) == "0s"
+    assert format_duration(-5) == "0s"
+    assert format_duration(65) == "65s"
+
 
 
 def test_config_loader_hub_auto_save(tmp_path):
@@ -199,6 +214,44 @@ def test_auto_save_daemon_lifecycle(auto_save_env, tmp_path):
     assert active is False
 
 
+def test_start_auto_save_daemon_rejects_duplicate(auto_save_env):
+    manager = auto_save_env["manager"]
+    pid_file = manager.get_auto_save_pid_file()
+    # Mock another active daemon with a dummy PID that isn't our PID
+    fake_pid = 999999
+    with patch.object(manager, "is_auto_save_daemon_active", return_value=(True, fake_pid)):
+        with pytest.raises(WSException) as exc_info:
+            manager.start_auto_save_daemon(detached=True)
+        assert f"already running (PID {fake_pid})" in str(exc_info.value)
+
+
+def test_start_auto_save_daemon_allows_same_pid(auto_save_env):
+    manager = auto_save_env["manager"]
+    # When child runs detached=False, its PID matches the PID file written by parent
+    current_pid = os.getpid()
+    with patch.object(manager, "is_auto_save_daemon_active", return_value=(True, current_pid)):
+        with patch.object(manager, "run_auto_save_loop") as mock_loop:
+            pid = manager.start_auto_save_daemon(detached=False)
+            assert pid == current_pid
+            mock_loop.assert_called_once()
+
+
+def test_start_auto_save_daemon_detached_spawn(auto_save_env):
+    manager = auto_save_env["manager"]
+    fake_proc = MagicMock()
+    fake_proc.pid = 12345
+
+    with patch("subprocess.Popen", return_value=fake_proc) as mock_popen:
+        pid = manager.start_auto_save_daemon(detached=True)
+        assert pid == 12345
+        mock_popen.assert_called_once()
+        pid_file = manager.get_auto_save_pid_file()
+        assert pid_file.read_text(encoding="utf-8").strip() == "12345"
+        # Clean up
+        pid_file.unlink()
+
+
+
 def test_get_auto_save_status(auto_save_env):
     manager = auto_save_env["manager"]
     status = manager.get_auto_save_status()
@@ -206,5 +259,41 @@ def test_get_auto_save_status(auto_save_env):
     assert status["enabled"] is True
     assert status["interval"] == 300
     assert status["include_wip"] is True
+    assert status["notify"] is True
     assert "dev" in status["workspaces"]
     assert status["workspaces"]["dev"]["last_saved_at"] is None
+
+
+def test_hub_auto_save_dispatches_success_notification(auto_save_env):
+    manager = auto_save_env["manager"]
+
+    with patch.object(manager, "hub_state_save", return_value={"status": "success"}):
+        with patch("ws.notify.notify_auto_save_success") as mock_notify:
+            saved = manager.hub_auto_save_workspace("dev", force=True)
+            assert saved is True
+            mock_notify.assert_called_once_with(workspace_name="dev", project="test-org/test-proj")
+
+
+def test_hub_auto_save_dispatches_failure_notification(auto_save_env):
+    manager = auto_save_env["manager"]
+
+    with patch.object(manager, "hub_state_save", side_effect=RuntimeError("Connection refused")):
+        with patch("ws.notify.notify_auto_save_failure") as mock_notify_fail:
+            with pytest.raises(RuntimeError):
+                manager.hub_auto_save_workspace("dev", force=True)
+            mock_notify_fail.assert_called_once()
+            call_kwargs = mock_notify_fail.call_args[1]
+            assert call_kwargs["workspace_name"] == "dev"
+            assert "Connection refused" in call_kwargs["error"]
+
+
+def test_hub_auto_save_notify_disabled(auto_save_env):
+    manager = auto_save_env["manager"]
+    manager.config.hub_auto_save.notify = False
+
+    with patch.object(manager, "hub_state_save", return_value={"status": "success"}):
+        with patch("ws.notify.notify_auto_save_success") as mock_notify:
+            saved = manager.hub_auto_save_workspace("dev", force=True)
+            assert saved is True
+            mock_notify.assert_not_called()
+

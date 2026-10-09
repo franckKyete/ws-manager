@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import pytest
+import yaml
 
 from ws.config import AppConfig
 from ws.exceptions import (
@@ -161,6 +162,81 @@ def test_init_project(temp_dir, mock_git, monkeypatch):
     assert "mobile" in new_cfg.repositories
     assert len(cloned_urls) == 2
     assert (temp_dir / "repositories.yml").exists()
+
+    # Verify tmux defaults
+    assert new_cfg.tmux is not None
+    assert new_cfg.tmux.session == temp_dir.name
+    assert new_cfg.tmux.command == "nvim"
+    assert new_cfg.tmux.switch is True
+
+    # Verify hub auto_save defaults
+    assert new_cfg.hub_auto_save is not None
+    assert new_cfg.hub_auto_save.enabled is True
+    assert new_cfg.hub_auto_save.interval == 300
+    assert new_cfg.hub_auto_save.include_wip is True
+    assert new_cfg.hub_auto_save.workspaces == "all"
+
+    # Verify YAML content
+    saved_data = yaml.safe_load((temp_dir / "repositories.yml").read_text(encoding="utf-8"))
+    assert saved_data["tmux"]["session"] == temp_dir.name
+    assert saved_data["tmux"]["command"] == "nvim"
+    assert saved_data["tmux"]["switch"] is True
+    assert saved_data["hub"]["auto_save"]["enabled"] is True
+    assert saved_data["hub"]["auto_save"]["interval"] == "5m"
+    assert saved_data["hub"]["auto_save"]["include_wip"] is True
+    assert saved_data["hub"]["auto_save"]["workspaces"] == "all"
+    assert "server" in saved_data["repositories"]
+    assert "mobile" in saved_data["repositories"]
+
+
+def test_init_project_preserves_existing_config(temp_dir, mock_git, monkeypatch):
+    """Test init_project preserves existing custom tmux, hub, and global configuration."""
+    monkeypatch.chdir(temp_dir)
+    config_file = temp_dir / "repositories.yml"
+    config_file.write_text(
+        """
+env:
+  PROJECT_NAME: "custom-poly"
+tmux:
+  session: "my-custom-session"
+  command: "custom-cmd"
+  switch: false
+hub:
+  project: "my-org/my-proj"
+  auto_save:
+    enabled: false
+    interval: "10m"
+    include_wip: false
+    workspaces: "active"
+repositories: {}
+""",
+        encoding="utf-8",
+    )
+
+    def mock_clone_bare(url, target_bare_path):
+        target_bare_path.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(mock_git, "clone_bare", mock_clone_bare)
+    monkeypatch.setattr(mock_git, "is_bare_repo", lambda path: path.exists())
+
+    from ws.config import ConfigLoader
+    app_cfg = ConfigLoader.load_config(config_path=config_file, allow_empty=True)
+    manager = WorkspaceManager(config=app_cfg, git_service=mock_git)
+
+    manager.init_project(["api=git@github.com:Renttik/api.git"])
+
+    saved_data = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    assert saved_data["env"]["PROJECT_NAME"] == "custom-poly"
+    assert saved_data["tmux"]["session"] == "my-custom-session"
+    assert saved_data["tmux"]["command"] == "custom-cmd"
+    assert saved_data["tmux"]["switch"] is False
+    assert saved_data["hub"]["project"] == "my-org/my-proj"
+    assert saved_data["hub"]["auto_save"]["enabled"] is False
+    assert saved_data["hub"]["auto_save"]["interval"] == "10m"
+    assert saved_data["hub"]["auto_save"]["include_wip"] is False
+    assert saved_data["hub"]["auto_save"]["workspaces"] == "active"
+    assert "api" in saved_data["repositories"]
+
 
 
 def test_workspace_add_and_remove_repo(temp_dir, mock_git, monkeypatch):

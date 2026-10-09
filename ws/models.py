@@ -345,14 +345,22 @@ class HubAutoSaveConfig:
     interval: int = 900  # seconds (default 15 minutes)
     include_wip: bool = True
     workspaces: str | list[str] = "all"  # "all", "active", or list of workspace names
+    notify: bool = True
 
-    def to_dict(self) -> dict[str, Any]:
-        return {
+    def to_dict(self, human_interval: bool = False) -> dict[str, Any]:
+        interval_val: Any = self.interval
+        if human_interval and isinstance(self.interval, int):
+            from ws.utils import format_duration
+            interval_val = format_duration(self.interval)
+        res = {
             "enabled": self.enabled,
-            "interval": self.interval,
+            "interval": interval_val,
             "include_wip": self.include_wip,
             "workspaces": self.workspaces,
         }
+        if not self.notify:
+            res["notify"] = False
+        return res
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | bool) -> "HubAutoSaveConfig":
@@ -367,11 +375,13 @@ class HubAutoSaveConfig:
                 enabled_val = False
             include_wip_val = data.get("include_wip", True)
             workspaces_val = data.get("workspaces", "all")
+            notify_val = data.get("notify", data.get("notifications", True))
             return cls(
                 enabled=bool(enabled_val),
                 interval=interval_sec if interval_sec > 0 else 900,
                 include_wip=bool(include_wip_val),
                 workspaces=workspaces_val,
+                notify=bool(notify_val),
             )
         raise ValueError("Invalid hub auto_save configuration format")
 
@@ -393,6 +403,7 @@ class AppConfig:
     tmux: TmuxConfig | None = None
     hub_auto_save: HubAutoSaveConfig | None = None
     hub_project: str | None = None
+    hub: dict[str, Any] = field(default_factory=dict)
 
     @property
     def project_root(self) -> Path:

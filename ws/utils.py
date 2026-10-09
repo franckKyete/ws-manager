@@ -118,3 +118,17 @@ def parse_duration(val: str | int | float | None) -> int:
         return max(0, int(amount * 604800))
     return max(0, int(amount))
 
+
+def format_duration(seconds: int) -> str:
+    """Convert duration in seconds into human-readable shorthand (e.g. '5m', '1h')."""
+    if seconds <= 0:
+        return "0s"
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400}d"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
+
+

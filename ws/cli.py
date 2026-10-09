@@ -70,6 +70,15 @@ from ws.commands import (
     cmd_hub_secret_delete,
     cmd_hub_secret_upload,
     cmd_hub_secret_pull,
+    cmd_daemon_run,
+    cmd_service_install,
+    cmd_service_uninstall,
+    cmd_service_control,
+    cmd_service_status,
+    cmd_service_logs,
+    cmd_project_register,
+    cmd_project_unregister,
+    cmd_project_list,
 )
 
 from ws.config import ConfigLoader
@@ -89,6 +98,7 @@ KNOWN_COMMANDS = {
     "project", "init", "add", "fetch", "sync", "doctor", "antigravity",
     "completion", "_complete",
     "hub", "clone",
+    "daemon", "service",
 }
 
 
@@ -735,6 +745,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     proj_subparsers.add_parser("fetch", help="Fetch updates in all bare repositories")
     proj_subparsers.add_parser("sync", help="Sync and prune worktrees")
+    proj_subparsers.add_parser("list", aliases=["ls"], help="List all registered projects")
+
+    p_proj_reg = proj_subparsers.add_parser("register", help="Register a project in the global registry")
+    p_proj_reg.add_argument("path", nargs="?", default=None, help="Project directory (default: current directory)")
+
+    p_proj_unreg = proj_subparsers.add_parser("unregister", help="Unregister a project from the global registry")
+    p_proj_unreg.add_argument("path", nargs="?", default=None, help="Project directory (default: current directory)")
 
     # Direct top-level shortcuts for project commands
     p_init = subparsers.add_parser("init", help="Initialize project and clone bare repositories")
@@ -833,6 +850,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_as_once.add_argument("--project", help="Override project identifier")
     p_as_once.add_argument("--force", action="store_true", help="Force save even if no changes detected")
 
+    p_as_daemon = hub_autosave_sub.add_parser("daemon", help="Run global auto-save daemon in foreground")
+    p_as_daemon.add_argument("--tick", type=int, default=15, help="Worker loop tick interval in seconds (default: 15)")
+
+    p_as_svc = hub_autosave_sub.add_parser("service", help="Manage systemd user service (ws.service)")
+    as_svc_sub = p_as_svc.add_subparsers(dest="service_action", metavar="ACTION")
+    as_svc_sub.add_parser("install", help="Install, enable, and start ws.service")
+    as_svc_sub.add_parser("uninstall", help="Stop, disable, and remove ws.service")
+    as_svc_sub.add_parser("start", help="Start ws.service via systemctl")
+    as_svc_sub.add_parser("stop", help="Stop ws.service via systemctl")
+    as_svc_sub.add_parser("restart", help="Restart ws.service via systemctl")
+    as_svc_sub.add_parser("enable", help="Enable ws.service on boot")
+    as_svc_sub.add_parser("disable", help="Disable ws.service on boot")
+    as_svc_sub.add_parser("status", help="Show systemd status of ws.service")
+    p_as_s_logs = as_svc_sub.add_parser("logs", help="Stream journalctl logs for ws.service")
+    p_as_s_logs.add_argument("-f", "--follow", action="store_true", default=True, help="Follow live logs")
+    p_as_s_logs.add_argument("-n", "--lines", type=int, default=50, help="Number of lines to display")
+
 
     # ws hub secret <list|set|get|delete|upload|pull>
     p_hub_sec = hub_subparsers.add_parser("secret", help="Manage zero-Git encrypted secrets in wshub vault")
@@ -878,6 +912,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_int.add_argument("query_type", help="Query type")
     p_int.add_argument("query_args", nargs="*", help="Query arguments")
 
+    # Command: ws daemon [run]
+    p_daemon = subparsers.add_parser("daemon", help="Manage or run global background daemon")
+    p_daemon.add_argument("--tick", type=int, default=15, help="Worker loop tick interval in seconds (default: 15)")
+    daemon_sub = p_daemon.add_subparsers(dest="daemon_action", metavar="ACTION")
+    daemon_sub.add_parser("run", help="Run global daemon in foreground (used by ws.service)")
+
+    # Command: ws service [install|uninstall|start|stop|restart|enable|disable|status|logs]
+    p_svc = subparsers.add_parser("service", help="Manage systemd user service (ws.service)")
+    svc_sub = p_svc.add_subparsers(dest="service_action", metavar="ACTION")
+    svc_sub.add_parser("install", help="Install, enable, and start ws.service")
+    svc_sub.add_parser("uninstall", help="Stop, disable, and remove ws.service")
+    svc_sub.add_parser("start", help="Start ws.service via systemctl")
+    svc_sub.add_parser("stop", help="Stop ws.service via systemctl")
+    svc_sub.add_parser("restart", help="Restart ws.service via systemctl")
+    svc_sub.add_parser("enable", help="Enable ws.service on boot")
+    svc_sub.add_parser("disable", help="Disable ws.service on boot")
+    svc_sub.add_parser("status", help="Show systemd status of ws.service")
+    p_s_logs = svc_sub.add_parser("logs", help="Stream journalctl logs for ws.service")
+    p_s_logs.add_argument("-f", "--follow", action="store_true", default=True, help="Follow live logs")
+    p_s_logs.add_argument("-n", "--lines", type=int, default=50, help="Number of lines to display")
+
     return parser
 
 
@@ -910,7 +965,7 @@ def main(sys_args: Sequence[str] | None = None) -> int:
         return 0
 
     try:
-        allow_empty_config = args.subcommand in ("init", "add", "doctor", "project", "hub", "clone")
+        allow_empty_config = args.subcommand in ("init", "add", "doctor", "project", "hub", "clone", "daemon", "service")
         app_config = ConfigLoader.load_config(
             config_path=args.config,
             workspaces_dir=args.workspaces_dir,
@@ -931,8 +986,14 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                     cmd_fetch(manager=manager)
                 elif sub == "sync":
                     cmd_sync(manager=manager)
+                elif sub in ("list", "ls"):
+                    cmd_project_list()
+                elif sub == "register":
+                    cmd_project_register(path=getattr(args, "path", None))
+                elif sub == "unregister":
+                    cmd_project_unregister(path=getattr(args, "path", None))
                 else:
-                    OutputHandler.print_error("Please specify a project action: init, add, fetch, sync")
+                    OutputHandler.print_error("Please specify a project action: init, add, fetch, sync, list, register, unregister")
                     return 1
             elif args.subcommand == "init":
                 cmd_init(manager=manager, repo_inputs=args.urls)
@@ -1456,8 +1517,25 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                         once=True,
                         force=getattr(args, "force", False),
                     )
+                elif as_action == "daemon":
+                    cmd_daemon_run(tick=getattr(args, "tick", 15))
+                elif as_action == "service":
+                    s_action = getattr(args, "service_action", None)
+                    if not s_action or s_action == "status":
+                        cmd_service_status()
+                    elif s_action == "install":
+                        cmd_service_install()
+                    elif s_action == "uninstall":
+                        cmd_service_uninstall()
+                    elif s_action in ("start", "stop", "restart", "enable", "disable"):
+                        cmd_service_control(action=s_action)
+                    elif s_action == "logs":
+                        cmd_service_logs(follow=getattr(args, "follow", True), lines=getattr(args, "lines", 50))
+                    else:
+                        OutputHandler.print_error(f"Unknown service action: {s_action}")
+                        return 1
                 else:
-                    OutputHandler.print_error("Please specify an auto-save action: status, start, stop, run, once")
+                    OutputHandler.print_error("Please specify an auto-save action: status, start, stop, run, once, daemon, service")
                     return 1
 
             elif hub_action == "secret":
@@ -1480,6 +1558,27 @@ def main(sys_args: Sequence[str] | None = None) -> int:
                     return 1
             else:
                 p_hub.print_help()
+
+        # ==================== Global Daemon & Service Commands ====================
+        elif args.subcommand == "daemon":
+            tick = getattr(args, "tick", 15)
+            cmd_daemon_run(tick=tick)
+
+        elif args.subcommand == "service":
+            action = getattr(args, "service_action", None)
+            if not action or action == "status":
+                cmd_service_status()
+            elif action == "install":
+                cmd_service_install()
+            elif action == "uninstall":
+                cmd_service_uninstall()
+            elif action in ("start", "stop", "restart", "enable", "disable"):
+                cmd_service_control(action=action)
+            elif action == "logs":
+                cmd_service_logs(follow=getattr(args, "follow", True), lines=getattr(args, "lines", 50))
+            else:
+                OutputHandler.print_error(f"Unknown service action: {action}")
+                return 1
 
         else:
             parser.print_help()
