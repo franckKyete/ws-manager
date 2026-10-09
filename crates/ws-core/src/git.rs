@@ -28,7 +28,11 @@ impl GitService {
         Self { timeout_secs }
     }
 
-    pub fn run_raw(&self, args: &[&str], cwd: Option<&Path>) -> std::io::Result<std::process::Output> {
+    pub fn run_raw(
+        &self,
+        args: &[&str],
+        cwd: Option<&Path>,
+    ) -> std::io::Result<std::process::Output> {
         let mut cmd = Command::new("git");
         cmd.args(args);
         if let Some(d) = cwd {
@@ -37,7 +41,12 @@ impl GitService {
         cmd.output()
     }
 
-    pub fn run_git(&self, args: &[&str], cwd: Option<&Path>, check: bool) -> Result<std::process::Output> {
+    pub fn run_git(
+        &self,
+        args: &[&str],
+        cwd: Option<&Path>,
+        check: bool,
+    ) -> Result<std::process::Output> {
         let mut cmd = Command::new("git");
         cmd.args(args);
         if let Some(d) = cwd {
@@ -69,14 +78,25 @@ impl GitService {
     }
 
     pub fn is_git_installed(&self) -> bool {
-        self.run_git(&["--version"], None, false).map_or(false, |out| out.status.success())
+        self.run_git(&["--version"], None, false)
+            .is_ok_and(|out| out.status.success())
     }
 
     pub fn clone_bare(&self, url: &str, target_bare_path: &Path) -> Result<()> {
-        self.run_git(&["clone", "--bare", url, &target_bare_path.to_string_lossy()], None, true)?;
+        self.run_git(
+            &["clone", "--bare", url, &target_bare_path.to_string_lossy()],
+            None,
+            true,
+        )?;
         let bare_str = target_bare_path.to_string_lossy();
         let _ = self.run_git(
-            &["--git-dir", &bare_str, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+            &[
+                "--git-dir",
+                &bare_str,
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
             None,
             false,
         );
@@ -88,7 +108,11 @@ impl GitService {
             return false;
         }
         let bare_str = bare_path.to_string_lossy();
-        if let Ok(out) = self.run_git(&["--git-dir", &bare_str, "rev-parse", "--is-bare-repository"], None, false) {
+        if let Ok(out) = self.run_git(
+            &["--git-dir", &bare_str, "rev-parse", "--is-bare-repository"],
+            None,
+            false,
+        ) {
             String::from_utf8_lossy(&out.stdout).trim() == "true"
         } else {
             false
@@ -98,7 +122,18 @@ impl GitService {
     pub fn branch_exists(&self, bare_path: &Path, branch: &str) -> bool {
         let bare_str = bare_path.to_string_lossy();
         let ref_str = format!("refs/heads/{}", branch);
-        if let Ok(out) = self.run_git(&["--git-dir", &bare_str, "rev-parse", "--verify", "--quiet", &ref_str], None, false) {
+        if let Ok(out) = self.run_git(
+            &[
+                "--git-dir",
+                &bare_str,
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &ref_str,
+            ],
+            None,
+            false,
+        ) {
             out.status.success()
         } else {
             false
@@ -107,20 +142,44 @@ impl GitService {
 
     pub fn get_default_branch_or_head(&self, bare_path: &Path) -> Option<String> {
         let bare_str = bare_path.to_string_lossy();
-        if let Ok(out) = self.run_git(&["--git-dir", &bare_str, "rev-parse", "--verify", "--quiet", "HEAD"], None, false) {
+        if let Ok(out) = self.run_git(
+            &[
+                "--git-dir",
+                &bare_str,
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                "HEAD",
+            ],
+            None,
+            false,
+        ) {
             if out.status.success() {
                 return Some("HEAD".to_string());
             }
         }
 
-        if let Ok(out) = self.run_git(&["--git-dir", &bare_str, "branch", "--format=%(refname:short)"], None, false) {
+        if let Ok(out) = self.run_git(
+            &[
+                "--git-dir",
+                &bare_str,
+                "branch",
+                "--format=%(refname:short)",
+            ],
+            None,
+            false,
+        ) {
             if out.status.success() {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 for line in stdout.lines() {
                     let b = line.trim();
                     if !b.is_empty() {
                         let ref_str = format!("refs/heads/{}", b);
-                        let _ = self.run_git(&["--git-dir", &bare_str, "symbolic-ref", "HEAD", &ref_str], None, false);
+                        let _ = self.run_git(
+                            &["--git-dir", &bare_str, "symbolic-ref", "HEAD", &ref_str],
+                            None,
+                            false,
+                        );
                         return Some(b.to_string());
                     }
                 }
@@ -145,7 +204,15 @@ impl GitService {
                 Some(s) => Some(s.to_string()),
                 None => self.get_default_branch_or_head(bare_path),
             };
-            let mut args = vec!["--git-dir", &bare_str, "worktree", "add", "-b", branch, &wt_str];
+            let mut args = vec![
+                "--git-dir",
+                &bare_str,
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                &wt_str,
+            ];
             if let Some(ref st) = resolved_start {
                 args.push(st);
             }
@@ -157,7 +224,12 @@ impl GitService {
         Ok(())
     }
 
-    pub fn remove_worktree(&self, bare_path: &Path, worktree_path: &Path, force: bool) -> Result<()> {
+    pub fn remove_worktree(
+        &self,
+        bare_path: &Path,
+        worktree_path: &Path,
+        force: bool,
+    ) -> Result<()> {
         let bare_str = bare_path.to_string_lossy();
         let wt_str = worktree_path.to_string_lossy();
         let mut args = vec!["--git-dir", &bare_str, "worktree", "remove"];
@@ -180,7 +252,13 @@ impl GitService {
     pub fn fetch_repo(&self, bare_path: &Path) -> Result<()> {
         let bare_str = bare_path.to_string_lossy();
         let _ = self.run_git(
-            &["--git-dir", &bare_str, "config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+            &[
+                "--git-dir",
+                &bare_str,
+                "config",
+                "remote.origin.fetch",
+                "+refs/heads/*:refs/remotes/origin/*",
+            ],
             None,
             false,
         );
@@ -211,18 +289,49 @@ impl GitService {
         }
     }
 
-    pub fn ref_exists(&self, bare_path: &Path, ref_name: &str, worktree_path: Option<&Path>) -> bool {
+    pub fn ref_exists(
+        &self,
+        bare_path: &Path,
+        ref_name: &str,
+        worktree_path: Option<&Path>,
+    ) -> bool {
         let bare_str = bare_path.to_string_lossy();
         let out = if let Some(wt) = worktree_path {
             if wt.is_dir() {
-                self.run_git(&["rev-parse", "--verify", "--quiet", ref_name], Some(wt), false)
+                self.run_git(
+                    &["rev-parse", "--verify", "--quiet", ref_name],
+                    Some(wt),
+                    false,
+                )
             } else {
-                self.run_git(&["--git-dir", &bare_str, "rev-parse", "--verify", "--quiet", ref_name], None, false)
+                self.run_git(
+                    &[
+                        "--git-dir",
+                        &bare_str,
+                        "rev-parse",
+                        "--verify",
+                        "--quiet",
+                        ref_name,
+                    ],
+                    None,
+                    false,
+                )
             }
         } else {
-            self.run_git(&["--git-dir", &bare_str, "rev-parse", "--verify", "--quiet", ref_name], None, false)
+            self.run_git(
+                &[
+                    "--git-dir",
+                    &bare_str,
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    ref_name,
+                ],
+                None,
+                false,
+            )
         };
-        out.map_or(false, |r| r.status.success())
+        out.is_ok_and(|r| r.status.success())
     }
 
     pub fn fetch_remote_branch(
@@ -240,19 +349,34 @@ impl GitService {
 
         let cfg_key = format!("remote.{}.fetch", remote);
         let cfg_val = format!("+refs/heads/*:refs/remotes/{}/*", remote);
-        let _ = self.run_git(&["--git-dir", &bare_str, "config", &cfg_key, &cfg_val], None, false);
+        let _ = self.run_git(
+            &["--git-dir", &bare_str, "config", &cfg_key, &cfg_val],
+            None,
+            false,
+        );
 
-        let refspec = format!("+refs/heads/{}:refs/remotes/{}/{}", clean_branch, remote, clean_branch);
+        let refspec = format!(
+            "+refs/heads/{}:refs/remotes/{}/{}",
+            clean_branch, remote, clean_branch
+        );
         let out = if let Some(wt) = worktree_path {
             if wt.is_dir() {
                 self.run_git(&["fetch", remote, &refspec], Some(wt), false)
             } else {
-                self.run_git(&["--git-dir", &bare_str, "fetch", remote, &refspec], None, false)
+                self.run_git(
+                    &["--git-dir", &bare_str, "fetch", remote, &refspec],
+                    None,
+                    false,
+                )
             }
         } else {
-            self.run_git(&["--git-dir", &bare_str, "fetch", remote, &refspec], None, false)
+            self.run_git(
+                &["--git-dir", &bare_str, "fetch", remote, &refspec],
+                None,
+                false,
+            )
         };
-        out.map_or(false, |r| r.status.success())
+        out.is_ok_and(|r| r.status.success())
     }
 
     pub fn prune_worktrees(&self, bare_path: &Path) -> Result<()> {
@@ -270,7 +394,11 @@ impl GitService {
     }
 
     pub fn get_current_branch(&self, worktree_path: &Path) -> String {
-        if let Ok(out) = self.run_git(&["rev-parse", "--abbrev-ref", "HEAD"], Some(worktree_path), false) {
+        if let Ok(out) = self.run_git(
+            &["rev-parse", "--abbrev-ref", "HEAD"],
+            Some(worktree_path),
+            false,
+        ) {
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         } else {
             "unknown".to_string()
@@ -292,7 +420,11 @@ impl GitService {
     pub fn list_worktrees(&self, bare_path: &Path) -> Vec<(String, String)> {
         let bare_str = bare_path.to_string_lossy();
         let mut worktrees = Vec::new();
-        if let Ok(out) = self.run_git(&["--git-dir", &bare_str, "worktree", "list", "--porcelain"], None, false) {
+        if let Ok(out) = self.run_git(
+            &["--git-dir", &bare_str, "worktree", "list", "--porcelain"],
+            None,
+            false,
+        ) {
             let stdout = String::from_utf8_lossy(&out.stdout);
             let mut curr_path = String::new();
             let mut curr_branch = String::new();
@@ -306,7 +438,11 @@ impl GitService {
                 } else if l.is_empty() && !curr_path.is_empty() {
                     worktrees.push((
                         curr_path.clone(),
-                        if curr_branch.is_empty() { "detached".to_string() } else { curr_branch.clone() },
+                        if curr_branch.is_empty() {
+                            "detached".to_string()
+                        } else {
+                            curr_branch.clone()
+                        },
                     ));
                     curr_path.clear();
                     curr_branch.clear();
@@ -315,14 +451,23 @@ impl GitService {
             if !curr_path.is_empty() {
                 worktrees.push((
                     curr_path,
-                    if curr_branch.is_empty() { "detached".to_string() } else { curr_branch },
+                    if curr_branch.is_empty() {
+                        "detached".to_string()
+                    } else {
+                        curr_branch
+                    },
                 ));
             }
         }
         worktrees
     }
 
-    pub fn push_branch(&self, worktree_path: &Path, remote: &str, branch: Option<&str>) -> Result<(bool, String)> {
+    pub fn push_branch(
+        &self,
+        worktree_path: &Path,
+        remote: &str,
+        branch: Option<&str>,
+    ) -> Result<(bool, String)> {
         let mut args = vec!["push", remote];
         if let Some(b) = branch {
             args.push(b);
@@ -341,14 +486,20 @@ impl GitService {
             });
         }
 
-        if combined.contains("Everything up-to-date") || combined.contains("Everything up to date") {
+        if combined.contains("Everything up-to-date") || combined.contains("Everything up to date")
+        {
             Ok((false, "up to date (no new commits)".to_string()))
         } else {
             Ok((true, "successfully pushed committed changes".to_string()))
         }
     }
 
-    pub fn pull_branch(&self, worktree_path: &Path, remote: &str, branch: Option<&str>) -> Result<(bool, String)> {
+    pub fn pull_branch(
+        &self,
+        worktree_path: &Path,
+        remote: &str,
+        branch: Option<&str>,
+    ) -> Result<(bool, String)> {
         let mut args = vec!["pull", remote];
         if let Some(b) = branch {
             args.push(b);
@@ -359,7 +510,11 @@ impl GitService {
         let combined = format!("{}\n{}", stderr, stdout);
 
         if !out.status.success() {
-            let first_err = stderr.lines().next().or_else(|| stdout.lines().next()).unwrap_or("Git pull failed");
+            let first_err = stderr
+                .lines()
+                .next()
+                .or_else(|| stdout.lines().next())
+                .unwrap_or("Git pull failed");
             return Err(WSError::Git {
                 message: format!("Git pull failed: {}", first_err),
                 command: Some(args.join(" ")),
@@ -424,8 +579,13 @@ impl GitService {
         if !worktree_path.exists() {
             return String::new();
         }
-        let has_head = self.run_git(&["rev-parse", "--verify", "HEAD"], Some(worktree_path), false)
-            .map_or(false, |r| r.status.success());
+        let has_head = self
+            .run_git(
+                &["rev-parse", "--verify", "HEAD"],
+                Some(worktree_path),
+                false,
+            )
+            .is_ok_and(|r| r.status.success());
 
         let out = if has_head {
             self.run_git(&["diff", "--binary", "HEAD"], Some(worktree_path), false)
@@ -433,7 +593,8 @@ impl GitService {
             self.run_git(&["diff", "--binary"], Some(worktree_path), false)
         };
 
-        out.map(|r| String::from_utf8_lossy(&r.stdout).to_string()).unwrap_or_default()
+        out.map(|r| String::from_utf8_lossy(&r.stdout).to_string())
+            .unwrap_or_default()
     }
 
     pub fn get_untracked_files(&self, worktree_path: &Path) -> Vec<String> {
@@ -441,7 +602,11 @@ impl GitService {
             return Vec::new();
         }
         let mut files = Vec::new();
-        if let Ok(out) = self.run_git(&["ls-files", "--others", "--exclude-standard"], Some(worktree_path), false) {
+        if let Ok(out) = self.run_git(
+            &["ls-files", "--others", "--exclude-standard"],
+            Some(worktree_path),
+            false,
+        ) {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
                 let l = line.trim();
@@ -459,7 +624,7 @@ impl GitService {
         }
 
         let mut child = match Command::new("git")
-            .args(&["apply", "--whitespace=nowarn", "--allow-empty", "-"])
+            .args(["apply", "--whitespace=nowarn", "--allow-empty", "-"])
             .current_dir(worktree_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -483,7 +648,7 @@ impl GitService {
 
         // Fallback with 3way
         let mut child3way = match Command::new("git")
-            .args(&["apply", "--3way", "--whitespace=nowarn", "-"])
+            .args(["apply", "--3way", "--whitespace=nowarn", "-"])
             .current_dir(worktree_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -499,7 +664,7 @@ impl GitService {
             let _ = stdin.write_all(patch_content.as_bytes());
         }
 
-        child3way.wait().map_or(false, |s| s.success())
+        child3way.wait().is_ok_and(|s| s.success())
     }
 
     pub fn check_worktree_uncommitted(&self, worktree_path: &Path) -> UncommittedChanges {
@@ -546,7 +711,11 @@ impl GitService {
 
     pub fn get_default_branch(&self, bare_path: &Path) -> String {
         let bare_str = bare_path.to_string_lossy();
-        if let Ok(out) = self.run_git(&["--git-dir", &bare_str, "symbolic-ref", "--short", "HEAD"], None, false) {
+        if let Ok(out) = self.run_git(
+            &["--git-dir", &bare_str, "symbolic-ref", "--short", "HEAD"],
+            None,
+            false,
+        ) {
             if out.status.success() {
                 let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if !s.is_empty() {
@@ -568,7 +737,16 @@ impl GitService {
             }
         }
 
-        if let Ok(out) = self.run_git(&["--git-dir", &bare_str, "branch", "--format=%(refname:short)"], None, false) {
+        if let Ok(out) = self.run_git(
+            &[
+                "--git-dir",
+                &bare_str,
+                "branch",
+                "--format=%(refname:short)",
+            ],
+            None,
+            false,
+        ) {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
                 let b = line.trim();
@@ -586,7 +764,11 @@ impl GitService {
             if self.branch_exists(bare_path, candidate) {
                 return candidate.to_string();
             }
-            if self.ref_exists(bare_path, &format!("refs/remotes/origin/{}", candidate), None) {
+            if self.ref_exists(
+                bare_path,
+                &format!("refs/remotes/origin/{}", candidate),
+                None,
+            ) {
                 return candidate.to_string();
             }
         }
@@ -602,7 +784,17 @@ impl GitService {
         let clean_branch = branch.strip_prefix("refs/heads/").unwrap_or(branch);
         let target_ref = format!("refs/heads/{}", clean_branch);
         let bare_str = bare_path.to_string_lossy().to_string();
-        let res = self.run_git(&["--git-dir", &bare_str, "update-ref", &target_ref, new_ref_or_commit], None, false);
+        let res = self.run_git(
+            &[
+                "--git-dir",
+                &bare_str,
+                "update-ref",
+                &target_ref,
+                new_ref_or_commit,
+            ],
+            None,
+            false,
+        );
         Ok(res.map(|o| o.status.success()).unwrap_or(false))
     }
 
@@ -630,24 +822,45 @@ impl GitService {
             let count_out = if let Some(wt) = worktree_path {
                 self.run_git(&["rev-list", "--count", &remote_ref], Some(wt), false)
             } else {
-                self.run_git(&["--git-dir", &bare_str, "rev-list", "--count", &remote_ref], None, false)
+                self.run_git(
+                    &["--git-dir", &bare_str, "rev-list", "--count", &remote_ref],
+                    None,
+                    false,
+                )
             };
             let behind = count_out
                 .ok()
-                .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse::<i64>().ok())
+                .and_then(|o| {
+                    String::from_utf8_lossy(&o.stdout)
+                        .trim()
+                        .parse::<i64>()
+                        .ok()
+                })
                 .unwrap_or(1);
             return (0, behind);
         }
 
         let out = if let Some(wt) = worktree_path {
             self.run_git(
-                &["rev-list", "--left-right", "--count", &format!("{}...{}", local_ref, remote_ref)],
+                &[
+                    "rev-list",
+                    "--left-right",
+                    "--count",
+                    &format!("{}...{}", local_ref, remote_ref),
+                ],
                 Some(wt),
                 false,
             )
         } else {
             self.run_git(
-                &["--git-dir", &bare_str, "rev-list", "--left-right", "--count", &format!("{}...{}", local_ref, remote_ref)],
+                &[
+                    "--git-dir",
+                    &bare_str,
+                    "rev-list",
+                    "--left-right",
+                    "--count",
+                    &format!("{}...{}", local_ref, remote_ref),
+                ],
                 None,
                 false,
             )
@@ -657,7 +870,8 @@ impl GitService {
             let stdout = String::from_utf8_lossy(&res.stdout);
             let parts: Vec<&str> = stdout.split_whitespace().collect();
             if parts.len() >= 2 {
-                if let (Ok(ahead), Ok(behind)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>()) {
+                if let (Ok(ahead), Ok(behind)) = (parts[0].parse::<i64>(), parts[1].parse::<i64>())
+                {
                     return (ahead, behind);
                 }
             }
@@ -745,7 +959,11 @@ impl GitService {
 
         let branch_ref = if branch.starts_with("refs/") || branch == "HEAD" {
             branch.to_string()
-        } else if branch.contains('/') && remotes.iter().any(|r| branch.starts_with(&format!("{}/", r))) {
+        } else if branch.contains('/')
+            && remotes
+                .iter()
+                .any(|r| branch.starts_with(&format!("{}/", r)))
+        {
             format!("refs/remotes/{}", branch)
         } else {
             format!("refs/heads/{}", clean_branch)
@@ -756,7 +974,12 @@ impl GitService {
         }
 
         // Tier 1: Direct ancestry check
-        if let Ok(out) = exec(&["merge-base", "--is-ancestor", &branch_ref, &final_target_ref]) {
+        if let Ok(out) = exec(&[
+            "merge-base",
+            "--is-ancestor",
+            &branch_ref,
+            &final_target_ref,
+        ]) {
             if out.status.success() {
                 return (true, target_display, 0);
             }
@@ -789,7 +1012,9 @@ impl GitService {
                 let tree_spec = format!("{}^{{tree}}", final_target_ref);
                 if let Ok(target_out) = exec(&["rev-parse", &tree_spec]) {
                     if target_out.status.success() {
-                        let target_tree = String::from_utf8_lossy(&target_out.stdout).trim().to_string();
+                        let target_tree = String::from_utf8_lossy(&target_out.stdout)
+                            .trim()
+                            .to_string();
                         if !merged_tree.is_empty() && merged_tree == target_tree {
                             return (true, target_display, 0);
                         }

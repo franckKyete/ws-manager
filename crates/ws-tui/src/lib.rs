@@ -48,11 +48,7 @@ pub async fn start_workspace_daemon(
 
     supervisor.start_all().await;
 
-    let daemon = SessionDaemon::new(
-        workspace_name,
-        Arc::new(supervisor),
-        socket_path,
-    );
+    let daemon = SessionDaemon::new(workspace_name, Arc::new(supervisor), socket_path);
 
     daemon.run().await.map_err(|e| e.to_string())?;
     Ok(())
@@ -64,12 +60,8 @@ pub async fn attach_workspace_session(
     initial_focus: Option<String>,
     fullscreen: bool,
 ) -> Result<i32, String> {
-    let mut client = AttachedSessionClient::new(
-        workspace_name,
-        socket_path,
-        initial_focus,
-        fullscreen,
-    );
+    let mut client =
+        AttachedSessionClient::new(workspace_name, socket_path, initial_focus, fullscreen);
     client.run().await.map_err(|e| e.to_string())
 }
 
@@ -121,5 +113,8 @@ pub async fn stop_workspace_session(socket_path: &Path) -> Result<bool, String> 
 }
 
 pub fn run_raw_bridge(socket_path: &Path, service_name: &str) -> Result<i32, String> {
-    bridge::run_raw_bridge(socket_path.to_string_lossy().to_string(), service_name.to_string())
+    bridge::run_raw_bridge(
+        socket_path.to_string_lossy().to_string(),
+        service_name.to_string(),
+    )
 }

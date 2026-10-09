@@ -1,9 +1,9 @@
-use std::collections::HashMap;
-use std::path::Path;
 use colored::Colorize;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, Color, Table};
+use std::collections::HashMap;
+use std::path::Path;
 
 use crate::models::{RepoSpec, WorkspaceMetadata};
 use crate::utils::format_relative_time;
@@ -47,13 +47,20 @@ impl OutputHandler {
         Self::print_workspace_list(workspaces);
     }
 
-    pub fn print_env_summary(workspace_name: &str, repo_name: &str, env_vars: &HashMap<String, String>) {
+    pub fn print_env_summary(
+        workspace_name: &str,
+        repo_name: &str,
+        env_vars: &HashMap<String, String>,
+    ) {
         Self::print_env_table(workspace_name, repo_name, env_vars, None);
     }
 
     pub fn print_rollback_notice(reason: &str, restored: bool) {
         eprintln!();
-        eprintln!("╭─ {} ───────────────────╮", "Rollback Executed".bold().yellow());
+        eprintln!(
+            "╭─ {} ───────────────────╮",
+            "Rollback Executed".bold().yellow()
+        );
         eprintln!("│ {}: {}", "Workspace Creation Failed".bold().red(), reason);
         if restored {
             eprintln!("│");
@@ -68,7 +75,11 @@ impl OutputHandler {
 
     pub fn print_creation_header(name: &str, repo_specs: &[RepoSpec]) {
         println!();
-        println!("{} {}", "✔".bold().green(), format!("Creating workspace {}", name.cyan()).bold().white());
+        println!(
+            "{} {}",
+            "✔".bold().green(),
+            format!("Creating workspace {}", name.cyan()).bold().white()
+        );
         println!();
         println!("{}", "Repositories".bold().cyan());
         println!();
@@ -94,7 +105,10 @@ impl OutputHandler {
         println!();
         println!("{}", "Location".bold().cyan());
         let _ = name;
-        println!("  {}", workspace_path.display().to_string().bold().bright_blue());
+        println!(
+            "  {}",
+            workspace_path.display().to_string().bold().bright_blue()
+        );
         println!();
     }
 
@@ -150,8 +164,15 @@ impl OutputHandler {
         running_services: Option<&HashMap<String, serde_json::Value>>,
     ) {
         println!();
-        println!("╭─ {} ───────────────────────", format!("Workspace Info: @{}", metadata.name).bold().green());
-        let created_str = if metadata.created.is_empty() { "-" } else { &metadata.created };
+        println!(
+            "╭─ {} ───────────────────────",
+            format!("Workspace Info: @{}", metadata.name).bold().green()
+        );
+        let created_str = if metadata.created.is_empty() {
+            "-"
+        } else {
+            &metadata.created
+        };
         let rel_time = format_relative_time(&metadata.created);
         println!("│ Created: {} ({})", created_str.bold(), rel_time.dimmed());
 
@@ -170,7 +191,11 @@ impl OutputHandler {
         let running_services = running_services.unwrap_or(&default_services);
 
         for (repo_name, spec) in &metadata.repositories {
-            let mode_badge = if spec.create { "new".green() } else { "existing".yellow() };
+            let mode_badge = if spec.create {
+                "new".green()
+            } else {
+                "existing".yellow()
+            };
             let locked_badge = if spec.frozen || spec.locked {
                 " 🔒 LOCKED".bold().yellow()
             } else {
@@ -180,14 +205,22 @@ impl OutputHandler {
             let svc_info = running_services.get(repo_name);
             let process_badge = if let Some(info) = svc_info {
                 let port_text = if let Some(ports) = info.get("ports").and_then(|p| p.as_array()) {
-                    let p_str: Vec<String> = ports.iter().filter_map(|v| v.as_i64()).map(|p| format!(":{}", p)).collect();
+                    let p_str: Vec<String> = ports
+                        .iter()
+                        .filter_map(|v| v.as_i64())
+                        .map(|p| format!(":{}", p))
+                        .collect();
                     if !p_str.is_empty() {
                         format!(" (ports {})", p_str.join(", ").cyan())
                     } else {
                         String::new()
                     }
                 } else if let Some(port) = info.get("port").and_then(|p| p.as_i64()) {
-                    if port > 0 { format!(" (port :{})", port.to_string().cyan()) } else { String::new() }
+                    if port > 0 {
+                        format!(" (port :{})", port.to_string().cyan())
+                    } else {
+                        String::new()
+                    }
                 } else {
                     String::new()
                 };
@@ -209,7 +242,10 @@ impl OutputHandler {
             println!("│       Worktree Path: {}", spec.path.dimmed());
 
             if let Some(info) = svc_info {
-                let status_val = info.get("status").and_then(|s| s.as_str()).unwrap_or("running");
+                let status_val = info
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("running");
                 println!("│       Process Status: {}", status_val.green());
                 if let Some(url_local) = info.get("url_local").and_then(|u| u.as_str()) {
                     println!("│       Local URL: {}", url_local.bold().cyan());
@@ -229,12 +265,21 @@ impl OutputHandler {
         println!();
     }
 
-    pub fn print_push_summary(workspace_name: &str, results: &HashMap<String, HashMap<String, String>>) {
+    pub fn print_push_summary(
+        workspace_name: &str,
+        results: &HashMap<String, HashMap<String, String>>,
+    ) {
         let mut table = Table::new();
         table
             .load_preset(UTF8_FULL)
             .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["REPOSITORY", "STATUS", "BRANCH", "REMOTE", "DETAILS / REASON"]);
+            .set_header(vec![
+                "REPOSITORY",
+                "STATUS",
+                "BRANCH",
+                "REMOTE",
+                "DETAILS / REASON",
+            ]);
 
         for (repo_name, res) in results {
             let status = res.get("status").map(|s| s.as_str()).unwrap_or("unknown");
@@ -262,12 +307,21 @@ impl OutputHandler {
         println!("{}", table);
     }
 
-    pub fn print_pull_summary(workspace_name: &str, results: &HashMap<String, HashMap<String, String>>) {
+    pub fn print_pull_summary(
+        workspace_name: &str,
+        results: &HashMap<String, HashMap<String, String>>,
+    ) {
         let mut table = Table::new();
         table
             .load_preset(UTF8_FULL)
             .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["REPOSITORY", "STATUS", "BRANCH", "REMOTE", "DETAILS / REASON"]);
+            .set_header(vec![
+                "REPOSITORY",
+                "STATUS",
+                "BRANCH",
+                "REMOTE",
+                "DETAILS / REASON",
+            ]);
 
         for (repo_name, res) in results {
             let status = res.get("status").map(|s| s.as_str()).unwrap_or("unknown");
@@ -300,16 +354,32 @@ impl OutputHandler {
         table
             .load_preset(UTF8_FULL)
             .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["REPOSITORY", "STATUS", "ENV SYNC", "DETAILS / COMMANDS"]);
+            .set_header(vec![
+                "REPOSITORY",
+                "STATUS",
+                "ENV SYNC",
+                "DETAILS / COMMANDS",
+            ]);
 
         for (repo_name, res) in results {
-            let status = res.get("status").and_then(|s| s.as_str()).unwrap_or("unknown");
-            let env_status = res.get("env_status").and_then(|s| s.as_str()).unwrap_or("-");
+            let status = res
+                .get("status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("unknown");
+            let env_status = res
+                .get("env_status")
+                .and_then(|s| s.as_str())
+                .unwrap_or("-");
             let reason = res.get("reason").and_then(|s| s.as_str()).unwrap_or("");
             let cmds: Vec<String> = res
                 .get("commands_run")
                 .and_then(|c| c.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str()).map(|s| s.to_string()).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str())
+                        .map(|s| s.to_string())
+                        .collect()
+                })
                 .unwrap_or_default();
 
             let status_cell = match status {
@@ -409,7 +479,9 @@ impl OutputHandler {
         sorted.sort_by_key(|(k, _)| (*k).clone());
 
         for (k, v) in sorted {
-            let is_sec = explicit_secrets.map(|s| s.iter().any(|sec| sec == k)).unwrap_or(false)
+            let is_sec = explicit_secrets
+                .map(|s| s.iter().any(|sec| sec == k))
+                .unwrap_or(false)
                 || is_secret_val(k);
             let display_val = if is_sec {
                 "********".yellow()
@@ -464,7 +536,9 @@ impl OutputHandler {
             sorted.sort_by_key(|(k, _)| (*k).clone());
 
             for (k, v) in sorted {
-                let is_sec = explicit_secrets.map(|s| s.iter().any(|sec| sec == k)).unwrap_or(false)
+                let is_sec = explicit_secrets
+                    .map(|s| s.iter().any(|sec| sec == k))
+                    .unwrap_or(false)
                     || is_secret_val(k);
                 let val_cell = if is_sec {
                     Cell::new("******** (masked secret)").fg(Color::Yellow)
@@ -475,14 +549,14 @@ impl OutputHandler {
             }
         }
 
-        println!("Environment Variables for '{}' in '{}'", repo_name, workspace_name);
+        println!(
+            "Environment Variables for '{}' in '{}'",
+            repo_name, workspace_name
+        );
         println!("{}", table);
     }
 
-    pub fn print_launch_summary(
-        workspace_name: &str,
-        launch_entries: &[(String, String, String)],
-    ) {
+    pub fn print_launch_summary(workspace_name: &str, launch_entries: &[(String, String, String)]) {
         let mut table = Table::new();
         table
             .load_preset(UTF8_FULL)

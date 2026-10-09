@@ -24,7 +24,10 @@ pub fn execute_project_register(path: Option<&Path>) -> Result<(), String> {
     if register_project(&target, None) {
         OutputHandler::print_success(&format!("Registered project at '{}'", target.display()));
     } else {
-        OutputHandler::print_info(&format!("Project at '{}' is already registered", target.display()));
+        OutputHandler::print_info(&format!(
+            "Project at '{}' is already registered",
+            target.display()
+        ));
     }
     Ok(())
 }
@@ -38,7 +41,10 @@ pub fn execute_project_unregister(path: Option<&Path>) -> Result<(), String> {
     if unregister_project(&target, None) {
         OutputHandler::print_success(&format!("Unregistered project at '{}'", target.display()));
     } else {
-        OutputHandler::print_warning(&format!("Project at '{}' was not registered", target.display()));
+        OutputHandler::print_warning(&format!(
+            "Project at '{}' was not registered",
+            target.display()
+        ));
     }
     Ok(())
 }

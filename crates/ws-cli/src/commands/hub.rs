@@ -1,10 +1,10 @@
+use crate::helpers::resolve_ws_and_repo_args;
 use colored::Colorize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use ws_core::hub::HubClient;
 use ws_core::output::OutputHandler;
 use ws_core::WorkspaceManager;
-use crate::helpers::resolve_ws_and_repo_args;
 
 pub fn execute_hub_login(
     url: Option<&str>,
@@ -15,7 +15,9 @@ pub fn execute_hub_login(
     let mut client = HubClient::new(url, token, None);
     if let Some(tok) = token {
         let base = client.base_url.clone();
-        client.save_session(&base, tok, username).map_err(|e| e.to_string())?;
+        client
+            .save_session(&base, tok, username)
+            .map_err(|e| e.to_string())?;
         OutputHandler::print_success("wshub authentication token saved successfully.");
         return Ok(());
     }
@@ -24,13 +26,18 @@ pub fn execute_hub_login(
         let res = client.login(u, p).map_err(|e| e.to_string())?;
         if let Some(tok) = res.get("access_token").and_then(|v| v.as_str()) {
             let base = client.base_url.clone();
-            client.save_session(&base, tok, Some(u)).map_err(|e| e.to_string())?;
+            client
+                .save_session(&base, tok, Some(u))
+                .map_err(|e| e.to_string())?;
             OutputHandler::print_success(&format!("Successfully logged in to wshub as '{}'", u));
             return Ok(());
         }
     }
 
-    Err("Either --token or (--username and --password) must be specified for 'ws hub login'.".to_string())
+    Err(
+        "Either --token or (--username and --password) must be specified for 'ws hub login'."
+            .to_string(),
+    )
 }
 
 pub fn execute_hub_logout() -> Result<(), String> {
@@ -57,14 +64,14 @@ pub fn execute_hub_whoami() -> Result<(), String> {
     Ok(())
 }
 
-pub fn execute_hub_clone(
-    identifier: &str,
-    destination: Option<&Path>,
-) -> Result<(), String> {
+pub fn execute_hub_clone(identifier: &str, destination: Option<&Path>) -> Result<(), String> {
     let client = HubClient::default();
     let (ns, name) = HubClient::parse_project_identifier(identifier).map_err(|e| e.to_string())?;
 
-    OutputHandler::print_info(&format!("Fetching project blueprint '{}/{}' from wshub...", ns, name));
+    OutputHandler::print_info(&format!(
+        "Fetching project blueprint '{}/{}' from wshub...",
+        ns, name
+    ));
     let proj = client.get_project(&ns, &name).map_err(|e| e.to_string())?;
 
     let dest_dir = destination
@@ -73,10 +80,17 @@ pub fn execute_hub_clone(
 
     fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
 
-    if let Some(raw_yaml) = proj.get("blueprint").and_then(|b| b.get("yaml")).and_then(|y| y.as_str()) {
+    if let Some(raw_yaml) = proj
+        .get("blueprint")
+        .and_then(|b| b.get("yaml"))
+        .and_then(|y| y.as_str())
+    {
         let repo_yml_path = dest_dir.join("repositories.yml");
         fs::write(&repo_yml_path, raw_yaml).map_err(|e| e.to_string())?;
-        OutputHandler::print_success(&format!("Saved project blueprint to '{}'", repo_yml_path.display()));
+        OutputHandler::print_success(&format!(
+            "Saved project blueprint to '{}'",
+            repo_yml_path.display()
+        ));
     } else {
         return Err("Project does not have an active blueprint on wshub.".to_string());
     }
@@ -90,7 +104,9 @@ pub fn execute_hub_push(
     silent: bool,
 ) -> Result<(), String> {
     let msg = message.unwrap_or("Pushed blueprint update from ws CLI");
-    let res = manager.hub_push(msg, None, silent).map_err(|e| e.to_string())?;
+    let res = manager
+        .hub_push(msg, None, silent)
+        .map_err(|e| e.to_string())?;
     if let Some(rev) = res.get("revision") {
         let ver = rev.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
         OutputHandler::print_success(&format!("Pushed blueprint revision v{}", ver));
@@ -104,7 +120,10 @@ pub fn execute_hub_pull(
 ) -> Result<(), String> {
     let res = manager.hub_pull(project).map_err(|e| e.to_string())?;
     if let Some(rev) = res.get("version").and_then(|v| v.as_i64()) {
-        OutputHandler::print_success(&format!("Updated local repositories.yml to wshub blueprint v{}", rev));
+        OutputHandler::print_success(&format!(
+            "Updated local repositories.yml to wshub blueprint v{}",
+            rev
+        ));
     } else {
         OutputHandler::print_success("Pulled latest blueprint from wshub");
     }
@@ -114,7 +133,12 @@ pub fn execute_hub_pull(
 pub fn execute_hub_status(manager: &WorkspaceManager) -> Result<(), String> {
     let (ns, p_name) = manager.get_project_namespace_and_name(None);
     let client = HubClient::default();
-    println!("{}", format!("wshub Project Status: {}/{}", ns, p_name).bold().cyan());
+    println!(
+        "{}",
+        format!("wshub Project Status: {}/{}", ns, p_name)
+            .bold()
+            .cyan()
+    );
     match client.get_project(&ns, &p_name) {
         Ok(proj) => {
             println!("  Remote Project:  {}", "Connected".green());
@@ -142,7 +166,10 @@ pub fn execute_hub_state_save(
     manager
         .hub_state_save(&ws_name, None, true, false, false)
         .map_err(|e| e.to_string())?;
-    OutputHandler::print_success(&format!("Saved workspace state for '@{}' to wshub", ws_name));
+    OutputHandler::print_success(&format!(
+        "Saved workspace state for '@{}' to wshub",
+        ws_name
+    ));
     Ok(())
 }
 
@@ -154,7 +181,10 @@ pub fn execute_hub_state_restore(
     manager
         .hub_state_restore(&ws_name, None, true)
         .map_err(|e| e.to_string())?;
-    OutputHandler::print_success(&format!("Restored workspace state for '@{}' from wshub", ws_name));
+    OutputHandler::print_success(&format!(
+        "Restored workspace state for '@{}' from wshub",
+        ws_name
+    ));
     Ok(())
 }
 
@@ -173,15 +203,25 @@ pub fn execute_hub_auto_save_run(manager: &WorkspaceManager) -> Result<(), Strin
 pub fn execute_hub_secret_list(manager: &WorkspaceManager) -> Result<(), String> {
     let (ns, p_name) = manager.get_project_namespace_and_name(None);
     let client = HubClient::default();
-    let res = client.list_secrets(&ns, &p_name).map_err(|e| e.to_string())?;
-    println!("{}", format!("wshub Secrets for {}/{}:", ns, p_name).bold().cyan());
+    let res = client
+        .list_secrets(&ns, &p_name)
+        .map_err(|e| e.to_string())?;
+    println!(
+        "{}",
+        format!("wshub Secrets for {}/{}:", ns, p_name)
+            .bold()
+            .cyan()
+    );
     if let Some(arr) = res.as_array() {
         if arr.is_empty() {
             println!("  No secrets stored.");
         } else {
             for item in arr {
                 let k = item.get("key").and_then(|v| v.as_str()).unwrap_or("");
-                let scope = item.get("scope").and_then(|v| v.as_str()).unwrap_or("global");
+                let scope = item
+                    .get("scope")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("global");
                 println!("  {:30} (scope: {})", k.bold(), scope);
             }
         }
@@ -211,7 +251,9 @@ pub fn execute_hub_secret_get(
 ) -> Result<(), String> {
     let (ns, p_name) = manager.get_project_namespace_and_name(None);
     let client = HubClient::default();
-    let res = client.get_secret(&ns, &p_name, key, repo).map_err(|e| e.to_string())?;
+    let res = client
+        .get_secret(&ns, &p_name, key, repo)
+        .map_err(|e| e.to_string())?;
     println!("{}", res);
     Ok(())
 }
@@ -267,7 +309,10 @@ pub fn execute_hub_secret_upload(
     client
         .upload_file(&ns, &p_name, &filename, data)
         .map_err(|e| e.to_string())?;
-    OutputHandler::print_success(&format!("Uploaded and encrypted '{}' to wshub vault", filename));
+    OutputHandler::print_success(&format!(
+        "Uploaded and encrypted '{}' to wshub vault",
+        filename
+    ));
     Ok(())
 }
 
@@ -287,7 +332,10 @@ pub fn execute_hub_secret_pull(
                 if let Ok(bytes) = client.download_file(&ns, &p_name, fname) {
                     let out_path = files_dir.join(fname);
                     let _ = fs::write(&out_path, bytes);
-                    OutputHandler::print_success(&format!("Downloaded '{}' to files/{}", fname, fname));
+                    OutputHandler::print_success(&format!(
+                        "Downloaded '{}' to files/{}",
+                        fname, fname
+                    ));
                 }
             }
         }
@@ -298,7 +346,10 @@ pub fn execute_hub_secret_pull(
 pub fn execute_hub_auto_save_status(manager: &WorkspaceManager) -> Result<(), String> {
     let (active, pid) = manager.is_auto_save_daemon_active();
     if active {
-        OutputHandler::print_success(&format!("Auto-save background daemon is ACTIVE (PID {})", pid.unwrap_or(0)));
+        OutputHandler::print_success(&format!(
+            "Auto-save background daemon is ACTIVE (PID {})",
+            pid.unwrap_or(0)
+        ));
     } else {
         OutputHandler::print_info("Auto-save background daemon is INACTIVE.");
     }
@@ -325,9 +376,14 @@ pub fn execute_hub_auto_save_stop(manager: &WorkspaceManager) -> Result<(), Stri
         return Ok(());
     }
     match manager.stop_auto_save_daemon() {
-        Ok(true) => OutputHandler::print_success(&format!("Stopped auto-save daemon (PID {})", pid.unwrap_or(0))),
-        _ => OutputHandler::print_err(&format!("Failed stopping auto-save daemon (PID {})", pid.unwrap_or(0))),
+        Ok(true) => OutputHandler::print_success(&format!(
+            "Stopped auto-save daemon (PID {})",
+            pid.unwrap_or(0)
+        )),
+        _ => OutputHandler::print_err(&format!(
+            "Failed stopping auto-save daemon (PID {})",
+            pid.unwrap_or(0)
+        )),
     }
     Ok(())
 }
-

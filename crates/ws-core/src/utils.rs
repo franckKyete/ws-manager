@@ -32,7 +32,10 @@ pub fn parse_duration(val: &str) -> u64 {
     }
 
     if let Some(caps) = DURATION_REGEX.captures(&s) {
-        let amount: f64 = caps.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0.0);
+        let amount: f64 = caps
+            .get(1)
+            .and_then(|m| m.as_str().parse().ok())
+            .unwrap_or(0.0);
         let unit = caps.get(2).map(|m| m.as_str()).unwrap_or("s");
 
         match unit {

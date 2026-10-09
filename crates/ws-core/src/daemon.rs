@@ -156,8 +156,7 @@ impl GlobalAutoSaveWorker {
                 );
             }
 
-            self.cache
-                .insert(p_str, serde_json::Value::Object(p_entry));
+            self.cache.insert(p_str, serde_json::Value::Object(p_entry));
         }
 
         if cache_updated {
@@ -238,10 +237,7 @@ pub fn start_standalone_daemon(detached: bool) -> Result<i32, WSError> {
 
     if detached {
         let log_file = get_daemon_log_file();
-        let log_out = File::options()
-            .create(true)
-            .append(true)
-            .open(&log_file)?;
+        let log_out = File::options().create(true).append(true).open(&log_file)?;
 
         let current_exe = std::env::current_exe()?;
         let child = std::process::Command::new(current_exe)

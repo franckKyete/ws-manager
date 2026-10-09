@@ -1,5 +1,5 @@
-use ws_core::WorkspaceManager;
 use crate::helpers::{clean_repo, resolve_ws_and_repo_args};
+use ws_core::WorkspaceManager;
 
 pub fn execute_repo_add(
     manager: &WorkspaceManager,
@@ -80,7 +80,9 @@ pub fn execute_repo_lock(
 ) -> Result<(), String> {
     let (ws_name, repo_name, _) = resolve_ws_and_repo_args(manager, name, repo, None, true, true)?;
     let r_name = repo_name.unwrap();
-    manager.lock_repo(&ws_name, &r_name).map_err(|e| e.to_string())
+    manager
+        .lock_repo(&ws_name, &r_name)
+        .map_err(|e| e.to_string())
 }
 
 pub fn execute_repo_unlock(
@@ -90,5 +92,7 @@ pub fn execute_repo_unlock(
 ) -> Result<(), String> {
     let (ws_name, repo_name, _) = resolve_ws_and_repo_args(manager, name, repo, None, true, true)?;
     let r_name = repo_name.unwrap();
-    manager.unlock_repo(&ws_name, &r_name).map_err(|e| e.to_string())
+    manager
+        .unlock_repo(&ws_name, &r_name)
+        .map_err(|e| e.to_string())
 }

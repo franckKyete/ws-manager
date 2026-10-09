@@ -35,7 +35,13 @@ pub fn execute_doctor(manager: &WorkspaceManager) -> Result<(), String> {
             } else {
                 "".white()
             };
-            println!("  {:12} : {} ({:?}){}", iface.name.bold(), iface.ip, iface.iface_type, w_badge);
+            println!(
+                "  {:12} : {} ({:?}){}",
+                iface.name.bold(),
+                iface.ip,
+                iface.iface_type,
+                w_badge
+            );
         }
     }
 
@@ -53,10 +59,21 @@ pub fn execute_doctor(manager: &WorkspaceManager) -> Result<(), String> {
 }
 
 pub fn execute_antigravity(manager: &WorkspaceManager) -> Result<(), String> {
-    println!("{}", "🚀 Google Antigravity Agent Workspace Diagnostic".bold().green());
+    println!(
+        "{}",
+        "🚀 Google Antigravity Agent Workspace Diagnostic"
+            .bold()
+            .green()
+    );
     println!("Workspace Manager version: {}", "0.1.0".cyan());
-    println!("Repositories active: {}", manager.config.repositories.len().to_string().yellow());
-    println!("Workspaces registered: {}", manager.list_workspaces().len().to_string().yellow());
+    println!(
+        "Repositories active: {}",
+        manager.config.repositories.len().to_string().yellow()
+    );
+    println!(
+        "Workspaces registered: {}",
+        manager.list_workspaces().len().to_string().yellow()
+    );
     OutputHandler::print_success("Antigravity engine nominal.");
     Ok(())
 }

@@ -1,6 +1,6 @@
+use crate::helpers::resolve_ws_and_repo_args;
 use ws_core::output::OutputHandler;
 use ws_core::WorkspaceManager;
-use crate::helpers::resolve_ws_and_repo_args;
 
 pub fn execute_env(
     manager: &mut WorkspaceManager,
@@ -20,7 +20,9 @@ pub fn execute_env(
             .map_err(|e| e.to_string())?;
         OutputHandler::print_setup_summary(&ws_name, &results);
     } else {
-        let (meta, _) = manager.get_workspace_info(&ws_name).map_err(|e| e.to_string())?;
+        let (meta, _) = manager
+            .get_workspace_info(&ws_name)
+            .map_err(|e| e.to_string())?;
         let target_repos: Vec<String> = if let Some(r) = target_repo {
             vec![r.to_string()]
         } else {

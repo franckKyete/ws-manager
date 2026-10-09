@@ -28,14 +28,15 @@ pub fn list_registered_projects(registry_path: Option<&Path>, prune_missing: boo
             let mut valid_paths = Vec::new();
             for p_str in &paths {
                 let p = PathBuf::from(p_str);
-                if p.is_dir() {
-                    valid_paths.push(p);
-                } else if !prune_missing {
+                if p.is_dir() || !prune_missing {
                     valid_paths.push(p);
                 }
             }
             if prune_missing && valid_paths.len() < paths.len() {
-                let save_list: Vec<String> = valid_paths.iter().map(|p| p.to_string_lossy().to_string()).collect();
+                let save_list: Vec<String> = valid_paths
+                    .iter()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .collect();
                 let _ = serde_json::to_string_pretty(&save_list).map(|s| fs::write(&reg_file, s));
             }
             result = valid_paths;
@@ -65,7 +66,10 @@ pub fn register_project(project_path: &Path, registry_path: Option<&Path>) -> bo
     }
 
     projects.push(abs_path);
-    let save_list: Vec<String> = projects.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let save_list: Vec<String> = projects
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
     if let Ok(json_str) = serde_json::to_string_pretty(&save_list) {
         fs::write(&reg_file, json_str).is_ok()
     } else {
@@ -92,7 +96,10 @@ pub fn unregister_project(project_path: &Path, registry_path: Option<&Path>) -> 
         return false;
     }
 
-    let save_list: Vec<String> = updated.iter().map(|p| p.to_string_lossy().to_string()).collect();
+    let save_list: Vec<String> = updated
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
     if let Ok(json_str) = serde_json::to_string_pretty(&save_list) {
         fs::write(&reg_file, json_str).is_ok()
     } else {

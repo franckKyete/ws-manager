@@ -6,7 +6,10 @@ pub struct TmuxLauncher;
 
 impl TmuxLauncher {
     pub fn is_available() -> bool {
-        Command::new("tmux").arg("-V").output().map_or(false, |o| o.status.success())
+        Command::new("tmux")
+            .arg("-V")
+            .output()
+            .is_ok_and(|o| o.status.success())
     }
 
     pub fn session_name(project_name: &str) -> String {
@@ -20,7 +23,7 @@ impl TmuxLauncher {
         Command::new("tmux")
             .args(["has-session", "-t", session_name])
             .output()
-            .map_or(false, |o| o.status.success())
+            .is_ok_and(|o| o.status.success())
     }
 
     pub fn is_window_active(session_name: &str, window_name: &str) -> bool {
@@ -57,7 +60,16 @@ impl TmuxLauncher {
         let cwd_str = cwd.to_string_lossy();
 
         if !Self::is_session_active(session_name) {
-            let mut args = vec!["new-session", "-d", "-s", session_name, "-n", window_name, "-c", &cwd_str];
+            let mut args = vec![
+                "new-session",
+                "-d",
+                "-s",
+                session_name,
+                "-n",
+                window_name,
+                "-c",
+                &cwd_str,
+            ];
             if let Some(cmd) = command {
                 args.push(cmd);
             }
@@ -70,7 +82,16 @@ impl TmuxLauncher {
             }
         } else if !Self::is_window_active(session_name, window_name) {
             let target = format!("{}:", session_name);
-            let mut args = vec!["new-window", "-d", "-t", &target, "-n", window_name, "-c", &cwd_str];
+            let mut args = vec![
+                "new-window",
+                "-d",
+                "-t",
+                &target,
+                "-n",
+                window_name,
+                "-c",
+                &cwd_str,
+            ];
             if let Some(cmd) = command {
                 args.push(cmd);
             }
@@ -86,9 +107,13 @@ impl TmuxLauncher {
         if switch {
             let target = format!("{}:{}", session_name, window_name);
             if std::env::var("TMUX").is_ok() {
-                let _ = Command::new("tmux").args(["switch-client", "-t", &target]).status();
+                let _ = Command::new("tmux")
+                    .args(["switch-client", "-t", &target])
+                    .status();
             } else {
-                let _ = Command::new("tmux").args(["select-window", "-t", &target]).status();
+                let _ = Command::new("tmux")
+                    .args(["select-window", "-t", &target])
+                    .status();
             }
         }
 
@@ -101,14 +126,18 @@ impl TmuxLauncher {
         }
         let target = format!("{}:{}", session_name, window_name);
         if std::env::var("TMUX").is_ok() {
-            let _ = Command::new("tmux").args(["select-window", "-t", &target]).status();
-            let _ = Command::new("tmux").args(["switch-client", "-t", &target]).status();
+            let _ = Command::new("tmux")
+                .args(["select-window", "-t", &target])
+                .status();
+            let _ = Command::new("tmux")
+                .args(["switch-client", "-t", &target])
+                .status();
             true
         } else {
             Command::new("tmux")
                 .args(["attach-session", "-t", &target])
                 .status()
-                .map_or(false, |s| s.success())
+                .is_ok_and(|s| s.success())
         }
     }
 
@@ -120,7 +149,7 @@ impl TmuxLauncher {
         Command::new("tmux")
             .args(["kill-window", "-t", &target])
             .output()
-            .map_or(false, |o| o.status.success())
+            .is_ok_and(|o| o.status.success())
     }
 
     pub fn kill_workspace(window_name: &str, project_name: Option<&str>) -> bool {
@@ -172,7 +201,9 @@ impl TmuxLauncher {
             return false;
         }
 
-        let _ = Command::new("tmux").args(["kill-session", "-t", session_name]).output();
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", session_name])
+            .output();
 
         let (_first_name, first_cmd, first_cwd, first_env) = &services[0];
         let cwd_str = first_cwd.to_string_lossy();
@@ -192,15 +223,19 @@ impl TmuxLauncher {
         let initial_shell = build_cmd(first_cmd, first_env);
         let status = Command::new("tmux")
             .args([
-                "new-session", "-d",
-                "-s", session_name,
-                "-n", window_name,
-                "-c", &cwd_str,
+                "new-session",
+                "-d",
+                "-s",
+                session_name,
+                "-n",
+                window_name,
+                "-c",
+                &cwd_str,
                 &initial_shell,
             ])
             .status();
 
-        if !status.map_or(false, |s| s.success()) {
+        if !status.is_ok_and(|s| s.success()) {
             return false;
         }
 
@@ -210,9 +245,12 @@ impl TmuxLauncher {
             let pane_shell = build_cmd(cmd, env);
             let _ = Command::new("tmux")
                 .args([
-                    "split-window", "-h",
-                    "-t", &target_window,
-                    "-c", &pane_cwd,
+                    "split-window",
+                    "-h",
+                    "-t",
+                    &target_window,
+                    "-c",
+                    &pane_cwd,
                     &pane_shell,
                 ])
                 .status();
@@ -255,18 +293,28 @@ impl TmuxLauncher {
             format!("{}:{}", project_name, workspace_name)
         };
         if std::env::var("TMUX").is_ok() {
-            let _ = Command::new("tmux").args(["select-window", "-t", &target]).status();
-            Command::new("tmux").args(["switch-client", "-t", &target]).status()
+            let _ = Command::new("tmux")
+                .args(["select-window", "-t", &target])
+                .status();
+            Command::new("tmux")
+                .args(["switch-client", "-t", &target])
+                .status()
         } else {
-            Command::new("tmux").args(["attach-session", "-t", &target]).status()
+            Command::new("tmux")
+                .args(["attach-session", "-t", &target])
+                .status()
         }
     }
 
     pub fn attach_session(session_name: &str) -> std::io::Result<std::process::ExitStatus> {
         if std::env::var("TMUX").is_ok() {
-            Command::new("tmux").args(["switch-client", "-t", session_name]).status()
+            Command::new("tmux")
+                .args(["switch-client", "-t", session_name])
+                .status()
         } else {
-            Command::new("tmux").args(["attach-session", "-t", session_name]).status()
+            Command::new("tmux")
+                .args(["attach-session", "-t", session_name])
+                .status()
         }
     }
 }
@@ -281,11 +329,16 @@ impl ZellijLauncher {
         _all_panes: bool,
         _ws_dir: &Path,
     ) -> std::io::Result<std::process::ExitStatus> {
-        Command::new("zellij").args(["attach", project_name]).status()
+        Command::new("zellij")
+            .args(["attach", project_name])
+            .status()
     }
 
     pub fn is_available() -> bool {
-        Command::new("zellij").arg("--version").output().map_or(false, |o| o.status.success())
+        Command::new("zellij")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
     }
 
     pub fn is_session_running(session_name: &str) -> bool {
@@ -312,7 +365,7 @@ impl ZellijLauncher {
         Command::new("zellij")
             .args(["kill-session", project_name])
             .output()
-            .map_or(false, |o| o.status.success())
+            .is_ok_and(|o| o.status.success())
     }
 
     pub fn generate_kdl_layout(
@@ -350,8 +403,13 @@ impl ZellijLauncher {
         let _ = std::fs::write(&layout_file, kdl);
 
         Command::new("zellij")
-            .args(["--session", project_name, "--layout", &layout_file.to_string_lossy()])
+            .args([
+                "--session",
+                project_name,
+                "--layout",
+                &layout_file.to_string_lossy(),
+            ])
             .status()
-            .map_or(false, |s| s.success())
+            .is_ok_and(|s| s.success())
     }
 }

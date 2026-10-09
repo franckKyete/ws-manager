@@ -65,8 +65,11 @@ fn main() {
             }
             return;
         }
-        Commands::InternalComplete { query_type, query_args } => {
-            let target = query_args.get(0).map(|s| s.as_str());
+        Commands::InternalComplete {
+            query_type,
+            query_args,
+        } => {
+            let target = query_args.first().map(|s| s.as_str());
             if let Err(e) = execute_internal_complete(query_type, target) {
                 OutputHandler::print_err(&e);
                 process::exit(1);
@@ -288,9 +291,10 @@ fn main() {
         Commands::Sync => execute_sync(&manager),
         Commands::Doctor => execute_doctor(&manager),
         Commands::Antigravity => execute_antigravity(&manager),
-        Commands::Clone { project, target_dir } => {
-            execute_hub_clone(&project, target_dir.as_deref())
-        }
+        Commands::Clone {
+            project,
+            target_dir,
+        } => execute_hub_clone(&project, target_dir.as_deref()),
         Commands::Hub(args) => match args.action {
             Some(HubAction::Login {
                 url,
@@ -305,9 +309,10 @@ fn main() {
             ),
             Some(HubAction::Whoami) => execute_hub_whoami(),
             Some(HubAction::Logout) => execute_hub_logout(),
-            Some(HubAction::Clone { project, target_dir }) => {
-                execute_hub_clone(&project, target_dir.as_deref())
-            }
+            Some(HubAction::Clone {
+                project,
+                target_dir,
+            }) => execute_hub_clone(&project, target_dir.as_deref()),
             Some(HubAction::Publish {
                 project,
                 description,
@@ -316,9 +321,7 @@ fn main() {
                 let _ = project;
                 execute_hub_push(&mut manager, Some(&message), false)
             }
-            Some(HubAction::Pull { project }) => {
-                execute_hub_pull(&mut manager, project.as_deref())
-            }
+            Some(HubAction::Pull { project }) => execute_hub_pull(&mut manager, project.as_deref()),
             Some(HubAction::Status { .. }) => execute_hub_status(&manager),
             Some(HubAction::Sync { project }) => execute_hub_sync(&mut manager, project.as_deref()),
             Some(HubAction::State { action }) => match action {
@@ -371,10 +374,9 @@ fn main() {
                     repo,
                     project: _,
                 } => execute_hub_secret_delete(&manager, &key, repo.as_deref()),
-                HubSecretAction::Upload {
-                    file_path,
-                    project,
-                } => execute_hub_secret_upload(&manager, &file_path, project.as_deref()),
+                HubSecretAction::Upload { file_path, project } => {
+                    execute_hub_secret_upload(&manager, &file_path, project.as_deref())
+                }
                 HubSecretAction::Pull { project } => {
                     execute_hub_secret_pull(&manager, project.as_deref())
                 }

@@ -1,7 +1,7 @@
+use crate::utils::{format_duration, get_iso_timestamp, parse_duration};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use serde::{Deserialize, Serialize};
-use crate::utils::{format_duration, get_iso_timestamp, parse_duration};
 
 pub fn is_secret_val(val: &str) -> bool {
     val.starts_with("secret:") || val.starts_with("vault:")
@@ -67,7 +67,11 @@ fn default_env_example() -> String {
 }
 
 impl RepoConfig {
-    pub fn new(name: impl Into<String>, bare: impl Into<PathBuf>, checkout: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        bare: impl Into<PathBuf>,
+        checkout: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             bare: bare.into(),
@@ -100,17 +104,22 @@ impl RepoConfig {
     }
 
     pub fn from_yaml_value(name: &str, val: &serde_yaml::Value) -> Result<Self, String> {
-        let mapping = val.as_mapping().ok_or_else(|| format!("Repo '{}' must be a mapping", name))?;
-        
-        let bare_str = mapping.get(&serde_yaml::Value::String("bare".to_string()))
+        let mapping = val
+            .as_mapping()
+            .ok_or_else(|| format!("Repo '{}' must be a mapping", name))?;
+
+        let bare_str = mapping
+            .get(serde_yaml::Value::String("bare".to_string()))
             .and_then(|v| v.as_str())
             .ok_or_else(|| format!("Repository '{}' missing required 'bare'", name))?;
-            
-        let checkout_str = mapping.get(&serde_yaml::Value::String("checkout".to_string()))
+
+        let checkout_str = mapping
+            .get(serde_yaml::Value::String("checkout".to_string()))
             .and_then(|v| v.as_str())
             .ok_or_else(|| format!("Repository '{}' missing required 'checkout'", name))?;
 
-        let url = mapping.get(&serde_yaml::Value::String("url".to_string()))
+        let url = mapping
+            .get(serde_yaml::Value::String("url".to_string()))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
@@ -119,7 +128,7 @@ impl RepoConfig {
         let mut private_env = HashMap::new();
 
         // 1. env block
-        if let Some(env_val) = mapping.get(&serde_yaml::Value::String("env".to_string())) {
+        if let Some(env_val) = mapping.get(serde_yaml::Value::String("env".to_string())) {
             if let Some(env_map) = env_val.as_mapping() {
                 for (k, v) in env_map {
                     let k_str = match k {
@@ -144,8 +153,10 @@ impl RepoConfig {
         }
 
         // 2. secret block
-        if let Some(secret_val) = mapping.get(&serde_yaml::Value::String("secret".to_string()))
-            .or_else(|| mapping.get(&serde_yaml::Value::String("secrets".to_string()))) {
+        if let Some(secret_val) = mapping
+            .get(serde_yaml::Value::String("secret".to_string()))
+            .or_else(|| mapping.get(serde_yaml::Value::String("secrets".to_string())))
+        {
             if let Some(sec_map) = secret_val.as_mapping() {
                 for (k, v) in sec_map {
                     if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
@@ -156,8 +167,10 @@ impl RepoConfig {
         }
 
         // 3. private block
-        if let Some(private_val) = mapping.get(&serde_yaml::Value::String("private".to_string()))
-            .or_else(|| mapping.get(&serde_yaml::Value::String("local_env".to_string()))) {
+        if let Some(private_val) = mapping
+            .get(serde_yaml::Value::String("private".to_string()))
+            .or_else(|| mapping.get(serde_yaml::Value::String("local_env".to_string())))
+        {
             if let Some(priv_map) = private_val.as_mapping() {
                 for (k, v) in priv_map {
                     if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
@@ -168,7 +181,7 @@ impl RepoConfig {
         }
 
         let mut ports_dict = HashMap::new();
-        if let Some(ports_val) = mapping.get(&serde_yaml::Value::String("ports".to_string())) {
+        if let Some(ports_val) = mapping.get(serde_yaml::Value::String("ports".to_string())) {
             if let Some(ports_map) = ports_val.as_mapping() {
                 for (k, v) in ports_map {
                     if let (Some(k_str), Some(v_num)) = (k.as_str(), v.as_u64()) {
@@ -178,7 +191,11 @@ impl RepoConfig {
             } else if let Some(ports_seq) = ports_val.as_sequence() {
                 for (idx, v) in ports_seq.iter().enumerate() {
                     if let Some(p) = v.as_u64() {
-                        let k_name = if idx == 0 { "default".to_string() } else { format!("port_{}", idx) };
+                        let k_name = if idx == 0 {
+                            "default".to_string()
+                        } else {
+                            format!("port_{}", idx)
+                        };
                         ports_dict.insert(k_name, p as u16);
                     }
                 }
@@ -187,37 +204,42 @@ impl RepoConfig {
             }
         }
 
-        let mut port_val = mapping.get(&serde_yaml::Value::String("port".to_string()))
+        let mut port_val = mapping
+            .get(serde_yaml::Value::String("port".to_string()))
             .and_then(|v| v.as_u64())
             .map(|p| p as u16);
 
         if let Some(p) = port_val {
-            if !ports_dict.contains_key("default") && ports_dict.is_empty() {
-                ports_dict.insert("default".to_string(), p);
-            } else if !ports_dict.contains_key("default") {
+            if !ports_dict.contains_key("default") {
                 ports_dict.insert("default".to_string(), p);
             }
-        } else if let Some(p) = ports_dict.get("default").or_else(|| ports_dict.values().next()) {
+        } else if let Some(p) = ports_dict
+            .get("default")
+            .or_else(|| ports_dict.values().next())
+        {
             port_val = Some(*p);
         }
 
-        let launch = mapping.get(&serde_yaml::Value::String("launch".to_string()))
-            .or_else(|| mapping.get(&serde_yaml::Value::String("command".to_string())))
+        let launch = mapping
+            .get(serde_yaml::Value::String("launch".to_string()))
+            .or_else(|| mapping.get(serde_yaml::Value::String("command".to_string())))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let env_file = mapping.get(&serde_yaml::Value::String("env_file".to_string()))
+        let env_file = mapping
+            .get(serde_yaml::Value::String("env_file".to_string()))
             .and_then(|v| v.as_str())
             .unwrap_or(".env")
             .to_string();
 
-        let env_example = mapping.get(&serde_yaml::Value::String("env_example".to_string()))
+        let env_example = mapping
+            .get(serde_yaml::Value::String("env_example".to_string()))
             .and_then(|v| v.as_str())
             .unwrap_or(".env.example")
             .to_string();
 
         let mut setup_list = Vec::new();
-        if let Some(setup_val) = mapping.get(&serde_yaml::Value::String("setup".to_string())) {
+        if let Some(setup_val) = mapping.get(serde_yaml::Value::String("setup".to_string())) {
             if let Some(s) = setup_val.as_str() {
                 setup_list.push(s.to_string());
             } else if let Some(seq) = setup_val.as_sequence() {
@@ -232,8 +254,10 @@ impl RepoConfig {
         }
 
         let mut copy_files = Vec::new();
-        if let Some(files_val) = mapping.get(&serde_yaml::Value::String("copy_files".to_string()))
-            .or_else(|| mapping.get(&serde_yaml::Value::String("files".to_string()))) {
+        if let Some(files_val) = mapping
+            .get(serde_yaml::Value::String("copy_files".to_string()))
+            .or_else(|| mapping.get(serde_yaml::Value::String("files".to_string())))
+        {
             if let Ok(json) = serde_json::to_value(files_val) {
                 if let Some(arr) = json.as_array() {
                     copy_files = arr.clone();
@@ -276,7 +300,12 @@ pub struct RepoSpec {
     pub frozen: bool,
     #[serde(default)]
     pub locked: bool,
-    #[serde(skip_serializing_if = "Option::is_none", alias = "base", alias = "target", alias = "from")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        alias = "base",
+        alias = "target",
+        alias = "from"
+    )]
     pub base_branch: Option<String>,
 }
 
@@ -285,7 +314,12 @@ fn default_true() -> bool {
 }
 
 impl RepoSpec {
-    pub fn new(name: impl Into<String>, branch: impl Into<String>, create: bool, path: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        branch: impl Into<String>,
+        create: bool,
+        path: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             branch: branch.into(),
@@ -339,7 +373,8 @@ impl WorkspaceMetadata {
 
     pub fn from_yaml_value(val: serde_yaml::Value) -> Result<Self, String> {
         let json_val = serde_json::to_value(val).map_err(|e| e.to_string())?;
-        let mut meta: WorkspaceMetadata = serde_json::from_value(json_val).map_err(|e| e.to_string())?;
+        let mut meta: WorkspaceMetadata =
+            serde_json::from_value(json_val).map_err(|e| e.to_string())?;
         meta.normalize();
         Ok(meta)
     }
@@ -384,26 +419,30 @@ impl TmuxConfig {
             });
         }
         if let Some(map) = val.as_mapping() {
-            let session = map.get(&serde_yaml::Value::String("session".to_string()))
-                .or_else(|| map.get(&serde_yaml::Value::String("session_name".to_string())))
-                .or_else(|| map.get(&serde_yaml::Value::String("name".to_string())))
+            let session = map
+                .get(serde_yaml::Value::String("session".to_string()))
+                .or_else(|| map.get(serde_yaml::Value::String("session_name".to_string())))
+                .or_else(|| map.get(serde_yaml::Value::String("name".to_string())))
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Tmux configuration must include 'session'".to_string())?
                 .trim()
                 .to_string();
 
-            let launch_session = map.get(&serde_yaml::Value::String("launch_session".to_string()))
-                .or_else(|| map.get(&serde_yaml::Value::String("launch".to_string())))
-                .or_else(|| map.get(&serde_yaml::Value::String("launch_name".to_string())))
+            let launch_session = map
+                .get(serde_yaml::Value::String("launch_session".to_string()))
+                .or_else(|| map.get(serde_yaml::Value::String("launch".to_string())))
+                .or_else(|| map.get(serde_yaml::Value::String("launch_name".to_string())))
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim().to_string());
 
-            let command = map.get(&serde_yaml::Value::String("command".to_string()))
-                .or_else(|| map.get(&serde_yaml::Value::String("cmd".to_string())))
+            let command = map
+                .get(serde_yaml::Value::String("command".to_string()))
+                .or_else(|| map.get(serde_yaml::Value::String("cmd".to_string())))
                 .and_then(|v| v.as_str())
                 .map(|s| s.trim().to_string());
 
-            let switch = map.get(&serde_yaml::Value::String("switch".to_string()))
+            let switch = map
+                .get(serde_yaml::Value::String("switch".to_string()))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
 
@@ -459,11 +498,12 @@ impl HubAutoSaveConfig {
             });
         }
         if let Some(map) = val.as_mapping() {
-            let mut enabled = map.get(&serde_yaml::Value::String("enabled".to_string()))
+            let mut enabled = map
+                .get(serde_yaml::Value::String("enabled".to_string()))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
 
-            let interval_raw = map.get(&serde_yaml::Value::String("interval".to_string()));
+            let interval_raw = map.get(serde_yaml::Value::String("interval".to_string()));
             let interval = if let Some(i_val) = interval_raw {
                 if let Some(n) = i_val.as_u64() {
                     n
@@ -480,15 +520,21 @@ impl HubAutoSaveConfig {
                 900
             };
 
-            let include_wip = map.get(&serde_yaml::Value::String("include_wip".to_string()))
+            let include_wip = map
+                .get(serde_yaml::Value::String("include_wip".to_string()))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
 
-            let workspaces = if let Some(ws_val) = map.get(&serde_yaml::Value::String("workspaces".to_string())) {
+            let workspaces = if let Some(ws_val) =
+                map.get(serde_yaml::Value::String("workspaces".to_string()))
+            {
                 if let Some(s) = ws_val.as_str() {
                     WorkspacesSelector::Mode(s.to_string())
                 } else if let Some(seq) = ws_val.as_sequence() {
-                    let list = seq.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect();
+                    let list = seq
+                        .iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                        .collect();
                     WorkspacesSelector::List(list)
                 } else {
                     WorkspacesSelector::Mode("all".to_string())
@@ -497,8 +543,9 @@ impl HubAutoSaveConfig {
                 WorkspacesSelector::Mode("all".to_string())
             };
 
-            let notify = map.get(&serde_yaml::Value::String("notify".to_string()))
-                .or_else(|| map.get(&serde_yaml::Value::String("notifications".to_string())))
+            let notify = map
+                .get(serde_yaml::Value::String("notify".to_string()))
+                .or_else(|| map.get(serde_yaml::Value::String("notifications".to_string())))
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
 
@@ -553,4 +600,3 @@ impl AppConfig {
         &self.project_root
     }
 }
-

@@ -1,8 +1,8 @@
-use std::fs;
-use std::path::{Path, PathBuf};
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::errors::{Result, WSError};
 
@@ -29,7 +29,9 @@ impl HubClient {
             .join(".config")
             .join("ws")
             .join("hub.yml");
-        let cfg_path = config_path.map(|p| p.to_path_buf()).unwrap_or(default_config);
+        let cfg_path = config_path
+            .map(|p| p.to_path_buf())
+            .unwrap_or(default_config);
 
         let (saved_url, saved_token) = Self::load_saved_config(&cfg_path);
 
@@ -65,8 +67,14 @@ impl HubClient {
         }
         if let Ok(content) = fs::read_to_string(path) {
             if let Ok(data) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
-                let url = data.get("url").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let token = data.get("token").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let url = data
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let token = data
+                    .get("token")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 return (url, token);
             }
         }
@@ -148,11 +156,12 @@ impl HubClient {
             details: None,
         })?;
 
-        let parsed_json: serde_json::Value = serde_json::from_slice(&resp_bytes)
-            .unwrap_or(serde_json::Value::Null);
+        let parsed_json: serde_json::Value =
+            serde_json::from_slice(&resp_bytes).unwrap_or(serde_json::Value::Null);
 
         if !status.is_success() {
-            let err_msg = parsed_json.get("message")
+            let err_msg = parsed_json
+                .get("message")
                 .or_else(|| parsed_json.get("error"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("Unknown server error")
@@ -168,13 +177,24 @@ impl HubClient {
         Ok(parsed_json)
     }
 
-    pub fn register(&self, username: &str, email: &str, password: &str) -> Result<serde_json::Value> {
+    pub fn register(
+        &self,
+        username: &str,
+        email: &str,
+        password: &str,
+    ) -> Result<serde_json::Value> {
         let body = serde_json::json!({
             "username": username,
             "email": email,
             "password": password,
         });
-        self.request(reqwest::Method::POST, "auth/register", Some(&body), None, None)
+        self.request(
+            reqwest::Method::POST,
+            "auth/register",
+            Some(&body),
+            None,
+            None,
+        )
     }
 
     pub fn login(&mut self, username_or_email: &str, password: &str) -> Result<serde_json::Value> {
@@ -184,7 +204,10 @@ impl HubClient {
         });
         let res = self.request(reqwest::Method::POST, "auth/login", Some(&body), None, None)?;
         if let Some(tok) = res.get("token").and_then(|t| t.as_str()) {
-            let user = res.get("user").and_then(|u| u.get("username")).and_then(|u| u.as_str());
+            let user = res
+                .get("user")
+                .and_then(|u| u.get("username"))
+                .and_then(|u| u.as_str());
             self.save_session(&self.base_url.clone(), tok, user)?;
         }
         Ok(res)
@@ -213,7 +236,13 @@ impl HubClient {
     }
 
     pub fn get_project(&self, namespace: &str, name: &str) -> Result<serde_json::Value> {
-        self.request(reqwest::Method::GET, &format!("projects/{}/{}", namespace, name), None, None, None)
+        self.request(
+            reqwest::Method::GET,
+            &format!("projects/{}/{}", namespace, name),
+            None,
+            None,
+            None,
+        )
     }
 
     pub fn list_projects(&self) -> Result<serde_json::Value> {
@@ -259,11 +288,23 @@ impl HubClient {
     }
 
     pub fn get_revisions(&self, namespace: &str, name: &str) -> Result<serde_json::Value> {
-        self.request(reqwest::Method::GET, &format!("projects/{}/{}/revisions", namespace, name), None, None, None)
+        self.request(
+            reqwest::Method::GET,
+            &format!("projects/{}/{}/revisions", namespace, name),
+            None,
+            None,
+            None,
+        )
     }
 
     pub fn list_secrets(&self, namespace: &str, name: &str) -> Result<serde_json::Value> {
-        self.request(reqwest::Method::GET, &format!("projects/{}/{}/secrets", namespace, name), None, None, None)
+        self.request(
+            reqwest::Method::GET,
+            &format!("projects/{}/{}/secrets", namespace, name),
+            None,
+            None,
+            None,
+        )
     }
 
     pub fn set_secret(
@@ -294,13 +335,16 @@ impl HubClient {
         name: &str,
         secrets: &[(String, String, Option<String>)], // (key, value, repo_name)
     ) -> Result<serde_json::Value> {
-        let list: Vec<_> = secrets.iter().map(|(k, v, r)| {
-            serde_json::json!({
-                "key": k,
-                "value": v,
-                "repoName": r,
+        let list: Vec<_> = secrets
+            .iter()
+            .map(|(k, v, r)| {
+                serde_json::json!({
+                    "key": k,
+                    "value": v,
+                    "repoName": r,
+                })
             })
-        }).collect();
+            .collect();
         let body = serde_json::json!({ "secrets": list });
         self.request(
             reqwest::Method::POST,
@@ -319,7 +363,10 @@ impl HubClient {
         repo_name: Option<&str>,
     ) -> Result<String> {
         let ep = if let Some(r) = repo_name {
-            format!("projects/{}/{}/secrets/{}?repoName={}", namespace, name, key, r)
+            format!(
+                "projects/{}/{}/secrets/{}?repoName={}",
+                namespace, name, key, r
+            )
         } else {
             format!("projects/{}/{}/secrets/{}", namespace, name, key)
         };
@@ -343,7 +390,10 @@ impl HubClient {
         repo_name: Option<&str>,
     ) -> Result<bool> {
         let ep = if let Some(r) = repo_name {
-            format!("projects/{}/{}/secrets/{}?repoName={}", namespace, name, key, r)
+            format!(
+                "projects/{}/{}/secrets/{}?repoName={}",
+                namespace, name, key, r
+            )
         } else {
             format!("projects/{}/{}/secrets/{}", namespace, name, key)
         };
@@ -352,7 +402,13 @@ impl HubClient {
     }
 
     pub fn list_files(&self, namespace: &str, name: &str) -> Result<serde_json::Value> {
-        self.request(reqwest::Method::GET, &format!("projects/{}/{}/files", namespace, name), None, None, None)
+        self.request(
+            reqwest::Method::GET,
+            &format!("projects/{}/{}/files", namespace, name),
+            None,
+            None,
+            None,
+        )
     }
 
     pub fn upload_file(
@@ -364,7 +420,10 @@ impl HubClient {
     ) -> Result<serde_json::Value> {
         let mut headers = HeaderMap::new();
         headers.insert("X-File-Path", HeaderValue::from_str(rel_file_path).unwrap());
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
 
         self.request(
             reqwest::Method::POST,
@@ -381,7 +440,10 @@ impl HubClient {
         name: &str,
         rel_file_path: &str,
     ) -> Result<Vec<u8>> {
-        let clean_ep = format!("projects/{}/{}/files/download?path={}", namespace, name, rel_file_path);
+        let clean_ep = format!(
+            "projects/{}/{}/files/download?path={}",
+            namespace, name, rel_file_path
+        );
         let url = format!("{}/api/v1/{}", self.base_url, clean_ep);
 
         let mut req = self.client.get(&url);
@@ -442,7 +504,13 @@ impl HubClient {
     }
 
     pub fn list_workspace_states(&self, namespace: &str, name: &str) -> Result<serde_json::Value> {
-        self.request(reqwest::Method::GET, &format!("projects/{}/{}/states", namespace, name), None, None, None)
+        self.request(
+            reqwest::Method::GET,
+            &format!("projects/{}/{}/states", namespace, name),
+            None,
+            None,
+            None,
+        )
     }
 }
 
@@ -451,4 +519,3 @@ impl Default for HubClient {
         Self::new(None, None, None)
     }
 }
-

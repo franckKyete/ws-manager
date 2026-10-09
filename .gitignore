@@ -37,3 +37,7 @@ repositories.yml
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Node dependencies
+node_modules/
+

@@ -11,10 +11,18 @@ pub struct Cli {
     #[arg(short = 'v', long = "verbose", help = "Enable debug log output")]
     pub verbose: bool,
 
-    #[arg(short = 'c', long = "config", help = "Path to repositories configuration file")]
+    #[arg(
+        short = 'c',
+        long = "config",
+        help = "Path to repositories configuration file"
+    )]
     pub config: Option<PathBuf>,
 
-    #[arg(short = 'w', long = "workspaces-dir", help = "Directory for storing workspaces (default: workspaces)")]
+    #[arg(
+        short = 'w',
+        long = "workspaces-dir",
+        help = "Directory for storing workspaces (default: workspaces)"
+    )]
     pub workspaces_dir: Option<PathBuf>,
 
     #[command(subcommand)]
@@ -24,7 +32,10 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Commands {
     // ==================== 1. Workspace Lifecycle ====================
-    #[command(alias = "new", about = "Create a workspace from parameters or YAML file")]
+    #[command(
+        alias = "new",
+        about = "Create a workspace from parameters or YAML file"
+    )]
     Create(CreateArgs),
 
     #[command(alias = "ls", about = "List all workspaces")]
@@ -65,7 +76,10 @@ pub enum Commands {
     Pull(PushPullArgs),
 
     // ==================== 3. Worktree & Repo Management ====================
-    #[command(alias = "workspace", about = "Manage repositories inside an existing workspace")]
+    #[command(
+        alias = "workspace",
+        about = "Manage repositories inside an existing workspace"
+    )]
     Repo(RepoCommandArgs),
 
     #[command(about = "Lock repository worktree (read-only)")]
@@ -188,7 +202,11 @@ pub enum Commands {
 
     #[command(about = "Manage or run global background daemon")]
     Daemon {
-        #[arg(long, default_value = "15", help = "Worker loop tick interval in seconds")]
+        #[arg(
+            long,
+            default_value = "15",
+            help = "Worker loop tick interval in seconds"
+        )]
         tick: u64,
         #[command(subcommand)]
         action: Option<DaemonAction>,
@@ -208,16 +226,30 @@ pub struct CreateArgs {
     #[arg(help = "Workspace name (@<name>)")]
     pub name: Option<String>,
 
-    #[arg(short = 'f', long = "file", help = "Path to workspace YAML configuration file")]
+    #[arg(
+        short = 'f',
+        long = "file",
+        help = "Path to workspace YAML configuration file"
+    )]
     pub file: Option<PathBuf>,
 
-    #[arg(long = "setup", help = "Run setup scripts and sync environment variables after creation")]
+    #[arg(
+        long = "setup",
+        help = "Run setup scripts and sync environment variables after creation"
+    )]
     pub setup: bool,
 
-    #[arg(long = "cmd", visible_alias = "command", help = "Command to run in workspace tmux window")]
+    #[arg(
+        long = "cmd",
+        visible_alias = "command",
+        help = "Command to run in workspace tmux window"
+    )]
     pub tmux_cmd: Option<String>,
 
-    #[arg(long = "no-tmux", help = "Skip creating a tmux window for this workspace")]
+    #[arg(
+        long = "no-tmux",
+        help = "Skip creating a tmux window for this workspace"
+    )]
     pub no_tmux: bool,
 
     #[arg(
@@ -237,16 +269,31 @@ pub struct EndArgs {
     #[arg(help = "Workspace name (@<name>)")]
     pub name: Option<String>,
 
-    #[arg(long = "no-merge", help = "Allow closing even if committed branches are not merged")]
+    #[arg(
+        long = "no-merge",
+        help = "Allow closing even if committed branches are not merged"
+    )]
     pub no_merge: bool,
 
-    #[arg(short = 'f', long = "force", help = "Force close regardless of uncommitted changes")]
+    #[arg(
+        short = 'f',
+        long = "force",
+        help = "Force close regardless of uncommitted changes"
+    )]
     pub force: bool,
 
-    #[arg(long = "delete-branch", help = "Also delete the Git branch from the bare repository store")]
+    #[arg(
+        long = "delete-branch",
+        help = "Also delete the Git branch from the bare repository store"
+    )]
     pub delete_branch: bool,
 
-    #[arg(short = 't', long = "target", visible_alias = "target-branch", help = "Target base branch")]
+    #[arg(
+        short = 't',
+        long = "target",
+        visible_alias = "target-branch",
+        help = "Target base branch"
+    )]
     pub target_branch: Option<String>,
 
     #[arg(long = "no-tmux", help = "Skip removing the workspace tmux window")]
@@ -291,7 +338,10 @@ pub struct RepoCommandArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum RepoAction {
-    #[command(alias = "add-repo", about = "Add a repository worktree to an existing workspace")]
+    #[command(
+        alias = "add-repo",
+        about = "Add a repository worktree to an existing workspace"
+    )]
     Add {
         name: Option<String>,
         repo: Option<String>,
@@ -306,12 +356,18 @@ pub enum RepoAction {
         #[arg(long = "delete-branch")]
         delete_branch: bool,
     },
-    #[command(alias = "freeze", about = "Lock repository worktree (mark files read-only)")]
+    #[command(
+        alias = "freeze",
+        about = "Lock repository worktree (mark files read-only)"
+    )]
     Lock {
         name: Option<String>,
         repo: Option<String>,
     },
-    #[command(alias = "unfreeze", about = "Unlock repository worktree (restore write permissions)")]
+    #[command(
+        alias = "unfreeze",
+        about = "Unlock repository worktree (restore write permissions)"
+    )]
     Unlock {
         name: Option<String>,
         repo: Option<String>,
@@ -329,10 +385,17 @@ pub struct StartArgs {
     #[arg(long = "all", help = "Start all services in workspace")]
     pub all: bool,
 
-    #[arg(long = "repos", visible_alias = "only", help = "Comma-separated list of services")]
+    #[arg(
+        long = "repos",
+        visible_alias = "only",
+        help = "Comma-separated list of services"
+    )]
     pub repos_flag: Option<String>,
 
-    #[arg(long = "attach", help = "Focus or connect directly to a single service")]
+    #[arg(
+        long = "attach",
+        help = "Focus or connect directly to a single service"
+    )]
     pub attach: Option<String>,
 
     #[arg(long = "tmux", help = "Launch in tmux session")]
@@ -341,16 +404,32 @@ pub struct StartArgs {
     #[arg(short = 'z', long = "zellij", help = "Launch in Zellij session")]
     pub zellij: bool,
 
-    #[arg(short = 't', long = "terminal", help = "Launch in separate terminal windows/tabs")]
+    #[arg(
+        short = 't',
+        long = "terminal",
+        help = "Launch in separate terminal windows/tabs"
+    )]
     pub terminal: bool,
 
-    #[arg(long = "stream", help = "Stream raw stdout/stderr without interactive TUI")]
+    #[arg(
+        long = "stream",
+        help = "Stream raw stdout/stderr without interactive TUI"
+    )]
     pub stream: bool,
 
-    #[arg(short = 'd', long = "daemon", visible_alias = "background", help = "Launch detached in background daemon")]
+    #[arg(
+        short = 'd',
+        long = "daemon",
+        visible_alias = "background",
+        help = "Launch detached in background daemon"
+    )]
     pub daemon: bool,
 
-    #[arg(short = 's', long = "switch", help = "Zero-downtime switch to target presentation engine")]
+    #[arg(
+        short = 's',
+        long = "switch",
+        help = "Zero-downtime switch to target presentation engine"
+    )]
     pub switch: bool,
 
     #[arg(short = 'm', long = "mode", help = "Multiplexer/UI mode")]
@@ -359,7 +438,11 @@ pub struct StartArgs {
     #[arg(long = "interface", visible_aliases = ["iface", "lan-interface"], help = "Network interface name or type")]
     pub interface: Option<String>,
 
-    #[arg(long = "ip", visible_alias = "lan-ip", help = "Explicit host LAN IP override")]
+    #[arg(
+        long = "ip",
+        visible_alias = "lan-ip",
+        help = "Explicit host LAN IP override"
+    )]
     pub lan_ip: Option<String>,
 }
 
@@ -374,7 +457,11 @@ pub struct AttachArgs {
     #[arg(long = "all", help = "Attach in multi-pane grid view")]
     pub all: bool,
 
-    #[arg(short = 's', long = "switch", help = "Zero-downtime switch presentation engine")]
+    #[arg(
+        short = 's',
+        long = "switch",
+        help = "Zero-downtime switch presentation engine"
+    )]
     pub switch: bool,
 
     #[arg(long = "tmux", help = "Attach using tmux backend")]
@@ -398,7 +485,12 @@ pub struct LogsArgs {
     #[arg(short = 'f', long = "follow", help = "Follow log output")]
     pub follow: bool,
 
-    #[arg(short = 'n', long = "lines", default_value = "50", help = "Number of lines to display")]
+    #[arg(
+        short = 'n',
+        long = "lines",
+        default_value = "50",
+        help = "Number of lines to display"
+    )]
     pub lines: usize,
 }
 
@@ -410,13 +502,20 @@ pub struct EnvArgs {
     #[arg(help = "Repository name (%<repo>)")]
     pub repo: Option<String>,
 
-    #[arg(long = "sync", help = "Sync resolved environment variables into worktree .env files")]
+    #[arg(
+        long = "sync",
+        help = "Sync resolved environment variables into worktree .env files"
+    )]
     pub sync: bool,
 
     #[arg(long = "interface", visible_aliases = ["iface", "lan-interface"], help = "Network interface name or type")]
     pub interface: Option<String>,
 
-    #[arg(long = "ip", visible_alias = "lan-ip", help = "Explicit host LAN IP override")]
+    #[arg(
+        long = "ip",
+        visible_alias = "lan-ip",
+        help = "Explicit host LAN IP override"
+    )]
     pub lan_ip: Option<String>,
 }
 
@@ -431,19 +530,30 @@ pub struct SetupArgs {
     #[arg(long = "all", help = "Setup all repositories in the workspace")]
     pub all: bool,
 
-    #[arg(long = "repos", visible_alias = "only", help = "Comma-separated list of repository names to setup")]
+    #[arg(
+        long = "repos",
+        visible_alias = "only",
+        help = "Comma-separated list of repository names to setup"
+    )]
     pub repos_flag: Option<String>,
 
     #[arg(long = "dry-run", help = "Print setup commands without executing them")]
     pub dry_run: bool,
 
-    #[arg(long = "skip-scripts", help = "Only sync environment variables without running setup scripts")]
+    #[arg(
+        long = "skip-scripts",
+        help = "Only sync environment variables without running setup scripts"
+    )]
     pub skip_scripts: bool,
 
     #[arg(long = "interface", visible_aliases = ["iface", "lan-interface"], help = "Network interface name or type")]
     pub interface: Option<String>,
 
-    #[arg(long = "ip", visible_alias = "lan-ip", help = "Explicit host LAN IP override")]
+    #[arg(
+        long = "ip",
+        visible_alias = "lan-ip",
+        help = "Explicit host LAN IP override"
+    )]
     pub lan_ip: Option<String>,
 }
 
@@ -456,13 +566,9 @@ pub struct ProjectCommandArgs {
 #[derive(Subcommand, Debug)]
 pub enum ProjectAction {
     #[command(about = "Initialize project and clone bare repositories")]
-    Init {
-        urls: Vec<String>,
-    },
+    Init { urls: Vec<String> },
     #[command(about = "Add and clone a new bare repository")]
-    Add {
-        url: String,
-    },
+    Add { url: String },
     #[command(about = "Fetch updates in all bare repositories")]
     Fetch,
     #[command(about = "Sync and prune worktrees")]
@@ -470,13 +576,9 @@ pub enum ProjectAction {
     #[command(alias = "ls", about = "List all registered projects")]
     List,
     #[command(about = "Register a project in the global registry")]
-    Register {
-        path: Option<PathBuf>,
-    },
+    Register { path: Option<PathBuf> },
     #[command(about = "Unregister a project from the global registry")]
-    Unregister {
-        path: Option<PathBuf>,
-    },
+    Unregister { path: Option<PathBuf> },
 }
 
 #[derive(Args, Debug)]
@@ -548,7 +650,10 @@ pub enum HubAction {
         #[arg(long = "no-wip")]
         no_wip: bool,
     },
-    #[command(alias = "autosave", about = "Manage periodic automatic workspace saving to wshub")]
+    #[command(
+        alias = "autosave",
+        about = "Manage periodic automatic workspace saving to wshub"
+    )]
     AutoSave {
         #[command(subcommand)]
         action: Option<HubAutoSaveAction>,

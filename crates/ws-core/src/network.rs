@@ -62,7 +62,10 @@ pub fn list_network_interfaces() -> Vec<NetworkInterface> {
     let mut seen_ifaces = HashSet::new();
 
     // 1. Run 'ip -4 -o addr show' on Linux
-    if let Ok(out) = Command::new("ip").args(&["-4", "-o", "addr", "show"]).output() {
+    if let Ok(out) = Command::new("ip")
+        .args(["-4", "-o", "addr", "show"])
+        .output()
+    {
         if out.status.success() {
             let stdout = String::from_utf8_lossy(&out.stdout);
             for line in stdout.lines() {
@@ -72,7 +75,10 @@ pub fn list_network_interfaces() -> Vec<NetworkInterface> {
                     let ip_with_mask = parts[3];
                     let ip = ip_with_mask.split('/').next().unwrap_or("");
 
-                    if ip.starts_with("127.") || ip.starts_with("169.254.") || is_virtual_docker_ip(ip) {
+                    if ip.starts_with("127.")
+                        || ip.starts_with("169.254.")
+                        || is_virtual_docker_ip(ip)
+                    {
                         continue;
                     }
                     if iface.starts_with("docker")
@@ -132,11 +138,17 @@ pub fn get_lan_ip(preferred_interface: Option<&str>) -> String {
     if let Some(pref) = preferred_interface {
         let p_lower = pref.to_lowercase();
         if p_lower == "wifi" || p_lower == "wlan" || p_lower == "wireless" {
-            if let Some(iface) = ifaces.iter().find(|i| i.iface_type == InterfaceType::Wireless) {
+            if let Some(iface) = ifaces
+                .iter()
+                .find(|i| i.iface_type == InterfaceType::Wireless)
+            {
                 return iface.ip.clone();
             }
         } else if p_lower == "eth" || p_lower == "ethernet" {
-            if let Some(iface) = ifaces.iter().find(|i| i.iface_type == InterfaceType::Ethernet) {
+            if let Some(iface) = ifaces
+                .iter()
+                .find(|i| i.iface_type == InterfaceType::Ethernet)
+            {
                 return iface.ip.clone();
             }
         } else if let Some(iface) = ifaces.iter().find(|i| i.name.to_lowercase() == p_lower) {
@@ -252,7 +264,9 @@ pub fn allocate_workspace_ports(
             } else if b_port > 0 {
                 b_port.saturating_add(slot.saturating_mul(10))
             } else {
-                8000u16.saturating_add(slot.saturating_mul(10)).saturating_add(global_port_idx)
+                8000u16
+                    .saturating_add(slot.saturating_mul(10))
+                    .saturating_add(global_port_idx)
             };
             global_port_idx = global_port_idx.saturating_add(1);
 
@@ -271,7 +285,11 @@ pub fn allocate_workspace_ports(
             allocated.insert(format!("{}:{}", r_name, sub_idx), live_port);
         }
 
-        if let Some((_, primary_port)) = repo_allocated_ports.iter().find(|(k, _)| k == "default").or_else(|| repo_allocated_ports.first()) {
+        if let Some((_, primary_port)) = repo_allocated_ports
+            .iter()
+            .find(|(k, _)| k == "default")
+            .or_else(|| repo_allocated_ports.first())
+        {
             allocated.insert(r_name, *primary_port);
         }
     }

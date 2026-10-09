@@ -88,12 +88,15 @@ impl ConfigLoader {
 
         if let Some(ref fp) = file_path {
             let content = fs::read_to_string(fp)?;
-            let doc: serde_yaml::Value = serde_yaml::from_str(&content)
-                .map_err(|e| WSError::Config(format!("Failed to parse YAML '{}': {}", fp.display(), e)))?;
+            let doc: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|e| {
+                WSError::Config(format!("Failed to parse YAML '{}': {}", fp.display(), e))
+            })?;
 
             if let Some(map) = doc.as_mapping() {
                 // 1. Repositories
-                if let Some(repos_val) = map.get(&serde_yaml::Value::String("repositories".to_string())) {
+                if let Some(repos_val) =
+                    map.get(serde_yaml::Value::String("repositories".to_string()))
+                {
                     if let Some(repos_map) = repos_val.as_mapping() {
                         for (k, v) in repos_map {
                             if let Some(r_name) = k.as_str() {
@@ -106,14 +109,16 @@ impl ConfigLoader {
                 }
 
                 // 2. Global env
-                if let Some(env_val) = map.get(&serde_yaml::Value::String("env".to_string())) {
+                if let Some(env_val) = map.get(serde_yaml::Value::String("env".to_string())) {
                     if let Some(env_map) = env_val.as_mapping() {
                         for (k, v) in env_map {
                             if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
                                 if is_secret_val(v_str) {
-                                    global_secret_env.insert(k_str.to_string(), clean_env_val(v_str));
+                                    global_secret_env
+                                        .insert(k_str.to_string(), clean_env_val(v_str));
                                 } else if is_private_val(v_str) {
-                                    global_private_env.insert(k_str.to_string(), clean_env_val(v_str));
+                                    global_private_env
+                                        .insert(k_str.to_string(), clean_env_val(v_str));
                                 } else {
                                     global_env.insert(k_str.to_string(), clean_env_val(v_str));
                                 }
@@ -123,8 +128,10 @@ impl ConfigLoader {
                 }
 
                 // 3. Global secret
-                if let Some(sec_val) = map.get(&serde_yaml::Value::String("secret".to_string()))
-                    .or_else(|| map.get(&serde_yaml::Value::String("secrets".to_string()))) {
+                if let Some(sec_val) = map
+                    .get(serde_yaml::Value::String("secret".to_string()))
+                    .or_else(|| map.get(serde_yaml::Value::String("secrets".to_string())))
+                {
                     if let Some(sec_map) = sec_val.as_mapping() {
                         for (k, v) in sec_map {
                             if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
@@ -143,8 +150,10 @@ impl ConfigLoader {
                 }
 
                 // 4. Global private
-                if let Some(priv_val) = map.get(&serde_yaml::Value::String("private".to_string()))
-                    .or_else(|| map.get(&serde_yaml::Value::String("local_env".to_string()))) {
+                if let Some(priv_val) = map
+                    .get(serde_yaml::Value::String("private".to_string()))
+                    .or_else(|| map.get(serde_yaml::Value::String("local_env".to_string())))
+                {
                     if let Some(priv_map) = priv_val.as_mapping() {
                         for (k, v) in priv_map {
                             if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
@@ -155,7 +164,8 @@ impl ConfigLoader {
                 }
 
                 // 5. Dynamic env
-                if let Some(dyn_val) = map.get(&serde_yaml::Value::String("dynamic_env".to_string())) {
+                if let Some(dyn_val) = map.get(serde_yaml::Value::String("dynamic_env".to_string()))
+                {
                     if let Some(dyn_map) = dyn_val.as_mapping() {
                         for (k, v) in dyn_map {
                             if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
@@ -166,7 +176,7 @@ impl ConfigLoader {
                 }
 
                 // 6. Setup scripts
-                if let Some(setup_val) = map.get(&serde_yaml::Value::String("setup".to_string())) {
+                if let Some(setup_val) = map.get(serde_yaml::Value::String("setup".to_string())) {
                     if let Some(s) = setup_val.as_str() {
                         global_setup.push(s.to_string());
                     } else if let Some(seq) = setup_val.as_sequence() {
@@ -181,8 +191,10 @@ impl ConfigLoader {
                 }
 
                 // 7. Copy files
-                if let Some(cf_val) = map.get(&serde_yaml::Value::String("copy_files".to_string()))
-                    .or_else(|| map.get(&serde_yaml::Value::String("files".to_string()))) {
+                if let Some(cf_val) = map
+                    .get(serde_yaml::Value::String("copy_files".to_string()))
+                    .or_else(|| map.get(serde_yaml::Value::String("files".to_string())))
+                {
                     if let Ok(json) = serde_json::to_value(cf_val) {
                         if let Some(arr) = json.as_array() {
                             global_copy_files = arr.clone();
@@ -193,8 +205,10 @@ impl ConfigLoader {
                 }
 
                 // 8. Tmux
-                if let Some(tmux_val) = map.get(&serde_yaml::Value::String("tmux".to_string()))
-                    .or_else(|| map.get(&serde_yaml::Value::String("tmux_session".to_string()))) {
+                if let Some(tmux_val) = map
+                    .get(serde_yaml::Value::String("tmux".to_string()))
+                    .or_else(|| map.get(serde_yaml::Value::String("tmux_session".to_string())))
+                {
                     let tc = TmuxConfig::from_value(tmux_val).map_err(WSError::Config)?;
                     if let Some(ref launch) = tc.launch_session {
                         if &tc.session == launch {
@@ -208,17 +222,20 @@ impl ConfigLoader {
                 }
 
                 // 9. Hub block
-                if let Some(h_val) = map.get(&serde_yaml::Value::String("hub".to_string())) {
+                if let Some(h_val) = map.get(serde_yaml::Value::String("hub".to_string())) {
                     if let Ok(json) = serde_json::to_value(h_val) {
                         hub_val = json;
                     }
                     if let Some(h_map) = h_val.as_mapping() {
-                        hub_project = h_map.get(&serde_yaml::Value::String("project".to_string()))
-                            .or_else(|| h_map.get(&serde_yaml::Value::String("name".to_string())))
+                        hub_project = h_map
+                            .get(serde_yaml::Value::String("project".to_string()))
+                            .or_else(|| h_map.get(serde_yaml::Value::String("name".to_string())))
                             .and_then(|v| v.as_str())
                             .map(|s| s.to_string());
 
-                        if let Some(as_val) = h_map.get(&serde_yaml::Value::String("auto_save".to_string())) {
+                        if let Some(as_val) =
+                            h_map.get(serde_yaml::Value::String("auto_save".to_string()))
+                        {
                             if let Ok(as_cfg) = HubAutoSaveConfig::from_value(as_val) {
                                 hub_auto_save = Some(as_cfg);
                             }
@@ -228,7 +245,9 @@ impl ConfigLoader {
 
                 // 10. Fallback root auto_save
                 if hub_auto_save.is_none() {
-                    if let Some(as_val) = map.get(&serde_yaml::Value::String("auto_save".to_string())) {
+                    if let Some(as_val) =
+                        map.get(serde_yaml::Value::String("auto_save".to_string()))
+                    {
                         if let Ok(as_cfg) = HubAutoSaveConfig::from_value(as_val) {
                             hub_auto_save = Some(as_cfg);
                         }
@@ -243,7 +262,7 @@ impl ConfigLoader {
                 if let Ok(entries) = fs::read_dir(&bares_dir) {
                     for entry in entries.flatten() {
                         let p = entry.path();
-                        if p.is_dir() && p.extension().map_or(false, |e| e == "git") {
+                        if p.is_dir() && p.extension().is_some_and(|e| e == "git") {
                             bare_dirs.push(p);
                         }
                     }
@@ -253,7 +272,7 @@ impl ConfigLoader {
                 if let Ok(entries) = fs::read_dir(&project_root) {
                     for entry in entries.flatten() {
                         let p = entry.path();
-                        if p.is_dir() && p.extension().map_or(false, |e| e == "git") {
+                        if p.is_dir() && p.extension().is_some_and(|e| e == "git") {
                             bare_dirs.push(p);
                         }
                     }
@@ -268,10 +287,7 @@ impl ConfigLoader {
                     stem.clone()
                 };
                 let key = repo_name.to_lowercase();
-                repos.insert(
-                    key.clone(),
-                    RepoConfig::new(key, bare, repo_name),
-                );
+                repos.insert(key.clone(), RepoConfig::new(key, bare, repo_name));
             }
         }
 
@@ -310,10 +326,14 @@ impl ConfigLoader {
         })
     }
 
-
     pub fn classify_project_assets(
         app_config: &AppConfig,
-    ) -> (String, HashMap<String, HashMap<String, String>>, Vec<PathBuf>, usize) {
+    ) -> (
+        String,
+        HashMap<String, HashMap<String, String>>,
+        Vec<PathBuf>,
+        usize,
+    ) {
         let mut extracted_secrets: HashMap<String, HashMap<String, String>> = HashMap::new();
         let mut private_vars_count = 0;
 
@@ -333,9 +353,16 @@ impl ConfigLoader {
 
                 if !r_cfg.secret_env.is_empty() {
                     extracted_secrets.insert(r_name.clone(), r_cfg.secret_env.clone());
-                    let mut env_map = map.get("env").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+                    let mut env_map = map
+                        .get("env")
+                        .and_then(|v| v.as_object())
+                        .cloned()
+                        .unwrap_or_default();
                     for s_key in r_cfg.secret_env.keys() {
-                        env_map.insert(s_key.clone(), serde_json::Value::String("secret".to_string()));
+                        env_map.insert(
+                            s_key.clone(),
+                            serde_json::Value::String("secret".to_string()),
+                        );
                     }
                     map.insert("env".to_string(), serde_json::Value::Object(env_map));
                 }
@@ -351,7 +378,10 @@ impl ConfigLoader {
                 env_map.insert(k.clone(), serde_json::Value::String(v.clone()));
             }
             for s_key in app_config.secret_env.keys() {
-                env_map.insert(s_key.clone(), serde_json::Value::String("secret".to_string()));
+                env_map.insert(
+                    s_key.clone(),
+                    serde_json::Value::String("secret".to_string()),
+                );
             }
             sanitized_data.insert("env".to_string(), serde_json::Value::Object(env_map));
         }
@@ -375,7 +405,10 @@ impl ConfigLoader {
             );
         }
         if let Some(ref tc) = app_config.tmux {
-            sanitized_data.insert("tmux".to_string(), serde_json::to_value(tc).unwrap_or_default());
+            sanitized_data.insert(
+                "tmux".to_string(),
+                serde_json::to_value(tc).unwrap_or_default(),
+            );
         }
 
         let mut hub_map = if let Some(obj) = app_config.hub.as_object() {
@@ -413,7 +446,12 @@ impl ConfigLoader {
             }
         }
 
-        (sanitized_yaml, extracted_secrets, files_to_upload, private_vars_count)
+        (
+            sanitized_yaml,
+            extracted_secrets,
+            files_to_upload,
+            private_vars_count,
+        )
     }
 
     pub fn update_hub_config(
@@ -424,7 +462,8 @@ impl ConfigLoader {
     ) -> Result<()> {
         let mut data: serde_yaml::Value = if config_path.is_file() {
             let s = fs::read_to_string(config_path)?;
-            serde_yaml::from_str(&s).unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
+            serde_yaml::from_str(&s)
+                .unwrap_or(serde_yaml::Value::Mapping(serde_yaml::Mapping::new()))
         } else {
             serde_yaml::Value::Mapping(serde_yaml::Mapping::new())
         };
@@ -435,7 +474,8 @@ impl ConfigLoader {
 
         let map = data.as_mapping_mut().unwrap();
         let hub_key = serde_yaml::Value::String("hub".to_string());
-        let mut hub_map = map.get(&hub_key)
+        let mut hub_map = map
+            .get(&hub_key)
             .and_then(|v| v.as_mapping())
             .cloned()
             .unwrap_or_default();
@@ -458,17 +498,14 @@ impl ConfigLoader {
         if let Some(as_cfg) = hub_auto_save {
             let json_map = as_cfg.to_map(true);
             if let Ok(yaml_val) = serde_yaml::to_value(json_map) {
-                hub_map.insert(
-                    serde_yaml::Value::String("auto_save".to_string()),
-                    yaml_val,
-                );
+                hub_map.insert(serde_yaml::Value::String("auto_save".to_string()), yaml_val);
             }
         }
 
         map.insert(hub_key, serde_yaml::Value::Mapping(hub_map));
 
-        let updated_str = serde_yaml::to_string(&data)
-            .map_err(|e| WSError::Config(e.to_string()))?;
+        let updated_str =
+            serde_yaml::to_string(&data).map_err(|e| WSError::Config(e.to_string()))?;
         fs::write(config_path, updated_str)?;
         Ok(())
     }
@@ -486,7 +523,10 @@ impl ConfigLoader {
 
         let mut data = serde_yaml::Mapping::new();
         let repos_yaml = serde_yaml::to_value(repositories)?;
-        data.insert(serde_yaml::Value::String("repositories".to_string()), repos_yaml);
+        data.insert(
+            serde_yaml::Value::String("repositories".to_string()),
+            repos_yaml,
+        );
 
         if let Some(t) = tmux {
             let t_yaml = serde_yaml::to_value(t)?;
@@ -504,10 +544,7 @@ impl ConfigLoader {
             if let Some(a) = hub_auto_save {
                 let json_map = a.to_map(true);
                 let yaml_val = serde_yaml::to_value(json_map)?;
-                hub_map.insert(
-                    serde_yaml::Value::String("auto_save".to_string()),
-                    yaml_val,
-                );
+                hub_map.insert(serde_yaml::Value::String("auto_save".to_string()), yaml_val);
             }
             data.insert(
                 serde_yaml::Value::String("hub".to_string()),
@@ -523,4 +560,3 @@ impl ConfigLoader {
         Ok(path)
     }
 }
-

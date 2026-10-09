@@ -1,8 +1,8 @@
+use crate::helpers::{clean_repo, clean_workspace};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use ws_core::models::{RepoConfig, RepoSpec};
 use ws_core::WorkspaceManager;
-use crate::helpers::{clean_repo, clean_workspace};
 
 pub fn parse_create_workspace_args(
     workspace_name: &str,
@@ -10,7 +10,8 @@ pub fn parse_create_workspace_args(
     repositories: &HashMap<String, RepoConfig>,
     target_branch: Option<&str>,
 ) -> Result<Vec<RepoSpec>, String> {
-    let clean_ws = clean_workspace(Some(workspace_name)).unwrap_or_else(|| workspace_name.to_string());
+    let clean_ws =
+        clean_workspace(Some(workspace_name)).unwrap_or_else(|| workspace_name.to_string());
     let mut global_existing = false;
     let mut include_all = false;
     let mut selected_repos: Option<HashSet<String>> = None;
@@ -27,7 +28,10 @@ pub fn parse_create_workspace_args(
             continue;
         } else if arg == "--repos" || arg == "--only" {
             if idx + 1 >= raw_args.len() {
-                return Err(format!("Option '{}' requires a comma-separated list of repository names", arg));
+                return Err(format!(
+                    "Option '{}' requires a comma-separated list of repository names",
+                    arg
+                ));
             }
             let repos_str = &raw_args[idx + 1];
             let set: HashSet<String> = repos_str
@@ -39,7 +43,7 @@ pub fn parse_create_workspace_args(
             idx += 2;
             continue;
         } else if arg.starts_with("--repos=") || arg.starts_with("--only=") {
-            let repos_str = arg.splitn(2, '=').nth(1).unwrap();
+            let repos_str = arg.split_once('=').unwrap().1;
             let set: HashSet<String> = repos_str
                 .split(',')
                 .filter(|r| !r.trim().is_empty())
@@ -56,7 +60,12 @@ pub fn parse_create_workspace_args(
             global_existing = false;
             idx += 1;
             continue;
-        } else if arg == "--target" || arg == "--target-branch" || arg == "--base" || arg == "--from" || arg == "-t" {
+        } else if arg == "--target"
+            || arg == "--target-branch"
+            || arg == "--base"
+            || arg == "--from"
+            || arg == "-t"
+        {
             if idx + 1 >= raw_args.len() {
                 return Err(format!("Option '{}' requires a branch argument", arg));
             }
@@ -68,7 +77,7 @@ pub fn parse_create_workspace_args(
             || arg.starts_with("--base=")
             || arg.starts_with("--from=")
         {
-            target_branch = Some(arg.splitn(2, '=').nth(1).unwrap().to_string());
+            target_branch = Some(arg.split_once('=').unwrap().1.to_string());
             idx += 1;
             continue;
         } else if arg == "--no-tmux" {
@@ -233,7 +242,10 @@ pub fn parse_create_workspace_args(
                 break;
             } else if arg == &exist_flag {
                 if idx + 1 >= raw_args.len() {
-                    return Err(format!("Option '{}' requires a branch argument", exist_flag));
+                    return Err(format!(
+                        "Option '{}' requires a branch argument",
+                        exist_flag
+                    ));
                 }
                 let branch_name = &raw_args[idx + 1];
                 let mut spec = RepoSpec::new(
@@ -249,7 +261,10 @@ pub fn parse_create_workspace_args(
                 break;
             } else if arg == &plain_flag {
                 if idx + 1 >= raw_args.len() {
-                    return Err(format!("Option '{}' requires a branch argument", plain_flag));
+                    return Err(format!(
+                        "Option '{}' requires a branch argument",
+                        plain_flag
+                    ));
                 }
                 let branch_name = &raw_args[idx + 1];
                 let mut spec = RepoSpec::new(
@@ -311,12 +326,7 @@ pub fn parse_create_workspace_args(
             } else {
                 (format!("feature/{}", clean_ws), true)
             };
-            let mut spec = RepoSpec::new(
-                &repo_name,
-                &branch_name,
-                create,
-                &repo_cfg.checkout,
-            );
+            let mut spec = RepoSpec::new(&repo_name, &branch_name, create, &repo_cfg.checkout);
             spec.base_branch = target_branch.clone();
             final_specs.push(spec);
         }
@@ -345,10 +355,14 @@ pub fn execute_create(
         return Ok(());
     }
 
-    let ws_name = match name {
-        Some(n) => clean_workspace(Some(n)).unwrap(),
-        None => return Err("Workspace name (@<name>) is required for 'ws create' unless '-f/--file' is used.".to_string()),
-    };
+    let ws_name =
+        match name {
+            Some(n) => clean_workspace(Some(n)).unwrap(),
+            None => return Err(
+                "Workspace name (@<name>) is required for 'ws create' unless '-f/--file' is used."
+                    .to_string(),
+            ),
+        };
 
     let repo_specs = parse_create_workspace_args(
         &ws_name,
@@ -396,10 +410,15 @@ mod tests {
     #[test]
     fn test_parse_create_all() {
         let repos = sample_repos();
-        let specs = parse_create_workspace_args("feat", &["--all".to_string()], &repos, None).unwrap();
+        let specs =
+            parse_create_workspace_args("feat", &["--all".to_string()], &repos, None).unwrap();
         assert_eq!(specs.len(), 2);
-        assert!(specs.iter().any(|s| s.name == "backend" && s.branch == "feature/feat" && s.create));
-        assert!(specs.iter().any(|s| s.name == "frontend" && s.branch == "feature/feat" && s.create));
+        assert!(specs
+            .iter()
+            .any(|s| s.name == "backend" && s.branch == "feature/feat" && s.create));
+        assert!(specs
+            .iter()
+            .any(|s| s.name == "frontend" && s.branch == "feature/feat" && s.create));
     }
 
     #[test]
@@ -407,7 +426,10 @@ mod tests {
         let repos = sample_repos();
         let specs = parse_create_workspace_args(
             "feat",
-            &["%backend:v1".to_string(), "%frontend:main:existing".to_string()],
+            &[
+                "%backend:v1".to_string(),
+                "%frontend:main:existing".to_string(),
+            ],
             &repos,
             None,
         )

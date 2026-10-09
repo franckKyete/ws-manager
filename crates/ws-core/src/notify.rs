@@ -1,11 +1,6 @@
 use std::process::Command;
 
-pub fn send_dbus_notification(
-    summary: &str,
-    body: &str,
-    icon: &str,
-    timeout_ms: i32,
-) -> bool {
+pub fn send_dbus_notification(summary: &str, body: &str, icon: &str, timeout_ms: i32) -> bool {
     // 1. Try gdbus
     let gdbus_args = [
         "call",
@@ -26,7 +21,7 @@ pub fn send_dbus_notification(
         &timeout_ms.to_string(),
     ];
 
-    if let Ok(out) = Command::new("gdbus").args(&gdbus_args).output() {
+    if let Ok(out) = Command::new("gdbus").args(gdbus_args).output() {
         if out.status.success() {
             return true;
         }
@@ -44,7 +39,7 @@ pub fn send_dbus_notification(
         body,
     ];
 
-    if let Ok(out) = Command::new("notify-send").args(&notify_args).output() {
+    if let Ok(out) = Command::new("notify-send").args(notify_args).output() {
         if out.status.success() {
             return true;
         }

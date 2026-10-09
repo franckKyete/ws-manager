@@ -1,5 +1,5 @@
-/// High-performance VT100 virtual terminal line buffer supporting true terminal screen grid,
-/// in-place cursor overwriting, dynamic lossless pane resizing, horizontal panning, and immutable scrollback history.
+//! High-performance VT100 virtual terminal line buffer supporting true terminal screen grid,
+//! in-place cursor overwriting, dynamic lossless pane resizing, horizontal panning, and immutable scrollback history.
 
 use regex::Regex;
 use vt100::Parser;
@@ -173,7 +173,9 @@ mod tests {
         assert_eq!(offset_0, 0);
         assert_eq!(rows_live.len(), 15);
         assert!(
-            rows_live.iter().any(|r| String::from_utf8_lossy(r).contains("Log line 30")),
+            rows_live
+                .iter()
+                .any(|r| String::from_utf8_lossy(r).contains("Log line 30")),
             "Live view must follow new output to Log line 30"
         );
 
@@ -181,7 +183,9 @@ mod tests {
         let (rows_shrunk, _) = buf.get_formatted_rows(0, 0, 8, 80);
         assert_eq!(rows_shrunk.len(), 8);
         assert!(
-            rows_shrunk.iter().any(|r| String::from_utf8_lossy(r).contains("Log line 30")),
+            rows_shrunk
+                .iter()
+                .any(|r| String::from_utf8_lossy(r).contains("Log line 30")),
             "Shrunk view must retain Log line 30"
         );
 
@@ -190,9 +194,16 @@ mod tests {
         assert_eq!(rows_expanded.len(), 31);
         let top_line = String::from_utf8_lossy(&rows_expanded[0]);
         let bot_line = String::from_utf8_lossy(&rows_expanded[29]);
-        assert!(top_line.contains("Log line 1"), "Top of expanded pane must be Log line 1, got: {}", top_line);
-        assert!(bot_line.contains("Log line 30"), "Bottom of expanded pane must be Log line 30, got: {}", bot_line);
-
+        assert!(
+            top_line.contains("Log line 1"),
+            "Top of expanded pane must be Log line 1, got: {}",
+            top_line
+        );
+        assert!(
+            bot_line.contains("Log line 30"),
+            "Bottom of expanded pane must be Log line 30, got: {}",
+            bot_line
+        );
 
         // 4. Scrollback navigation (scroll back 10 lines): shows historical lines without panics
         let (rows_scrolled, actual_offset) = buf.get_formatted_rows(10, 0, 15, 80);

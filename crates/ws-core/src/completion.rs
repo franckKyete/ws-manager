@@ -677,7 +677,11 @@ pub fn detect_active_workspace_name(ws_dir: Option<&Path>) -> Option<String> {
         let mut p = curr;
         loop {
             if p.join("workspace.yml").exists() {
-                let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let name = p
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 return Some(name.trim_start_matches('@').to_string());
             }
             if !p.pop() {
@@ -708,7 +712,8 @@ pub fn query_workspaces(include_sigil: bool) -> Vec<(String, String)> {
                             if let Ok(doc) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
                                 let repos = doc.get("repositories").and_then(|v| v.as_mapping());
                                 let repo_count = repos.map_or(0, |m| m.len());
-                                let status = doc.get("status").and_then(|v| v.as_str()).unwrap_or("");
+                                let status =
+                                    doc.get("status").and_then(|v| v.as_str()).unwrap_or("");
                                 desc = if !status.is_empty() {
                                     format!("{} repos, {}", repo_count, status)
                                 } else {
@@ -731,7 +736,10 @@ pub fn query_workspaces(include_sigil: bool) -> Vec<(String, String)> {
     candidates
 }
 
-pub fn query_repositories(workspace_name: Option<&str>, include_sigil: bool) -> Vec<(String, String)> {
+pub fn query_repositories(
+    workspace_name: Option<&str>,
+    include_sigil: bool,
+) -> Vec<(String, String)> {
     let (proj_root, ws_dir) = find_project_root_and_workspaces_dir();
     let mut candidates = Vec::new();
 
@@ -752,7 +760,11 @@ pub fn query_repositories(workspace_name: Option<&str>, include_sigil: bool) -> 
                         for (k, v) in map {
                             if let Some(r_name) = k.as_str() {
                                 let br = v.get("branch").and_then(|b| b.as_str()).unwrap_or("main");
-                                let disp = if include_sigil { format!("%{}", r_name) } else { r_name.to_string() };
+                                let disp = if include_sigil {
+                                    format!("%{}", r_name)
+                                } else {
+                                    r_name.to_string()
+                                };
                                 candidates.push((disp, format!("branch: {}", br)));
                             }
                         }
@@ -781,8 +793,14 @@ pub fn query_repositories(workspace_name: Option<&str>, include_sigil: bool) -> 
 
 pub fn query_interfaces() -> Vec<(String, String)> {
     let mut candidates = vec![
-        ("wifi".to_string(), "Prioritize wireless Wi-Fi adapter".to_string()),
-        ("ethernet".to_string(), "Prioritize wired Ethernet adapter".to_string()),
+        (
+            "wifi".to_string(),
+            "Prioritize wireless Wi-Fi adapter".to_string(),
+        ),
+        (
+            "ethernet".to_string(),
+            "Prioritize wired Ethernet adapter".to_string(),
+        ),
     ];
     let ifaces = list_network_interfaces();
     for i in ifaces {
@@ -798,13 +816,34 @@ pub fn query_interfaces() -> Vec<(String, String)> {
 
 pub fn query_completions(query_type: &str, target: Option<&str>) -> Vec<String> {
     match query_type {
-        "workspaces" => query_workspaces(true).into_iter().map(|(c, d)| format!("{}:{}", c, d)).collect(),
-        "workspaces_all" => query_workspaces(true).into_iter().map(|(c, d)| format!("{}:{}", c, d)).collect(),
-        "workspaces_plain" => query_workspaces(false).into_iter().map(|(c, d)| format!("{}:{}", c, d)).collect(),
-        "repos" => query_repositories(target, true).into_iter().map(|(c, d)| format!("{}:{}", c, d)).collect(),
-        "repos_all" => query_repositories(target, true).into_iter().map(|(c, d)| format!("{}:{}", c, d)).collect(),
-        "repos_plain" => query_repositories(target, false).into_iter().map(|(c, d)| format!("{}:{}", c, d)).collect(),
-        "interfaces" => query_interfaces().into_iter().map(|(c, d)| format!("{}:{}", c, d)).collect(),
+        "workspaces" => query_workspaces(true)
+            .into_iter()
+            .map(|(c, d)| format!("{}:{}", c, d))
+            .collect(),
+        "workspaces_all" => query_workspaces(true)
+            .into_iter()
+            .map(|(c, d)| format!("{}:{}", c, d))
+            .collect(),
+        "workspaces_plain" => query_workspaces(false)
+            .into_iter()
+            .map(|(c, d)| format!("{}:{}", c, d))
+            .collect(),
+        "repos" => query_repositories(target, true)
+            .into_iter()
+            .map(|(c, d)| format!("{}:{}", c, d))
+            .collect(),
+        "repos_all" => query_repositories(target, true)
+            .into_iter()
+            .map(|(c, d)| format!("{}:{}", c, d))
+            .collect(),
+        "repos_plain" => query_repositories(target, false)
+            .into_iter()
+            .map(|(c, d)| format!("{}:{}", c, d))
+            .collect(),
+        "interfaces" => query_interfaces()
+            .into_iter()
+            .map(|(c, d)| format!("{}:{}", c, d))
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -812,7 +851,13 @@ pub fn query_completions(query_type: &str, target: Option<&str>) -> Vec<String> 
 pub fn install_completion(shell: Option<&str>) -> std::io::Result<(bool, String)> {
     let detected_shell = shell
         .map(|s| s.to_string())
-        .or_else(|| std::env::var("SHELL").ok().and_then(|s| Path::new(&s).file_name().map(|n| n.to_string_lossy().to_string())))
+        .or_else(|| {
+            std::env::var("SHELL").ok().and_then(|s| {
+                Path::new(&s)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+            })
+        })
         .unwrap_or_else(|| "zsh".to_string());
 
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
@@ -830,7 +875,11 @@ pub fn install_completion(shell: Option<&str>) -> std::io::Result<(bool, String)
             ),
         ))
     } else if detected_shell.contains("bash") {
-        let bash_dir = home.join(".local").join("share").join("bash-completion").join("completions");
+        let bash_dir = home
+            .join(".local")
+            .join("share")
+            .join("bash-completion")
+            .join("completions");
         fs::create_dir_all(&bash_dir)?;
         let comp_file = bash_dir.join("ws");
         fs::write(&comp_file, BASH_COMPLETION_TEMPLATE)?;
@@ -846,7 +895,10 @@ pub fn install_completion(shell: Option<&str>) -> std::io::Result<(bool, String)
         fs::create_dir_all(&fish_dir)?;
         let comp_file = fish_dir.join("ws.fish");
         fs::write(&comp_file, FISH_COMPLETION_TEMPLATE)?;
-        Ok((true, format!("✔ Installed Fish completions to {}.", comp_file.display())))
+        Ok((
+            true,
+            format!("✔ Installed Fish completions to {}.", comp_file.display()),
+        ))
     } else {
         Ok((false, format!("Unknown shell '{}'", detected_shell)))
     }

@@ -82,7 +82,8 @@ impl WorkspaceManager {
 
     pub fn has_workspace(&self, name: &str) -> bool {
         let ws_dir = self.get_workspace_dir(name);
-        ws_dir.exists() && (ws_dir.join("workspace.yml").exists() || ws_dir.join("workspace.yaml").exists())
+        ws_dir.exists()
+            && (ws_dir.join("workspace.yml").exists() || ws_dir.join("workspace.yaml").exists())
     }
 
     pub fn detect_context(&self, cwd: Option<&Path>) -> (Option<String>, Option<String>) {
@@ -100,7 +101,10 @@ impl WorkspaceManager {
         if let Ok(rel) = current_canon.strip_prefix(&ws_dir_canon) {
             let mut parts = rel.iter();
             if let Some(ws_part) = parts.next() {
-                let ws_name = ws_part.to_string_lossy().trim_start_matches('@').to_string();
+                let ws_name = ws_part
+                    .to_string_lossy()
+                    .trim_start_matches('@')
+                    .to_string();
                 if let Some(repo_part) = parts.next() {
                     let folder_name = repo_part.to_string_lossy().to_string();
                     for (r_name, r_cfg) in &self.config.repositories {
@@ -164,22 +168,18 @@ impl WorkspaceManager {
     }
 
     pub fn validate_repository_config(&self, repo_name: &str) -> Result<RepoConfig, WSError> {
-        let repo_cfg = self
-            .config
-            .repositories
-            .get(repo_name)
-            .ok_or_else(|| {
-                WSError::RepositoryNotFound(format!(
-                    "Repository '{}' is not defined in configuration. Configured repositories: {}",
-                    repo_name,
-                    self.config
-                        .repositories
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-            })?;
+        let repo_cfg = self.config.repositories.get(repo_name).ok_or_else(|| {
+            WSError::RepositoryNotFound(format!(
+                "Repository '{}' is not defined in configuration. Configured repositories: {}",
+                repo_name,
+                self.config
+                    .repositories
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
 
         let bare_path = self.resolve_bare_path(&repo_cfg.bare);
         if !self.git.is_bare_repo(&bare_path) {
@@ -244,7 +244,10 @@ impl WorkspaceManager {
         };
 
         if resolved_target.starts_with("refs/heads/") {
-            resolved_target = resolved_target.strip_prefix("refs/heads/").unwrap().to_string();
+            resolved_target = resolved_target
+                .strip_prefix("refs/heads/")
+                .unwrap()
+                .to_string();
         }
 
         let remotes = self.git.get_remotes(bare_path, None);
@@ -255,7 +258,8 @@ impl WorkspaceManager {
         };
 
         if let Some(remote) = primary_remote {
-            self.git.fetch_remote_branch(bare_path, &resolved_target, &remote, None);
+            self.git
+                .fetch_remote_branch(bare_path, &resolved_target, &remote, None);
             let remote_ref = format!("refs/remotes/{}/{}", remote, resolved_target);
             let has_remote = self.git.ref_exists(bare_path, &remote_ref, None);
             let has_local = self.git.branch_exists(bare_path, &resolved_target);
@@ -271,7 +275,9 @@ impl WorkspaceManager {
             }
 
             if has_remote {
-                let (ahead, behind) = self.git.get_branch_divergence(bare_path, &resolved_target, &remote, None);
+                let (ahead, behind) =
+                    self.git
+                        .get_branch_divergence(bare_path, &resolved_target, &remote, None);
                 if ahead > 0 && behind > 0 {
                     return Err(WSError::Validation(format!(
                         "Repository '{}' branch '{}' has diverged from '{}/{}' ({} commit(s) ahead, {} commit(s) behind). Please resolve divergence before creating workspace.",
@@ -291,11 +297,18 @@ impl WorkspaceManager {
                         }
                         OutputHandler::print_info(&format!(
                             "Pulling latest changes for '{}' branch '{}' at '{}'...",
-                            repo_name, resolved_target, wt_path.display()
+                            repo_name,
+                            resolved_target,
+                            wt_path.display()
                         ));
-                        self.git.pull_branch(&wt_path, &remote, Some(&resolved_target))?;
+                        self.git
+                            .pull_branch(&wt_path, &remote, Some(&resolved_target))?;
                     } else {
-                        let updated = self.git.update_bare_branch(bare_path, &resolved_target, &remote_ref)?;
+                        let updated = self.git.update_bare_branch(
+                            bare_path,
+                            &resolved_target,
+                            &remote_ref,
+                        )?;
                         if !updated {
                             return Err(WSError::Validation(format!(
                                 "Failed to update branch '{}' in bare repository '{}' to '{}'.",
@@ -337,7 +350,8 @@ impl WorkspaceManager {
             } else {
                 Some(spec.branch.as_str())
             };
-            let resolved_base = self.prepare_and_sync_target_branch(&spec.name, &repo_cfg.bare, target_to_sync)?;
+            let resolved_base =
+                self.prepare_and_sync_target_branch(&spec.name, &repo_cfg.bare, target_to_sync)?;
             resolved_bases.insert(spec.name.clone(), resolved_base);
         }
 
@@ -437,11 +451,7 @@ impl WorkspaceManager {
                 let do_switch = tmux_cfg.switch;
 
                 let opened = TmuxLauncher::create_workspace_window(
-                    sess_name,
-                    name,
-                    &ws_dir,
-                    win_cmd,
-                    do_switch,
+                    sess_name, name, &ws_dir, win_cmd, do_switch,
                 );
                 if opened {
                     OutputHandler::print_info(&format!(
@@ -474,11 +484,19 @@ impl WorkspaceManager {
         }
 
         let content = std::fs::read_to_string(config_file)?;
-        let val: serde_yaml::Value = serde_yaml::from_str(&content)
-            .map_err(|e| WSError::Validation(format!("Invalid YAML file '{}': {}", config_file.display(), e)))?;
+        let val: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|e| {
+            WSError::Validation(format!(
+                "Invalid YAML file '{}': {}",
+                config_file.display(),
+                e
+            ))
+        })?;
 
         let name = val.get("name").and_then(|n| n.as_str()).ok_or_else(|| {
-            WSError::Validation(format!("YAML config '{}' must contain a 'name' field", config_file.display()))
+            WSError::Validation(format!(
+                "YAML config '{}' must contain a 'name' field",
+                config_file.display()
+            ))
         })?;
 
         let repos_map = val
@@ -519,7 +537,11 @@ impl WorkspaceManager {
                 .and_then(|b| b.as_str())
                 .map(|s| s.to_string());
 
-            let frozen = v.get("frozen").or_else(|| v.get("locked")).and_then(|b| b.as_bool()).unwrap_or(false);
+            let frozen = v
+                .get("frozen")
+                .or_else(|| v.get("locked"))
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
 
             specs.push(RepoSpec {
                 name: r_name,
@@ -559,7 +581,7 @@ impl WorkspaceManager {
                 }
             }
         } else {
-            for (_r_name, repo_cfg) in &self.config.repositories {
+            for repo_cfg in self.config.repositories.values() {
                 let bare_path = self.resolve_bare_path(&repo_cfg.bare);
                 let wt_path = ws_dir.join(&repo_cfg.checkout);
                 if wt_path.exists() {
@@ -633,16 +655,28 @@ impl WorkspaceManager {
 
             if !wt_path.exists() {
                 let mut r_obj = serde_json::Map::new();
-                r_obj.insert("worktree_exists".to_string(), serde_json::Value::Bool(false));
+                r_obj.insert(
+                    "worktree_exists".to_string(),
+                    serde_json::Value::Bool(false),
+                );
                 let mut unc = serde_json::Map::new();
-                unc.insert("has_uncommitted".to_string(), serde_json::Value::Bool(false));
+                unc.insert(
+                    "has_uncommitted".to_string(),
+                    serde_json::Value::Bool(false),
+                );
                 unc.insert("modified".to_string(), serde_json::Value::Array(vec![]));
                 unc.insert("untracked".to_string(), serde_json::Value::Array(vec![]));
                 r_obj.insert("uncommitted".to_string(), serde_json::Value::Object(unc));
                 let mut m_info = serde_json::Map::new();
                 m_info.insert("is_merged".to_string(), serde_json::Value::Bool(true));
-                m_info.insert("target_branch".to_string(), serde_json::Value::String(String::new()));
-                m_info.insert("unmerged_commits".to_string(), serde_json::Value::Number(0.into()));
+                m_info.insert(
+                    "target_branch".to_string(),
+                    serde_json::Value::String(String::new()),
+                );
+                m_info.insert(
+                    "unmerged_commits".to_string(),
+                    serde_json::Value::Number(0.into()),
+                );
                 r_obj.insert("merged_info".to_string(), serde_json::Value::Object(m_info));
                 r_obj.insert("branch".to_string(), serde_json::Value::String(spec.branch));
                 repos_safety.insert(r_name, serde_json::Value::Object(r_obj));
@@ -678,25 +712,49 @@ impl WorkspaceManager {
             r_obj.insert("worktree_exists".to_string(), serde_json::Value::Bool(true));
 
             let mut unc = serde_json::Map::new();
-            unc.insert("has_uncommitted".to_string(), serde_json::Value::Bool(unc_info.has_uncommitted));
+            unc.insert(
+                "has_uncommitted".to_string(),
+                serde_json::Value::Bool(unc_info.has_uncommitted),
+            );
             unc.insert("modified".to_string(), serde_json::json!(unc_info.modified));
-            unc.insert("untracked".to_string(), serde_json::json!(unc_info.untracked));
+            unc.insert(
+                "untracked".to_string(),
+                serde_json::json!(unc_info.untracked),
+            );
             r_obj.insert("uncommitted".to_string(), serde_json::Value::Object(unc));
 
             let mut m_info = serde_json::Map::new();
             m_info.insert("is_merged".to_string(), serde_json::Value::Bool(is_merged));
-            m_info.insert("target_branch".to_string(), serde_json::Value::String(resolved_tgt));
-            m_info.insert("unmerged_commits".to_string(), serde_json::Value::Number(unmerged_count.into()));
+            m_info.insert(
+                "target_branch".to_string(),
+                serde_json::Value::String(resolved_tgt),
+            );
+            m_info.insert(
+                "unmerged_commits".to_string(),
+                serde_json::Value::Number(unmerged_count.into()),
+            );
             r_obj.insert("merged_info".to_string(), serde_json::Value::Object(m_info));
-            r_obj.insert("branch".to_string(), serde_json::Value::String(branch_to_check));
+            r_obj.insert(
+                "branch".to_string(),
+                serde_json::Value::String(branch_to_check),
+            );
 
             repos_safety.insert(r_name, serde_json::Value::Object(r_obj));
         }
 
         let mut res = serde_json::Map::new();
-        res.insert("workspace".to_string(), serde_json::Value::String(name.to_string()));
-        res.insert("has_uncommitted".to_string(), serde_json::Value::Bool(has_uncommitted));
-        res.insert("has_unmerged".to_string(), serde_json::Value::Bool(has_unmerged));
+        res.insert(
+            "workspace".to_string(),
+            serde_json::Value::String(name.to_string()),
+        );
+        res.insert(
+            "has_uncommitted".to_string(),
+            serde_json::Value::Bool(has_uncommitted),
+        );
+        res.insert(
+            "has_unmerged".to_string(),
+            serde_json::Value::Bool(has_unmerged),
+        );
         res.insert("repos".to_string(), serde_json::Value::Object(repos_safety));
 
         Ok(serde_json::Value::Object(res))
@@ -733,8 +791,10 @@ impl WorkspaceManager {
                         let unc = &r_val["uncommitted"];
                         if unc["has_uncommitted"].as_bool().unwrap_or(false) {
                             let mut parts = Vec::new();
-                            let mod_files = unc["modified"].as_array().map(|a| a.len()).unwrap_or(0);
-                            let untr_files = unc["untracked"].as_array().map(|a| a.len()).unwrap_or(0);
+                            let mod_files =
+                                unc["modified"].as_array().map(|a| a.len()).unwrap_or(0);
+                            let untr_files =
+                                unc["untracked"].as_array().map(|a| a.len()).unwrap_or(0);
                             if mod_files > 0 {
                                 parts.push(format!("{} modified/staged", mod_files));
                             }
@@ -760,7 +820,10 @@ impl WorkspaceManager {
                             let br = r_val["branch"].as_str().unwrap_or("unknown");
                             let tgt = m_info["target_branch"].as_str().unwrap_or("main");
                             let cnt = m_info["unmerged_commits"].as_i64().unwrap_or(0);
-                            details.push(format!("  • %{} (branch '{}'): {} commit(s) not merged into '{}'", r_name, br, cnt, tgt));
+                            details.push(format!(
+                                "  • %{} (branch '{}'): {} commit(s) not merged into '{}'",
+                                r_name, br, cnt, tgt
+                            ));
                         }
                     }
                 }
@@ -772,7 +835,10 @@ impl WorkspaceManager {
         }
 
         if self.is_session_running(name) {
-            OutputHandler::print_info(&format!("Stopping active services for workspace '@{}'...", name));
+            OutputHandler::print_info(&format!(
+                "Stopping active services for workspace '@{}'...",
+                name
+            ));
             let _ = self.stop_workspace(name);
             if self.is_session_running(name) && !force {
                 return Err(WSError::SessionStop(format!(
@@ -801,7 +867,11 @@ impl WorkspaceManager {
 
         for (b_path, br_name) in branches_to_delete {
             let _ = self.git.delete_branch(&b_path, &br_name, true);
-            OutputHandler::print_info(&format!("Deleted branch '{}' from {}", br_name, b_path.display()));
+            OutputHandler::print_info(&format!(
+                "Deleted branch '{}' from {}",
+                br_name,
+                b_path.display()
+            ));
         }
 
         if let Some(tmux_cfg) = &self.config.tmux {
@@ -809,7 +879,10 @@ impl WorkspaceManager {
                 let sess_name = &tmux_cfg.session;
                 if TmuxLauncher::is_window_active(sess_name, name) {
                     let _ = TmuxLauncher::kill_workspace_window(sess_name, name);
-                    OutputHandler::print_info(&format!("Closed tmux window '@{}' in session '{}'", name, sess_name));
+                    OutputHandler::print_info(&format!(
+                        "Closed tmux window '@{}' in session '{}'",
+                        name, sess_name
+                    ));
                 }
             }
         }
@@ -829,7 +902,11 @@ impl WorkspaceManager {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
-                    let child_name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let child_name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string();
                     let meta_file = path.join("workspace.yml");
                     if meta_file.exists() && meta_file.is_file() {
                         if let Ok(content) = std::fs::read_to_string(&meta_file) {
@@ -897,7 +974,13 @@ impl WorkspaceManager {
     }
 
     pub fn get_active_engine(&self, name: &str) -> Option<String> {
-        let project_name = self.config.project_root.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let project_name = self
+            .config
+            .project_root
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let launch_sess = self.get_launch_session_name();
 
         if TmuxLauncher::is_window_active(&launch_sess, name)
@@ -923,7 +1006,10 @@ impl WorkspaceManager {
         self.get_active_engine(name).is_some()
     }
 
-    pub fn get_running_services_status(&self, name: &str) -> Option<HashMap<String, serde_json::Value>> {
+    pub fn get_running_services_status(
+        &self,
+        name: &str,
+    ) -> Option<HashMap<String, serde_json::Value>> {
         let sock_path = self.get_session_socket_path(name);
         if !sock_path.exists() {
             return None;
@@ -963,11 +1049,20 @@ impl WorkspaceManager {
             .or_else(|| active_engine.clone())
             .unwrap_or_else(|| "tui".to_string());
 
-        let project_name = self.config.project_root.file_name().unwrap_or_default().to_string_lossy().to_string();
-        if active_engine.as_deref() == Some("tmux") || (active_engine.is_none() && target_engine == "tmux") {
+        let project_name = self
+            .config
+            .project_root
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if active_engine.as_deref() == Some("tmux")
+            || (active_engine.is_none() && target_engine == "tmux")
+        {
             let launch_sess = self.get_launch_session_name();
             OutputHandler::print_info(&format!(
-                "Attaching to running Tmux window for workspace: @{}", workspace_name
+                "Attaching to running Tmux window for workspace: @{}",
+                workspace_name
             ));
             let _ = TmuxLauncher::attach(
                 workspace_name,
@@ -979,9 +1074,12 @@ impl WorkspaceManager {
             return Ok(());
         }
 
-        if active_engine.as_deref() == Some("zellij") || (active_engine.is_none() && target_engine == "zellij") {
+        if active_engine.as_deref() == Some("zellij")
+            || (active_engine.is_none() && target_engine == "zellij")
+        {
             OutputHandler::print_info(&format!(
-                "Attaching to running Zellij session for workspace: @{}", workspace_name
+                "Attaching to running Zellij session for workspace: @{}",
+                workspace_name
             ));
             let ws_dir = self.get_workspace_dir(workspace_name);
             let _ = ZellijLauncher::attach(
@@ -997,9 +1095,13 @@ impl WorkspaceManager {
         let sock_path = self.get_session_socket_path(workspace_name);
         let fullscreen = !all_panes;
         OutputHandler::print_info(&format!(
-            "Attaching to running native session for workspace: @{}", workspace_name
+            "Attaching to running native session for workspace: @{}",
+            workspace_name
         ));
-        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let _ = rt.block_on(async {
             ws_tui::attach_workspace_session(
                 workspace_name.to_string(),
@@ -1012,7 +1114,11 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    pub fn run_raw_bridge(&self, workspace_name: &str, repo_name: Option<&str>) -> Result<(), WSError> {
+    pub fn run_raw_bridge(
+        &self,
+        workspace_name: &str,
+        repo_name: Option<&str>,
+    ) -> Result<(), WSError> {
         let sock_path = self.get_session_socket_path(workspace_name);
         if !self.is_session_running(workspace_name) {
             return Err(WSError::General(format!(
@@ -1026,7 +1132,13 @@ impl WorkspaceManager {
     }
 
     pub fn stop_workspace(&self, name: &str) -> Result<bool, WSError> {
-        let project_name = self.config.project_root.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let project_name = self
+            .config
+            .project_root
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let mut stopped_any = false;
 
         let launch_sess = self.get_launch_session_name();
@@ -1043,8 +1155,16 @@ impl WorkspaceManager {
         let sock_path = self.get_session_socket_path(name);
         if sock_path.exists() {
             let stopped = match tokio::runtime::Handle::try_current() {
-                Ok(h) => tokio::task::block_in_place(|| h.block_on(ws_tui::stop_workspace_session(&sock_path)).unwrap_or(false)),
-                Err(_) => tokio::runtime::Runtime::new().map(|rt| rt.block_on(ws_tui::stop_workspace_session(&sock_path)).unwrap_or(false)).unwrap_or(false),
+                Ok(h) => tokio::task::block_in_place(|| {
+                    h.block_on(ws_tui::stop_workspace_session(&sock_path))
+                        .unwrap_or(false)
+                }),
+                Err(_) => tokio::runtime::Runtime::new()
+                    .map(|rt| {
+                        rt.block_on(ws_tui::stop_workspace_session(&sock_path))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(false),
             };
             stopped_any = stopped || stopped_any;
         }
@@ -1053,14 +1173,16 @@ impl WorkspaceManager {
     }
 
     pub fn focus_workspace(&self, name: &str) -> Result<bool, WSError> {
-        let tmux_cfg = self
-            .config
-            .tmux
-            .as_ref()
-            .ok_or_else(|| WSError::Config("Tmux integration is not configured. Add 'tmux:' to repositories.yml.".to_string()))?;
+        let tmux_cfg = self.config.tmux.as_ref().ok_or_else(|| {
+            WSError::Config(
+                "Tmux integration is not configured. Add 'tmux:' to repositories.yml.".to_string(),
+            )
+        })?;
 
         if !TmuxLauncher::is_available() {
-            return Err(WSError::Workspace("tmux executable not found on PATH.".to_string()));
+            return Err(WSError::Workspace(
+                "tmux executable not found on PATH.".to_string(),
+            ));
         }
 
         let sess_name = &tmux_cfg.session;
@@ -1080,7 +1202,12 @@ impl WorkspaceManager {
                 return ls.clone();
             }
         }
-        let proj = self.config.project_root.file_name().unwrap_or_default().to_string_lossy();
+        let proj = self
+            .config
+            .project_root
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy();
         format!("running-{}", proj)
     }
 
@@ -1097,7 +1224,13 @@ impl WorkspaceManager {
             }
         }
 
-        let proj_name = self.config.project_root.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let proj_name = self
+            .config
+            .project_root
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let work_session = self.config.tmux.as_ref().map(|t| t.session.clone());
 
         let candidate = loop {
@@ -1120,7 +1253,13 @@ impl WorkspaceManager {
         if let Some(tmux) = &mut self.config.tmux {
             tmux.launch_session = Some(launch_session_name.to_string());
         } else {
-            let proj_name = self.config.project_root.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let proj_name = self
+                .config
+                .project_root
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             self.config.tmux = Some(TmuxConfig {
                 session: proj_name,
                 launch_session: Some(launch_session_name.to_string()),
@@ -1129,7 +1268,11 @@ impl WorkspaceManager {
             });
         }
 
-        let cfg_path = self.config.config_file_path.clone().unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
+        let cfg_path = self
+            .config
+            .config_file_path
+            .clone()
+            .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
         if cfg_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&cfg_path) {
                 if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
@@ -1158,7 +1301,7 @@ impl WorkspaceManager {
         repo_or_worktree: &str,
     ) -> Result<(String, RepoSpec, PathBuf), WSError> {
         let (meta, ws_dir) = self.get_workspace_info(workspace_name)?;
-        let clean_target = repo_or_worktree.trim_start_matches(|c| matches!(c, '%' | '+' | ':' | '#' | '$'));
+        let clean_target = repo_or_worktree.trim_start_matches(['%', '+', ':', '#', '$']);
 
         // 1. Direct match in meta.repositories
         if let Some(spec) = meta.repositories.get(clean_target) {
@@ -1169,7 +1312,10 @@ impl WorkspaceManager {
         // 2. Match by spec.path in meta.repositories
         for (r_name, spec) in &meta.repositories {
             if spec.path == clean_target
-                || Path::new(&spec.path).file_name().map(|n| n.to_string_lossy()) == Some(clean_target.into())
+                || Path::new(&spec.path)
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    == Some(clean_target.into())
             {
                 let p = ws_dir.join(&spec.path);
                 return Ok((r_name.clone(), spec.clone(), p));
@@ -1220,7 +1366,12 @@ impl WorkspaceManager {
             ));
         }
 
-        let available = meta.repositories.keys().cloned().collect::<Vec<_>>().join(", ");
+        let available = meta
+            .repositories
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         Err(WSError::RepositoryNotFound(format!(
             "Repository or worktree '{}' not found in workspace '{}'. Available worktrees: {}",
             repo_or_worktree, workspace_name, available
@@ -1255,7 +1406,10 @@ impl WorkspaceManager {
     pub fn status_workspace(&self, name: &str) -> Result<HashMap<String, String>, WSError> {
         let ws_dir = self.get_workspace_dir(name);
         if !ws_dir.exists() {
-            return Err(WSError::WorkspaceNotFound(format!("Workspace '{}' not found", name)));
+            return Err(WSError::WorkspaceNotFound(format!(
+                "Workspace '{}' not found",
+                name
+            )));
         }
 
         let (meta, _) = self.get_workspace_info(name)?;
@@ -1279,7 +1433,10 @@ impl WorkspaceManager {
     ) -> Result<HashMap<String, i32>, WSError> {
         let ws_dir = self.get_workspace_dir(name);
         if !ws_dir.exists() {
-            return Err(WSError::WorkspaceNotFound(format!("Workspace '{}' not found", name)));
+            return Err(WSError::WorkspaceNotFound(format!(
+                "Workspace '{}' not found",
+                name
+            )));
         }
 
         let cmd_str = command.join(" ");
@@ -1332,10 +1489,16 @@ impl WorkspaceManager {
 
         for (r_name, repo_cfg) in &self.config.repositories {
             let bare_path = self.resolve_bare_path(&repo_cfg.bare);
-            results.insert(format!("repo_{}", r_name), self.git.is_bare_repo(&bare_path));
+            results.insert(
+                format!("repo_{}", r_name),
+                self.git.is_bare_repo(&bare_path),
+            );
         }
 
-        results.insert("workspaces_dir_exists".to_string(), self.config.workspaces_dir.exists());
+        results.insert(
+            "workspaces_dir_exists".to_string(),
+            self.config.workspaces_dir.exists(),
+        );
 
         let active_interfaces = list_network_interfaces();
         let detected_ip = get_lan_ip(None);
@@ -1360,23 +1523,14 @@ impl WorkspaceManager {
         };
 
         let clean_url = url.trim_end_matches('/');
-        let base_name = if clean_url.ends_with(".git") {
-            clean_url[..clean_url.len() - 4]
-                .split('/')
-                .last()
-                .unwrap_or("")
-                .split(':')
-                .last()
-                .unwrap_or("")
-        } else {
-            clean_url
-                .split('/')
-                .last()
-                .unwrap_or("")
-                .split(':')
-                .last()
-                .unwrap_or("")
-        };
+        let base_url = clean_url.strip_suffix(".git").unwrap_or(clean_url);
+        let base_name = base_url
+            .split('/')
+            .next_back()
+            .unwrap_or("")
+            .split(':')
+            .next_back()
+            .unwrap_or("");
 
         if name.is_empty() {
             name = base_name.to_lowercase();
@@ -1405,11 +1559,17 @@ impl WorkspaceManager {
             }
 
             if !self.git.is_bare_repo(&resolved_bare) {
-                OutputHandler::print_info(&format!("Cloning bare repository {} from {}...", name, url));
+                OutputHandler::print_info(&format!(
+                    "Cloning bare repository {} from {}...",
+                    name, url
+                ));
                 self.git.clone_bare(&url, &resolved_bare)?;
                 OutputHandler::print_success(&format!("Cloned bare repo {}", bare_path.display()));
             } else {
-                OutputHandler::print_info(&format!("Using existing bare repository at {}", bare_path.display()));
+                OutputHandler::print_info(&format!(
+                    "Using existing bare repository at {}",
+                    bare_path.display()
+                ));
             }
 
             updated_repos.insert(
@@ -1434,7 +1594,13 @@ impl WorkspaceManager {
             );
         }
 
-        let root_dir_name = self.config.project_root.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let root_dir_name = self
+            .config
+            .project_root
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
         let tmux_cfg = self.config.tmux.clone().unwrap_or_else(|| TmuxConfig {
             session: root_dir_name,
             launch_session: None,
@@ -1442,13 +1608,17 @@ impl WorkspaceManager {
             switch: true,
         });
 
-        let hub_auto_save = self.config.hub_auto_save.clone().unwrap_or_else(|| HubAutoSaveConfig {
-            enabled: true,
-            interval: 300,
-            include_wip: true,
-            workspaces: WorkspacesSelector::Mode("all".to_string()),
-            notify: true,
-        });
+        let hub_auto_save =
+            self.config
+                .hub_auto_save
+                .clone()
+                .unwrap_or_else(|| HubAutoSaveConfig {
+                    enabled: true,
+                    interval: 300,
+                    include_wip: true,
+                    workspaces: WorkspacesSelector::Mode("all".to_string()),
+                    notify: true,
+                });
 
         let saved_path = ConfigLoader::save_config(
             &updated_repos,
@@ -1467,7 +1637,11 @@ impl WorkspaceManager {
         Ok(self.config.clone())
     }
 
-    pub fn save_metadata(&self, ws_dir: &Path, metadata: &WorkspaceMetadata) -> Result<(), WSError> {
+    pub fn save_metadata(
+        &self,
+        ws_dir: &Path,
+        metadata: &WorkspaceMetadata,
+    ) -> Result<(), WSError> {
         let metadata_path = ws_dir.join("workspace.yml");
         let content = serde_yaml::to_string(metadata)?;
         std::fs::write(metadata_path, content)?;
@@ -1508,7 +1682,8 @@ impl WorkspaceManager {
         }
 
         let worktree_path = ws_dir.join(&repo_cfg.checkout);
-        self.git.create_worktree(&repo_cfg.bare, &worktree_path, branch, create, None)?;
+        self.git
+            .create_worktree(&repo_cfg.bare, &worktree_path, branch, create, None)?;
 
         meta.repositories.insert(
             repo_name.to_string(),
@@ -1559,7 +1734,8 @@ impl WorkspaceManager {
 
         if worktree_path.exists() {
             self.git.set_tracked_files_readonly(&worktree_path, false);
-            self.git.remove_worktree(&repo_cfg.bare, &worktree_path, true)?;
+            self.git
+                .remove_worktree(&repo_cfg.bare, &worktree_path, true)?;
         }
 
         if delete_branch {
@@ -1572,7 +1748,11 @@ impl WorkspaceManager {
             "Removed repository '{}' from workspace '{}'{}",
             repo_name,
             workspace_name,
-            if delete_branch { " (deleted branch)" } else { "" }
+            if delete_branch {
+                " (deleted branch)"
+            } else {
+                ""
+            }
         ));
         Ok(())
     }
@@ -1595,7 +1775,10 @@ impl WorkspaceManager {
             s.locked = true;
         }
         self.save_metadata(&ws_dir, &meta)?;
-        OutputHandler::print_success(&format!("Locked repository '%{}' in workspace '@{}'", r_key, workspace_name));
+        OutputHandler::print_success(&format!(
+            "Locked repository '%{}' in workspace '@{}'",
+            r_key, workspace_name
+        ));
         Ok(())
     }
 
@@ -1667,7 +1850,10 @@ impl WorkspaceManager {
             if spec.frozen || spec.locked {
                 let mut m = HashMap::new();
                 m.insert("status".to_string(), "skipped".to_string());
-                m.insert("reason".to_string(), "frozen repository (read-only)".to_string());
+                m.insert(
+                    "reason".to_string(),
+                    "frozen repository (read-only)".to_string(),
+                );
                 m.insert("branch".to_string(), spec.branch.clone());
                 m.insert("remote".to_string(), remote.to_string());
                 results.insert(r_name, m);
@@ -1690,7 +1876,14 @@ impl WorkspaceManager {
 
             match self.git.push_branch(&wt_path, remote, Some(&spec.branch)) {
                 Ok((was_pushed, msg)) => {
-                    m.insert("status".to_string(), if was_pushed { "pushed".to_string() } else { "up-to-date".to_string() });
+                    m.insert(
+                        "status".to_string(),
+                        if was_pushed {
+                            "pushed".to_string()
+                        } else {
+                            "up-to-date".to_string()
+                        },
+                    );
                     m.insert("reason".to_string(), msg);
                 }
                 Err(e) => {
@@ -1734,7 +1927,10 @@ impl WorkspaceManager {
             if spec.frozen || spec.locked {
                 let mut m = HashMap::new();
                 m.insert("status".to_string(), "skipped".to_string());
-                m.insert("reason".to_string(), "frozen repository (read-only)".to_string());
+                m.insert(
+                    "reason".to_string(),
+                    "frozen repository (read-only)".to_string(),
+                );
                 m.insert("branch".to_string(), spec.branch.clone());
                 m.insert("remote".to_string(), remote.to_string());
                 results.insert(r_name, m);
@@ -1757,7 +1953,14 @@ impl WorkspaceManager {
 
             match self.git.pull_branch(&wt_path, remote, Some(&spec.branch)) {
                 Ok((was_updated, msg)) => {
-                    m.insert("status".to_string(), if was_updated { "pulled".to_string() } else { "up-to-date".to_string() });
+                    m.insert(
+                        "status".to_string(),
+                        if was_updated {
+                            "pulled".to_string()
+                        } else {
+                            "up-to-date".to_string()
+                        },
+                    );
                     m.insert("reason".to_string(), msg);
                 }
                 Err(e) => {
@@ -1822,7 +2025,14 @@ impl WorkspaceManager {
             interface,
         );
 
-        if !dry_run && self.config.tmux.as_ref().and_then(|t| t.launch_session.as_ref()).is_none() {
+        if !dry_run
+            && self
+                .config
+                .tmux
+                .as_ref()
+                .and_then(|t| t.launch_session.as_ref())
+                .is_none()
+        {
             let _ = self.get_or_create_launch_session();
         }
 
@@ -1843,7 +2053,10 @@ impl WorkspaceManager {
             );
 
             if verbose {
-                OutputHandler::print_env_resolution_details(&global_vars, Some(&self.config.secrets));
+                OutputHandler::print_env_resolution_details(
+                    &global_vars,
+                    Some(&self.config.secrets),
+                );
             }
 
             for g_cmd in &self.config.setup {
@@ -1862,7 +2075,12 @@ impl WorkspaceManager {
                 );
 
                 if dry_run {
-                    OutputHandler::print_setup_step(0, &format!("[DRY-RUN] {}", expanded), "skipped execution", "info");
+                    OutputHandler::print_setup_step(
+                        0,
+                        &format!("[DRY-RUN] {}", expanded),
+                        "skipped execution",
+                        "info",
+                    );
                     continue;
                 }
 
@@ -1870,7 +2088,10 @@ impl WorkspaceManager {
                 let t0 = Instant::now();
                 let mut env_map = global_vars.clone();
                 env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
-                env_map.insert("PROJECT_ROOT".to_string(), self.config.project_root.display().to_string());
+                env_map.insert(
+                    "PROJECT_ROOT".to_string(),
+                    self.config.project_root.display().to_string(),
+                );
                 env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
 
                 let ret = run_shell_command(&expanded, &ws_dir, Some(&env_map));
@@ -1889,20 +2110,42 @@ impl WorkspaceManager {
             let repo_cfg = match repo_cfg {
                 Some(rc) => rc,
                 None => {
-                    OutputHandler::print_setup_step(1, "Config Validation", "Repository missing from project configuration", "error");
+                    OutputHandler::print_setup_step(
+                        1,
+                        "Config Validation",
+                        "Repository missing from project configuration",
+                        "error",
+                    );
                     let mut obj = serde_json::Map::new();
-                    obj.insert("status".to_string(), serde_json::Value::String("failed".to_string()));
-                    obj.insert("reason".to_string(), serde_json::Value::String("missing from config".to_string()));
+                    obj.insert(
+                        "status".to_string(),
+                        serde_json::Value::String("failed".to_string()),
+                    );
+                    obj.insert(
+                        "reason".to_string(),
+                        serde_json::Value::String("missing from config".to_string()),
+                    );
                     results.insert(r_name, serde_json::Value::Object(obj));
                     continue;
                 }
             };
 
             if !wt_path.exists() {
-                OutputHandler::print_setup_step(1, "Worktree Validation", "Worktree directory does not exist", "warning");
+                OutputHandler::print_setup_step(
+                    1,
+                    "Worktree Validation",
+                    "Worktree directory does not exist",
+                    "warning",
+                );
                 let mut obj = serde_json::Map::new();
-                obj.insert("status".to_string(), serde_json::Value::String("skipped".to_string()));
-                obj.insert("reason".to_string(), serde_json::Value::String("missing worktree".to_string()));
+                obj.insert(
+                    "status".to_string(),
+                    serde_json::Value::String("skipped".to_string()),
+                );
+                obj.insert(
+                    "reason".to_string(),
+                    serde_json::Value::String("missing worktree".to_string()),
+                );
                 results.insert(r_name, serde_json::Value::Object(obj));
                 continue;
             }
@@ -1911,8 +2154,14 @@ impl WorkspaceManager {
             let mut all_copy = self.config.copy_files.clone();
             all_copy.extend(repo_cfg.copy_files.clone());
             if !all_copy.is_empty() {
-                let (f_ok, f_msg) = EnvEngine::sync_copied_files(&self.config.project_root, &wt_path, &all_copy);
-                OutputHandler::print_setup_step(1, "File Copy", &f_msg, if f_ok { "success" } else { "warning" });
+                let (f_ok, f_msg) =
+                    EnvEngine::sync_copied_files(&self.config.project_root, &wt_path, &all_copy);
+                OutputHandler::print_setup_step(
+                    1,
+                    "File Copy",
+                    &f_msg,
+                    if f_ok { "success" } else { "warning" },
+                );
             }
 
             let env_vars = EnvEngine::resolve_repo_env(
@@ -1934,15 +2183,31 @@ impl WorkspaceManager {
             )?;
 
             if !env_ok {
-                OutputHandler::print_setup_step(1, "Environment Setup", &format!("Failed: {}", env_msg), "error");
+                OutputHandler::print_setup_step(
+                    1,
+                    "Environment Setup",
+                    &format!("Failed: {}", env_msg),
+                    "error",
+                );
                 let mut obj = serde_json::Map::new();
-                obj.insert("status".to_string(), serde_json::Value::String("failed".to_string()));
+                obj.insert(
+                    "status".to_string(),
+                    serde_json::Value::String("failed".to_string()),
+                );
                 obj.insert("reason".to_string(), serde_json::Value::String(env_msg));
                 results.insert(r_name, serde_json::Value::Object(obj));
                 continue;
             }
 
-            OutputHandler::print_setup_step(1, "Template Setup", &format!("processed {} -> {}", repo_cfg.env_example, repo_cfg.env_file), "success");
+            OutputHandler::print_setup_step(
+                1,
+                "Template Setup",
+                &format!(
+                    "processed {} -> {}",
+                    repo_cfg.env_example, repo_cfg.env_file
+                ),
+                "success",
+            );
             OutputHandler::print_setup_step(2, "Env Resolution", &env_msg, "success");
 
             if verbose {
@@ -1953,10 +2218,21 @@ impl WorkspaceManager {
 
             // Step 3: Run setup commands
             if skip_scripts || repo_cfg.setup.is_empty() {
-                OutputHandler::print_setup_step(3, "Setup Scripts", "No setup scripts configured (skipped)", "info");
+                OutputHandler::print_setup_step(
+                    3,
+                    "Setup Scripts",
+                    "No setup scripts configured (skipped)",
+                    "info",
+                );
                 let mut obj = serde_json::Map::new();
-                obj.insert("status".to_string(), serde_json::Value::String("completed".to_string()));
-                obj.insert("reason".to_string(), serde_json::Value::String("environment synced (no setup commands)".to_string()));
+                obj.insert(
+                    "status".to_string(),
+                    serde_json::Value::String("completed".to_string()),
+                );
+                obj.insert(
+                    "reason".to_string(),
+                    serde_json::Value::String("environment synced (no setup commands)".to_string()),
+                );
                 obj.insert("env_status".to_string(), serde_json::Value::String(env_msg));
                 results.insert(r_name, serde_json::Value::Object(obj));
                 continue;
@@ -1982,7 +2258,12 @@ impl WorkspaceManager {
                 executed_cmds.push(expanded.clone());
 
                 if dry_run {
-                    OutputHandler::print_setup_step(3, &format!("[DRY-RUN] {}", expanded), "skipped execution", "info");
+                    OutputHandler::print_setup_step(
+                        3,
+                        &format!("[DRY-RUN] {}", expanded),
+                        "skipped execution",
+                        "info",
+                    );
                     continue;
                 }
 
@@ -1991,7 +2272,10 @@ impl WorkspaceManager {
                 let mut proc_env = env_vars.clone();
                 proc_env.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
                 proc_env.insert("REPO_NAME".to_string(), r_name.clone());
-                proc_env.insert("PROJECT_ROOT".to_string(), self.config.project_root.display().to_string());
+                proc_env.insert(
+                    "PROJECT_ROOT".to_string(),
+                    self.config.project_root.display().to_string(),
+                );
                 proc_env.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
                 proc_env.insert("WORKTREE_DIR".to_string(), wt_path.display().to_string());
 
@@ -2007,11 +2291,26 @@ impl WorkspaceManager {
 
             let mut obj = serde_json::Map::new();
             if script_failures.is_empty() {
-                obj.insert("status".to_string(), serde_json::Value::String("completed".to_string()));
-                obj.insert("reason".to_string(), serde_json::Value::String(format!("ran {} setup command(s)", executed_cmds.len())));
+                obj.insert(
+                    "status".to_string(),
+                    serde_json::Value::String("completed".to_string()),
+                );
+                obj.insert(
+                    "reason".to_string(),
+                    serde_json::Value::String(format!(
+                        "ran {} setup command(s)",
+                        executed_cmds.len()
+                    )),
+                );
             } else {
-                obj.insert("status".to_string(), serde_json::Value::String("failed".to_string()));
-                obj.insert("reason".to_string(), serde_json::Value::String(script_failures.join("; ")));
+                obj.insert(
+                    "status".to_string(),
+                    serde_json::Value::String("failed".to_string()),
+                );
+                obj.insert(
+                    "reason".to_string(),
+                    serde_json::Value::String(script_failures.join("; ")),
+                );
             }
             obj.insert("env_status".to_string(), serde_json::Value::String(env_msg));
             obj.insert("commands_run".to_string(), serde_json::json!(executed_cmds));
@@ -2082,7 +2381,8 @@ impl WorkspaceManager {
             .unwrap_or_else(|| resolved_lan_ip.clone());
 
         let recorded_leases = EnvEngine::read_service_discovery_descriptor(&ws_dir);
-        let (service_ports, has_shifted) = allocate_workspace_ports(&self.config.repositories, slot, recorded_leases.as_ref());
+        let (service_ports, has_shifted) =
+            allocate_workspace_ports(&self.config.repositories, slot, recorded_leases.as_ref());
         if has_shifted {
             OutputHandler::print_warning(
                 &format!("Active socket collision detected for workspace '@{}'. Dynamically re-allocated free ports and synchronized worktree .env files.", workspace_name)
@@ -2171,7 +2471,11 @@ impl WorkspaceManager {
         }
 
         let active_engine = self.get_active_engine(workspace_name);
-        let req_engine = if matches!(mode, "tui" | "daemon") { "tui" } else { mode };
+        let req_engine = if matches!(mode, "tui" | "daemon") {
+            "tui"
+        } else {
+            mode
+        };
 
         if let Some(eng) = &active_engine {
             if req_engine != eng && !matches!(mode, "summary" | "list" | "attach") {
@@ -2183,13 +2487,24 @@ impl WorkspaceManager {
                     if eng == "tmux" {
                         let launch_sess = self.get_launch_session_name();
                         if TmuxLauncher::is_window_active(&launch_sess, workspace_name) {
-                            let _ = TmuxLauncher::kill_workspace_window(&launch_sess, workspace_name);
+                            let _ =
+                                TmuxLauncher::kill_workspace_window(&launch_sess, workspace_name);
                         } else {
-                            let proj_name = self.config.project_root.file_name().unwrap_or_default().to_string_lossy();
+                            let proj_name = self
+                                .config
+                                .project_root
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy();
                             let _ = TmuxLauncher::kill_workspace(workspace_name, Some(&proj_name));
                         }
                     } else if eng == "zellij" {
-                        let proj_name = self.config.project_root.file_name().unwrap_or_default().to_string_lossy();
+                        let proj_name = self
+                            .config
+                            .project_root
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy();
                         let _ = ZellijLauncher::kill_workspace(workspace_name, &proj_name);
                     }
                 } else {
@@ -2260,7 +2575,13 @@ impl WorkspaceManager {
             return Ok(launch_entries);
         }
 
-        let proj_name = self.config.project_root.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let proj_name = self
+            .config
+            .project_root
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
 
         if mode == "zellij" {
             if !ZellijLauncher::is_available() {
@@ -2327,7 +2648,10 @@ impl WorkspaceManager {
         Ok(launch_entries)
     }
 
-    pub fn get_project_namespace_and_name(&self, override_identifier: Option<&str>) -> (String, String) {
+    pub fn get_project_namespace_and_name(
+        &self,
+        override_identifier: Option<&str>,
+    ) -> (String, String) {
         let client = HubClient::default();
         let target_id = override_identifier.or(self.config.hub_project.as_deref());
         if let Some(tid) = target_id {
@@ -2336,37 +2660,65 @@ impl WorkspaceManager {
             }
         }
 
-        let proj_dir = self.config.project_root.file_name().unwrap_or_default().to_string_lossy().to_string();
-        let clean = proj_dir.replace("-workspaces", "").replace("_workspaces", "").to_lowercase();
+        let proj_dir = self
+            .config
+            .project_root
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let clean = proj_dir
+            .replace("-workspaces", "")
+            .replace("_workspaces", "")
+            .to_lowercase();
 
         let namespace = client
             .whoami()
             .ok()
-            .and_then(|u| u.get("username").and_then(|un| un.as_str()).map(|s| s.to_string()))
+            .and_then(|u| {
+                u.get("username")
+                    .and_then(|un| un.as_str())
+                    .map(|s| s.to_string())
+            })
             .unwrap_or_else(|| "personal".to_string());
 
         (namespace, clean)
     }
 
-    pub fn clone_from_hub(&self, project_identifier: &str, target_dir: Option<&Path>) -> Result<PathBuf, WSError> {
+    pub fn clone_from_hub(
+        &self,
+        project_identifier: &str,
+        target_dir: Option<&Path>,
+    ) -> Result<PathBuf, WSError> {
         let client = HubClient::default();
         let (namespace, name) = HubClient::parse_project_identifier(project_identifier)?;
 
-        OutputHandler::print_info(&format!("Connecting to wshub for {}/{}...", namespace, name));
+        OutputHandler::print_info(&format!(
+            "Connecting to wshub for {}/{}...",
+            namespace, name
+        ));
         let data = client.get_project(&namespace, &name)?;
 
         let latest_rev = data.get("latestRevision").ok_or_else(|| {
-            WSError::Config(format!("Project '{}/{}' has no valid blueprint revisions.", namespace, name))
+            WSError::Config(format!(
+                "Project '{}/{}' has no valid blueprint revisions.",
+                namespace, name
+            ))
         })?;
 
-        let blueprint_yaml = latest_rev.get("blueprintYaml").and_then(|y| y.as_str()).ok_or_else(|| {
-            WSError::Config("Latest revision is missing blueprintYaml".to_string())
-        })?;
+        let blueprint_yaml = latest_rev
+            .get("blueprintYaml")
+            .and_then(|y| y.as_str())
+            .ok_or_else(|| {
+                WSError::Config("Latest revision is missing blueprintYaml".to_string())
+            })?;
 
         let dest_dir = if let Some(td) = target_dir {
             td.to_path_buf()
         } else {
-            std::env::current_dir().unwrap_or_default().join(format!("{}-workspaces", name))
+            std::env::current_dir()
+                .unwrap_or_default()
+                .join(format!("{}-workspaces", name))
         };
 
         ensure_directory(&dest_dir)?;
@@ -2387,10 +2739,16 @@ impl WorkspaceManager {
                     #[cfg(unix)]
                     {
                         use std::os::unix::fs::PermissionsExt;
-                        let _ = std::fs::set_permissions(&s_file, std::fs::Permissions::from_mode(0o755));
+                        let _ = std::fs::set_permissions(
+                            &s_file,
+                            std::fs::Permissions::from_mode(0o755),
+                        );
                     }
                 }
-                OutputHandler::print_success(&format!("Restored {} automation script(s)", scripts_dict.len()));
+                OutputHandler::print_success(&format!(
+                    "Restored {} automation script(s)",
+                    scripts_dict.len()
+                ));
             }
         }
 
@@ -2401,11 +2759,12 @@ impl WorkspaceManager {
                 let _ = ensure_directory(&files_dir);
                 for f_info in files_list {
                     if let Some(rel_path) = f_info.get("filePath").and_then(|p| p.as_str()) {
-                        let clean_rel = if rel_path.starts_with("files/") || rel_path.starts_with("files\\") {
-                            &rel_path[6..]
-                        } else {
-                            rel_path
-                        };
+                        let clean_rel =
+                            if rel_path.starts_with("files/") || rel_path.starts_with("files\\") {
+                                &rel_path[6..]
+                            } else {
+                                rel_path
+                            };
                         let target_file = files_dir.join(clean_rel);
                         if let Some(parent) = target_file.parent() {
                             let _ = ensure_directory(parent);
@@ -2415,7 +2774,10 @@ impl WorkspaceManager {
                         }
                     }
                 }
-                OutputHandler::print_success(&format!("Downloaded {} secret file(s) from vault", files_list.len()));
+                OutputHandler::print_success(&format!(
+                    "Downloaded {} secret file(s) from vault",
+                    files_list.len()
+                ));
             }
         }
 
@@ -2444,13 +2806,20 @@ impl WorkspaceManager {
                         cfg.hub_auto_save.as_ref(),
                         cfg.hub_project.as_deref(),
                     );
-                    OutputHandler::print_success(&format!("Restored {} secret(s) from vault into local config", secrets_list.len()));
+                    OutputHandler::print_success(&format!(
+                        "Restored {} secret(s) from vault into local config",
+                        secrets_list.len()
+                    ));
                 }
             }
         }
 
         // Clone bare repos
-        let loaded_cfg = ConfigLoader::load_config(Some(&config_path), Some(&dest_dir.join("workspaces")), true)?;
+        let loaded_cfg = ConfigLoader::load_config(
+            Some(&config_path),
+            Some(&dest_dir.join("workspaces")),
+            true,
+        )?;
         for (r_name, r_cfg) in &loaded_cfg.repositories {
             if let Some(url) = &r_cfg.url {
                 let bare_path = dest_dir.join(&r_cfg.bare);
@@ -2458,7 +2827,10 @@ impl WorkspaceManager {
                     let _ = ensure_directory(parent);
                 }
                 if !self.git.is_bare_repo(&bare_path) {
-                    OutputHandler::print_info(&format!("Cloning bare repository {} from {}...", r_name, url));
+                    OutputHandler::print_info(&format!(
+                        "Cloning bare repository {} from {}...",
+                        r_name, url
+                    ));
                     self.git.clone_bare(url, &bare_path)?;
                     OutputHandler::print_success(&format!("Cloned {}", bare_path.display()));
                 }
@@ -2483,7 +2855,9 @@ impl WorkspaceManager {
             .clone()
             .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
         if !config_file.exists() {
-            return Err(WSError::Config("No 'repositories.yml' found in project root to publish.".to_string()));
+            return Err(WSError::Config(
+                "No 'repositories.yml' found in project root to publish.".to_string(),
+            ));
         }
 
         let proj_ident = format!("{}/{}", namespace, name);
@@ -2496,15 +2870,13 @@ impl WorkspaceManager {
             ConfigLoader::classify_project_assets(&self.config);
 
         if !silent {
-            OutputHandler::print_info(&format!("Publishing project {}/{} to wshub...", namespace, name));
+            OutputHandler::print_info(&format!(
+                "Publishing project {}/{} to wshub...",
+                namespace, name
+            ));
         }
 
-        let result = client.create_project(
-            &namespace,
-            &name,
-            description,
-            false,
-        )?;
+        let result = client.create_project(&namespace, &name, description, false)?;
 
         let _ = client.push_revision(
             &namespace,
@@ -2515,14 +2887,21 @@ impl WorkspaceManager {
         );
 
         if !silent {
-            OutputHandler::print_success(&format!("Published project {}/{} (Revision v1)", namespace, name));
+            OutputHandler::print_success(&format!(
+                "Published project {}/{} (Revision v1)",
+                namespace, name
+            ));
         }
 
         // Sync secrets
         let mut total_secrets = 0;
         let mut flat_secrets = Vec::new();
         for (scope, sec_dict) in &extracted_secrets {
-            let repo_param = if scope == "global" { None } else { Some(scope.clone()) };
+            let repo_param = if scope == "global" {
+                None
+            } else {
+                Some(scope.clone())
+            };
             for (k, v) in sec_dict {
                 flat_secrets.push((k.clone(), v.clone(), repo_param.clone()));
                 total_secrets += 1;
@@ -2533,22 +2912,35 @@ impl WorkspaceManager {
         }
 
         if !silent && total_secrets > 0 {
-            OutputHandler::print_success(&format!("Stored and encrypted {} secret(s) in Vault", total_secrets));
+            OutputHandler::print_success(&format!(
+                "Stored and encrypted {} secret(s) in Vault",
+                total_secrets
+            ));
         }
 
         // Sync files
         for f_path in &files_to_upload {
-            let rel_path = f_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let rel_path = f_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             if let Ok(file_bytes) = std::fs::read(f_path) {
                 let _ = client.upload_file(&namespace, &name, &rel_path, file_bytes);
             }
         }
         if !silent && !files_to_upload.is_empty() {
-            OutputHandler::print_success(&format!("Encrypted and uploaded {} sensitive file(s)", files_to_upload.len()));
+            OutputHandler::print_success(&format!(
+                "Encrypted and uploaded {} sensitive file(s)",
+                files_to_upload.len()
+            ));
         }
 
         if !silent && private_count > 0 {
-            OutputHandler::print_info(&format!("Skipped {} private variable(s) (kept local)", private_count));
+            OutputHandler::print_info(&format!(
+                "Skipped {} private variable(s) (kept local)",
+                private_count
+            ));
         }
 
         Ok(result)
@@ -2569,27 +2961,30 @@ impl WorkspaceManager {
             .clone()
             .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
         if !config_file.exists() {
-            return Err(WSError::Config("No 'repositories.yml' found in project root.".to_string()));
+            return Err(WSError::Config(
+                "No 'repositories.yml' found in project root.".to_string(),
+            ));
         }
 
         let (sanitized_yaml, extracted_secrets, files_to_upload, private_count) =
             ConfigLoader::classify_project_assets(&self.config);
 
-        let result = match client.push_revision(
-            &namespace,
-            &name,
-            &sanitized_yaml,
-            Some(message),
-            None,
-        ) {
-            Ok(r) => r,
-            Err(e) => {
-                if e.to_string().contains("404") || e.to_string().to_lowercase().contains("not found") {
-                    return self.hub_publish(project_identifier, Some("Auto-published on push"), silent);
+        let result =
+            match client.push_revision(&namespace, &name, &sanitized_yaml, Some(message), None) {
+                Ok(r) => r,
+                Err(e) => {
+                    if e.to_string().contains("404")
+                        || e.to_string().to_lowercase().contains("not found")
+                    {
+                        return self.hub_publish(
+                            project_identifier,
+                            Some("Auto-published on push"),
+                            silent,
+                        );
+                    }
+                    return Err(e);
                 }
-                return Err(e);
-            }
-        };
+            };
 
         let version = result
             .get("revision")
@@ -2599,13 +2994,20 @@ impl WorkspaceManager {
             .unwrap_or_else(|| "?".to_string());
 
         if !silent {
-            OutputHandler::print_success(&format!("Pushed revision v{} to {}/{}", version, namespace, name));
+            OutputHandler::print_success(&format!(
+                "Pushed revision v{} to {}/{}",
+                version, namespace, name
+            ));
         }
 
         // Sync secrets
         let mut flat_secrets = Vec::new();
         for (scope, sec_dict) in &extracted_secrets {
-            let repo_param = if scope == "global" { None } else { Some(scope.clone()) };
+            let repo_param = if scope == "global" {
+                None
+            } else {
+                Some(scope.clone())
+            };
             for (k, v) in sec_dict {
                 flat_secrets.push((k.clone(), v.clone(), repo_param.clone()));
             }
@@ -2616,29 +3018,45 @@ impl WorkspaceManager {
 
         // Upload files
         for f_path in &files_to_upload {
-            let rel_path = f_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let rel_path = f_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
             if let Ok(file_bytes) = std::fs::read(f_path) {
                 let _ = client.upload_file(&namespace, &name, &rel_path, file_bytes);
             }
         }
 
         if !silent && private_count > 0 {
-            OutputHandler::print_info(&format!("Skipped {} private variable(s) (kept local)", private_count));
+            OutputHandler::print_info(&format!(
+                "Skipped {} private variable(s) (kept local)",
+                private_count
+            ));
         }
 
         Ok(result)
     }
 
-    pub fn hub_pull(&mut self, project_identifier: Option<&str>) -> Result<serde_json::Value, WSError> {
+    pub fn hub_pull(
+        &mut self,
+        project_identifier: Option<&str>,
+    ) -> Result<serde_json::Value, WSError> {
         let client = HubClient::default();
         let (namespace, name) = self.get_project_namespace_and_name(project_identifier);
 
         let data = client.get_project(&namespace, &name)?;
         let latest_rev = data.get("latestRevision").ok_or_else(|| {
-            WSError::Config(format!("Project '{}/{}' has no revisions.", namespace, name))
+            WSError::Config(format!(
+                "Project '{}/{}' has no revisions.",
+                namespace, name
+            ))
         })?;
 
-        let blueprint_yaml = latest_rev.get("blueprintYaml").and_then(|y| y.as_str()).unwrap_or("");
+        let blueprint_yaml = latest_rev
+            .get("blueprintYaml")
+            .and_then(|y| y.as_str())
+            .unwrap_or("");
         let config_file = self
             .config
             .config_file_path
@@ -2668,7 +3086,10 @@ impl WorkspaceManager {
 
         if is_auto {
             state_map.insert("auto_saved".to_string(), serde_json::Value::Bool(true));
-            state_map.insert("saved_at".to_string(), serde_json::Value::String(get_iso_timestamp()));
+            state_map.insert(
+                "saved_at".to_string(),
+                serde_json::Value::String(get_iso_timestamp()),
+            );
         }
 
         let mut wip_summary = Vec::new();
@@ -2695,10 +3116,14 @@ impl WorkspaceManager {
                 }
 
                 if !diff.trim().is_empty() || !untracked_map.is_empty() {
-                    let diff_file_count = diff.lines().filter(|l| l.starts_with("diff --git")).count();
+                    let diff_file_count =
+                        diff.lines().filter(|l| l.starts_with("diff --git")).count();
                     let mut r_wip = serde_json::Map::new();
                     r_wip.insert("diff".to_string(), serde_json::Value::String(diff));
-                    r_wip.insert("untracked".to_string(), serde_json::Value::Object(untracked_map.clone()));
+                    r_wip.insert(
+                        "untracked".to_string(),
+                        serde_json::Value::Object(untracked_map.clone()),
+                    );
                     wip_dict.insert(r_name.clone(), serde_json::Value::Object(r_wip));
                     wip_summary.push((r_name.clone(), diff_file_count, untracked_map.len()));
                 }
@@ -2744,7 +3169,10 @@ impl WorkspaceManager {
         HashMap::new()
     }
 
-    pub fn save_auto_save_cache(&self, cache: &HashMap<String, serde_json::Value>) -> Result<(), WSError> {
+    pub fn save_auto_save_cache(
+        &self,
+        cache: &HashMap<String, serde_json::Value>,
+    ) -> Result<(), WSError> {
         let p = self.get_auto_save_cache_file();
         if let Some(parent) = p.parent() {
             ensure_directory(parent)?;
@@ -2754,7 +3182,11 @@ impl WorkspaceManager {
         Ok(())
     }
 
-    pub fn get_workspace_fingerprint(&self, workspace_name: &str, include_wip: bool) -> Result<String, WSError> {
+    pub fn get_workspace_fingerprint(
+        &self,
+        workspace_name: &str,
+        include_wip: bool,
+    ) -> Result<String, WSError> {
         let (meta, ws_dir) = self.get_workspace_info(workspace_name)?;
         let mut hasher = Sha256::new();
         hasher.update(meta.name.as_bytes());
@@ -2763,7 +3195,9 @@ impl WorkspaceManager {
         sorted_repos.sort_by_key(|(k, _)| (*k).clone());
 
         for (r_name, spec) in sorted_repos {
-            hasher.update(format!("{}:{}:{}:{}", r_name, spec.branch, spec.frozen, spec.path).as_bytes());
+            hasher.update(
+                format!("{}:{}:{}:{}", r_name, spec.branch, spec.frozen, spec.path).as_bytes(),
+            );
             let wt_path = ws_dir.join(&spec.path);
             if wt_path.exists() {
                 let head = self.git.get_head_commit(&wt_path).unwrap_or_default();
@@ -2771,7 +3205,9 @@ impl WorkspaceManager {
 
                 if include_wip {
                     let uncommitted = self.git.check_worktree_uncommitted(&wt_path);
-                    hasher.update(format!("has_uncommitted:{}", uncommitted.has_uncommitted).as_bytes());
+                    hasher.update(
+                        format!("has_uncommitted:{}", uncommitted.has_uncommitted).as_bytes(),
+                    );
                     for m in &uncommitted.modified {
                         hasher.update(format!("mod:{}", m).as_bytes());
                     }
@@ -2821,22 +3257,41 @@ impl WorkspaceManager {
             .unwrap_or(true);
         let (namespace, p_name) = self.get_project_namespace_and_name(project_identifier);
 
-        match self.hub_state_save(workspace_name, project_identifier, include_wip, silent, true) {
+        match self.hub_state_save(
+            workspace_name,
+            project_identifier,
+            include_wip,
+            silent,
+            true,
+        ) {
             Ok(_) => {
                 let mut map = serde_json::Map::new();
-                map.insert("fingerprint".to_string(), serde_json::Value::String(current_fp));
-                map.insert("last_saved_at".to_string(), serde_json::Value::String(get_iso_timestamp()));
+                map.insert(
+                    "fingerprint".to_string(),
+                    serde_json::Value::String(current_fp),
+                );
+                map.insert(
+                    "last_saved_at".to_string(),
+                    serde_json::Value::String(get_iso_timestamp()),
+                );
                 cache.insert(workspace_name.to_string(), serde_json::Value::Object(map));
                 let _ = self.save_auto_save_cache(&cache);
 
                 if should_notify {
-                    crate::notify::notify_auto_save_success(workspace_name, Some(&format!("{}/{}", namespace, p_name)));
+                    crate::notify::notify_auto_save_success(
+                        workspace_name,
+                        Some(&format!("{}/{}", namespace, p_name)),
+                    );
                 }
                 Ok(true)
             }
             Err(e) => {
                 if should_notify {
-                    crate::notify::notify_auto_save_failure(workspace_name, &e.to_string(), Some(&format!("{}/{}", namespace, p_name)));
+                    crate::notify::notify_auto_save_failure(
+                        workspace_name,
+                        &e.to_string(),
+                        Some(&format!("{}/{}", namespace, p_name)),
+                    );
                 }
                 Err(e)
             }
@@ -2867,7 +3322,11 @@ impl WorkspaceManager {
                     target_names.push(m.name);
                 }
             } else if target_setting == "list" {
-                if let Some(HubAutoSaveConfig { workspaces: WorkspacesSelector::List(l), .. }) = auto_cfg {
+                if let Some(HubAutoSaveConfig {
+                    workspaces: WorkspacesSelector::List(l),
+                    ..
+                }) = auto_cfg
+                {
                     if l.contains(&m.name) {
                         target_names.push(m.name);
                     }
@@ -2879,7 +3338,13 @@ impl WorkspaceManager {
 
         let mut results = HashMap::new();
         for w_name in target_names {
-            match self.hub_auto_save_workspace(&w_name, project_identifier, include_wip, force, silent) {
+            match self.hub_auto_save_workspace(
+                &w_name,
+                project_identifier,
+                include_wip,
+                force,
+                silent,
+            ) {
                 Ok(saved) => {
                     results.insert(w_name, saved);
                 }
@@ -2941,17 +3406,20 @@ impl WorkspaceManager {
 
         if detached {
             let log_file = self.config.workspaces_dir.join(".auto_save.log");
-            let log_out = File::options()
-                .create(true)
-                .append(true)
-                .open(&log_file)?;
+            let log_out = File::options().create(true).append(true).open(&log_file)?;
 
             let current_exe = std::env::current_exe()?;
             let mut cmd = Command::new(current_exe);
             if let Some(cf) = &self.config.config_file_path {
                 cmd.args(["-c", &cf.display().to_string()]);
             }
-            cmd.args(["hub", "auto-save", "run", "--interval", &eff_interval.to_string()]);
+            cmd.args([
+                "hub",
+                "auto-save",
+                "run",
+                "--interval",
+                &eff_interval.to_string(),
+            ]);
             if let Some(pi) = project_identifier {
                 cmd.args(["--project", pi]);
             }
@@ -3025,9 +3493,18 @@ impl WorkspaceManager {
             }
 
             let mut w_map = serde_json::Map::new();
-            w_map.insert("last_saved_at".to_string(), last_saved.unwrap_or(serde_json::Value::Null));
-            w_map.insert("has_uncommitted".to_string(), serde_json::Value::Bool(dirty));
-            w_map.insert("active_session".to_string(), serde_json::Value::Bool(self.is_session_running(&m.name)));
+            w_map.insert(
+                "last_saved_at".to_string(),
+                last_saved.unwrap_or(serde_json::Value::Null),
+            );
+            w_map.insert(
+                "has_uncommitted".to_string(),
+                serde_json::Value::Bool(dirty),
+            );
+            w_map.insert(
+                "active_session".to_string(),
+                serde_json::Value::Bool(self.is_session_running(&m.name)),
+            );
             ws_info.insert(m.name, serde_json::Value::Object(w_map));
         }
 
@@ -3053,11 +3530,18 @@ impl WorkspaceManager {
         let (namespace, name) = self.get_project_namespace_and_name(project_identifier);
 
         let state_val = client.get_workspace_state(&namespace, &name, workspace_name)?;
-        let meta: WorkspaceMetadata = serde_json::from_value(state_val.clone())
-            .map_err(|e| WSError::Config(format!("Invalid saved state for '{}': {}", workspace_name, e)))?;
+        let meta: WorkspaceMetadata = serde_json::from_value(state_val.clone()).map_err(|e| {
+            WSError::Config(format!(
+                "Invalid saved state for '{}': {}",
+                workspace_name, e
+            ))
+        })?;
 
         let repo_specs: Vec<RepoSpec> = meta.repositories.values().cloned().collect();
-        OutputHandler::print_info(&format!("Recreating workspace @{} from hub state...", meta.name));
+        OutputHandler::print_info(&format!(
+            "Recreating workspace @{} from hub state...",
+            meta.name
+        ));
         self.create_workspace(&meta.name, &repo_specs, None, false)?;
 
         if apply_wip {
@@ -3073,7 +3557,9 @@ impl WorkspaceManager {
                     if let Some(untr_map) = r_wip.get("untracked").and_then(|u| u.as_object()) {
                         for (rel_p, b64_val) in untr_map {
                             if let Some(b64_str) = b64_val.as_str() {
-                                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64_str) {
+                                if let Ok(bytes) =
+                                    base64::engine::general_purpose::STANDARD.decode(b64_str)
+                                {
                                     let dest = wt_path.join(rel_p);
                                     if let Some(parent) = dest.parent() {
                                         let _ = ensure_directory(parent);
@@ -3089,7 +3575,10 @@ impl WorkspaceManager {
                             let _ = self.git.apply_patch(&wt_path, diff_str);
                         }
                     }
-                    OutputHandler::print_success(&format!("Restored uncommitted work in %{}", r_name));
+                    OutputHandler::print_success(&format!(
+                        "Restored uncommitted work in %{}",
+                        r_name
+                    ));
                 }
             }
         }

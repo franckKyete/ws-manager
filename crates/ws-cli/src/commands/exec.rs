@@ -1,7 +1,7 @@
+use crate::helpers::{clean_repo, clean_workspace};
 use std::path::Path;
 use ws_core::output::OutputHandler;
 use ws_core::WorkspaceManager;
-use crate::helpers::{clean_repo, clean_workspace};
 
 pub fn execute_exec(
     manager: &WorkspaceManager,
@@ -79,14 +79,22 @@ pub fn execute_exec(
         } else if let Some(ref current_ws) = ws_name {
             let clean_t = clean_repo(Some(t)).unwrap_or_else(|| t.to_string());
             let mut is_repo = false;
-            if manager.config.repositories.contains_key(&clean_t) {
-                is_repo = true;
-            } else if manager.config.repositories.values().any(|r| r.checkout == clean_t) {
+            if manager.config.repositories.contains_key(&clean_t)
+                || manager
+                    .config
+                    .repositories
+                    .values()
+                    .any(|r| r.checkout == clean_t)
+            {
                 is_repo = true;
             } else if let Ok((meta, _)) = manager.get_workspace_info(current_ws) {
                 if meta.repositories.contains_key(&clean_t)
                     || meta.repositories.values().any(|s| {
-                        s.path == clean_t || Path::new(&s.path).file_name().map(|f| f.to_str().unwrap() == clean_t).unwrap_or(false)
+                        s.path == clean_t
+                            || Path::new(&s.path)
+                                .file_name()
+                                .map(|f| f.to_str().unwrap() == clean_t)
+                                .unwrap_or(false)
                     })
                 {
                     is_repo = true;
@@ -140,7 +148,10 @@ pub fn execute_exec(
         .collect();
 
     if !failed.is_empty() {
-        OutputHandler::print_warning(&format!("Command exited with non-zero status in: {}", failed.join(", ")));
+        OutputHandler::print_warning(&format!(
+            "Command exited with non-zero status in: {}",
+            failed.join(", ")
+        ));
         std::process::exit(1);
     }
 

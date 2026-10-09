@@ -1,7 +1,7 @@
-use std::path::PathBuf;
-use std::process::Command;
 use crate::errors::WSError;
 use crate::utils::ensure_directory;
+use std::path::PathBuf;
+use std::process::Command;
 
 pub const SERVICE_NAME: &str = "ws.service";
 
@@ -80,7 +80,10 @@ WantedBy=default.target
 
 pub fn install_service(ws_exec: Option<&str>) -> Result<(bool, String), WSError> {
     if !is_systemctl_available() {
-        return Ok((false, "systemctl is not available on this system.".to_string()));
+        return Ok((
+            false,
+            "systemctl is not available on this system.".to_string(),
+        ));
     }
 
     let service_dir = get_user_systemd_dir();
@@ -99,13 +102,20 @@ pub fn install_service(ws_exec: Option<&str>) -> Result<(bool, String), WSError>
         .output()?;
 
     if !res_enable.status.success() {
-        let err = String::from_utf8_lossy(&res_enable.stderr).trim().to_string();
-        let out = String::from_utf8_lossy(&res_enable.stdout).trim().to_string();
+        let err = String::from_utf8_lossy(&res_enable.stderr)
+            .trim()
+            .to_string();
+        let out = String::from_utf8_lossy(&res_enable.stdout)
+            .trim()
+            .to_string();
         let msg = if !err.is_empty() { err } else { out };
         return Ok((false, format!("Failed enabling {}: {}", SERVICE_NAME, msg)));
     }
 
-    Ok((true, format!("Installed and started {} successfully.", SERVICE_NAME)))
+    Ok((
+        true,
+        format!("Installed and started {} successfully.", SERVICE_NAME),
+    ))
 }
 
 pub fn uninstall_service() -> Result<(bool, String), WSError> {
@@ -115,7 +125,10 @@ pub fn uninstall_service() -> Result<(bool, String), WSError> {
             let _ = std::fs::remove_file(&service_path);
             return Ok((true, format!("Removed {}.", service_path.display())));
         }
-        return Ok((false, "systemctl is not available on this system.".to_string()));
+        return Ok((
+            false,
+            "systemctl is not available on this system.".to_string(),
+        ));
     }
 
     let _ = Command::new("systemctl")
@@ -138,14 +151,20 @@ pub fn uninstall_service() -> Result<(bool, String), WSError> {
 
 pub fn control_service(action: &str) -> Result<(bool, String), WSError> {
     if !is_systemctl_available() {
-        return Ok((false, "systemctl is not available on this system.".to_string()));
+        return Ok((
+            false,
+            "systemctl is not available on this system.".to_string(),
+        ));
     }
 
     let service_path = get_service_path();
     if !service_path.exists() && matches!(action, "start" | "restart" | "enable") {
         return Ok((
             false,
-            format!("{} is not installed. Run 'ws service install' first.", SERVICE_NAME),
+            format!(
+                "{} is not installed. Run 'ws service install' first.",
+                SERVICE_NAME
+            ),
         ));
     }
 
@@ -160,7 +179,10 @@ pub fn control_service(action: &str) -> Result<(bool, String), WSError> {
         return Ok((false, format!("systemctl {} failed: {}", action, msg)));
     }
 
-    Ok((true, format!("Successfully executed '{}' on {}.", action, SERVICE_NAME)))
+    Ok((
+        true,
+        format!("Successfully executed '{}' on {}.", action, SERVICE_NAME),
+    ))
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -193,7 +215,10 @@ pub fn get_service_status() -> ServiceStatus {
             installed: false,
             active: false,
             enabled: false,
-            details: format!("{} is not installed (run 'ws service install')", SERVICE_NAME),
+            details: format!(
+                "{} is not installed (run 'ws service install')",
+                SERVICE_NAME
+            ),
             unit_path: service_path.to_string_lossy().to_string(),
         };
     }
@@ -238,9 +263,7 @@ pub fn stream_service_logs(follow: bool, lines: usize) -> Result<i32, WSError> {
         args.push("-f");
     }
 
-    let status = Command::new("journalctl")
-        .args(&args)
-        .status()?;
+    let status = Command::new("journalctl").args(&args).status()?;
 
     Ok(status.code().unwrap_or(0))
 }

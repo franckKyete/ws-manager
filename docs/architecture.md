@@ -1,6 +1,8 @@
 # 🏛️ Architecture & System Internals
 
-`ws` is designed as a high-performance, 100% native Rust system that combines the safety of Git worktrees with an enterprise-grade process supervision daemon and headless terminal screen emulator.
+`ws` is designed as a high-performance, 100% native Rust system that combines
+the safety of Git worktrees with an enterprise-grade process supervision daemon
+and headless terminal screen emulator.
 
 ---
 
@@ -53,32 +55,44 @@ graph TD
 
 ## 1. Git Storage Model: Bare Store & Worktrees
 
-Traditional multi-repository management either duplicates clones (`git clone`) or relies on Git submodules. Both approaches suffer from substantial downsides:
+Traditional multi-repository management either duplicates clones (`git clone`)
+or relies on Git submodules. Both approaches suffer from substantial downsides:
 
-- **Duplicate Clones**: Wastes gigabytes of disk space and requires re-cloning for every branch or feature test.
-- **Git Submodules**: Notoriously fragile, hard to branch simultaneously, and painful during merge conflicts.
+- **Duplicate Clones**: Wastes gigabytes of disk space and requires re-cloning
+  for every branch or feature test.
+- **Git Submodules**: Notoriously fragile, hard to branch simultaneously, and
+  painful during merge conflicts.
 
 ### The `ws` Worktree Model
 
 1. **Single Bare Clone (`bares/<repo>.git`)**:
    - Each repository is cloned once with `--bare`.
-   - The bare repository holds the complete Git object database and commit graph.
+   - The bare repository holds the complete Git object database and commit
+     graph.
 2. **Instant Worktree Creation (`workspaces/@<name>/<checkout>`)**:
    - Creating a workspace executes `git worktree add -b <branch> <path>`.
-   - Worktree checkouts take **under 100 milliseconds** and consume zero duplicate object storage.
-   - Worktrees can be deleted and recreated freely without risking committed history in the bare store.
+   - Worktree checkouts take **under 100 milliseconds** and consume zero
+     duplicate object storage.
+   - Worktrees can be deleted and recreated freely without risking committed
+     history in the bare store.
 
 ---
 
 ## 2. Background Supervision Daemon & Unix Socket IPC
 
-When services are started with `ws start`, `ws` spawns a detached background supervisor daemon.
+When services are started with `ws start`, `ws` spawns a detached background
+supervisor daemon.
 
 ### Key Characteristics:
 
-- **Dedicated Unix Domain Socket**: Bound to `.ws/session.sock` inside the workspace directory.
-- **JSON-RPC Protocol**: Enables instantaneous status queries (`ws info`), log tailing (`ws logs`), service restarts (`ws restart`), and presentation switching (`ws attach`).
-- **Master PTY Allocation**: Each child process is spawned inside a real pseudo-terminal (`openpty`), preserving ANSI colors, cursor positioning, and interactive inputs.
+- **Dedicated Unix Domain Socket**: Bound to `.ws/session.sock` inside the
+  workspace directory.
+- **JSON-RPC Protocol**: Enables instantaneous status queries (`ws info`), log
+  tailing (`ws logs`), service restarts (`ws restart`), and presentation
+  switching (`ws attach`).
+- **Master PTY Allocation**: Each child process is spawned inside a real
+  pseudo-terminal (`openpty`), preserving ANSI colors, cursor positioning, and
+  interactive inputs.
 
 ### Supported IPC Requests:
 
@@ -97,52 +111,67 @@ When services are started with `ws start`, `ws` spawns a detached background sup
 
 ## 3. High-Performance Rust Native Engine (`_native` & `vt100`)
 
-The core terminal emulation and buffer engine is written in Rust for sub-millisecond rendering and minimal memory overhead.
+The core terminal emulation and buffer engine is written in Rust for
+sub-millisecond rendering and minimal memory overhead.
 
 ### Components:
 
-- **`crates/vt100`**: Custom headless VT100 and ANSI escape sequence parser. Maintains virtual screen dimensions, cursor coordinates, and text styling attributes in memory.
-- **`crates/ws-tui`**: Interactive terminal user interface built with `ratatui` and `crossterm`.
+- **`crates/vt100`**: Custom headless VT100 and ANSI escape sequence parser.
+  Maintains virtual screen dimensions, cursor coordinates, and text styling
+  attributes in memory.
+- **`crates/ws-tui`**: Interactive terminal user interface built with `ratatui`
+  and `crossterm`.
 - **Lossless Line Ring Buffer (10,000 Lines)**:
   - Maintains 10,000 lines of scrollback per service.
-  - Correctly preserves interactive carriage returns (`\r`) from progress bars and spinners (such as `npm install` and `docker build`) without exploding buffer length.
+  - Correctly preserves interactive carriage returns (`\r`) from progress bars
+    and spinners (such as `npm install` and `docker build`) without exploding
+    buffer length.
   - Preserves complex terminal layouts (e.g. Expo QR codes and ASCII banners).
 
 ---
 
 ## 4. Zero-Downtime Presentation Engine Switching
 
-A unique feature of `ws` is the ability to decouple process execution from the presentation frontend.
+A unique feature of `ws` is the ability to decouple process execution from the
+presentation frontend.
 
 ### How it Works:
 
 1. Child processes remain alive inside their Master PTYs under the daemon.
 2. When switching from **Tmux** to **Rust TUI** (or **Zellij**):
-   - `ws attach @<workspace> --switch` sends a `SwitchEngine` request to the daemon.
+   - `ws attach @<workspace> --switch` sends a `SwitchEngine` request to the
+     daemon.
    - The daemon updates its presentation state.
-   - The new presentation interface connects to the live ring buffer and renders the current screen state instantly.
+   - The new presentation interface connects to the live ring buffer and renders
+     the current screen state instantly.
 3. **No service restarts, no port re-bindings, and no lost output.**
 
 ---
 
 ## 5. Atomic Rollback Engine
 
-When creating a multi-repository workspace (`ws create @feat %repo1 %repo2`), a network failure or branch conflict on `%repo2` could leave `%repo1` half-initialized.
+When creating a multi-repository workspace (`ws create @feat %repo1 %repo2`), a
+network failure or branch conflict on `%repo2` could leave `%repo1`
+half-initialized.
 
 `ws` includes an **Atomic Rollback Stack**:
 
-- Every filesystem directory creation, branch creation, and worktree checkout registers a compensating undo action.
-- If any step fails, the rollback engine executes the compensation stack in reverse order:
+- Every filesystem directory creation, branch creation, and worktree checkout
+  registers a compensating undo action.
+- If any step fails, the rollback engine executes the compensation stack in
+  reverse order:
   1. Removes partial worktrees (`git worktree remove --force`).
   2. Deletes newly created Git branches (`git branch -D`).
   3. Deletes partial workspace folders.
-- The project is guaranteed to return to a clean, pristine state with clear error diagnostics.
+- The project is guaranteed to return to a clean, pristine state with clear
+  error diagnostics.
 
 ---
 
 ## 6. Workspace-Scoped Service Discovery & Dynamic Port Auto-Healing
 
-When managing microservices across concurrent workspaces, `ws` enforces strict network isolation and collision auto-healing:
+When managing microservices across concurrent workspaces, `ws` enforces strict
+network isolation and collision auto-healing:
 
 ```mermaid
 graph TD
@@ -162,11 +191,21 @@ graph TD
 ### Key Subsystems:
 
 1. **Multi-Network Host Resolver (`ws/network.py`)**:
-   - Probes the system routing table to discover the host's LAN Wi-Fi IP address (e.g. `192.168.1.45`) without contacting external networks.
-   - Resolves `${SERVICE_URL_LAN:<repo>}` and `${SERVICE_URL_LAN:<repo>:<subport>}` for mobile testing on physical devices.
+   - Probes the system routing table to discover the host's LAN Wi-Fi IP address
+     (e.g. `192.168.1.45`) without contacting external networks.
+   - Resolves `${SERVICE_URL_LAN:<repo>}` and
+     `${SERVICE_URL_LAN:<repo>:<subport>}` for mobile testing on physical
+     devices.
 2. **Multi-Port Allocation & Pre-Flight Real-Time Socket Probing**:
-   - For every service, `ws` inspects all declared base ports (`port` or `ports: {http: 8080, ws: 8081}`) and computes deterministic workspace slot offsets (`base_port + slot * 10`).
-   - On `ws start` and `ws setup`, `ws` tests socket binding (`0.0.0.0:<port>`) in real-time across all service ports.
-   - If an external process seized a port assigned during setup, `ws` automatically allocates the next available free port without colliding with other services in the workspace.
+   - For every service, `ws` inspects all declared base ports (`port` or
+     `ports: {http: 8080, ws: 8081}`) and computes deterministic workspace slot
+     offsets (`base_port + slot * 10`).
+   - On `ws start` and `ws setup`, `ws` tests socket binding (`0.0.0.0:<port>`)
+     in real-time across all service ports.
+   - If an external process seized a port assigned during setup, `ws`
+     automatically allocates the next available free port without colliding with
+     other services in the workspace.
 3. **Just-In-Time (JIT) `.env` Re-Synchronization**:
-   - If any port shifts during launch, `ws` automatically re-synchronizes worktree `.env` files and updates `.ws/services.json` and `.ws/services.env` before starting processes.
+   - If any port shifts during launch, `ws` automatically re-synchronizes
+     worktree `.env` files and updates `.ws/services.json` and
+     `.ws/services.env` before starting processes.

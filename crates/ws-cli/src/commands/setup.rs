@@ -1,6 +1,6 @@
+use crate::helpers::{clean_repo, resolve_ws_and_repo_args};
 use ws_core::output::OutputHandler;
 use ws_core::WorkspaceManager;
-use crate::helpers::{clean_repo, resolve_ws_and_repo_args};
 
 pub fn execute_setup(
     manager: &mut WorkspaceManager,
@@ -14,7 +14,8 @@ pub fn execute_setup(
     interface: Option<&str>,
     lan_ip: Option<&str>,
 ) -> Result<(), String> {
-    let (ws_name, _, resolved_repos) = resolve_ws_and_repo_args(manager, name, None, repos, true, false)?;
+    let (ws_name, _, resolved_repos) =
+        resolve_ws_and_repo_args(manager, name, None, repos, true, false)?;
     let mut target_repos: Option<Vec<String>> = None;
 
     if let Some(rf) = repos_flag {

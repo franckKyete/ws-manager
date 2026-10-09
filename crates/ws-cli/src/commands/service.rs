@@ -36,10 +36,34 @@ pub fn execute_service_control(action: &str) -> Result<(), String> {
 
 pub fn execute_service_status() -> Result<(), String> {
     let status = get_service_status();
-    println!("{}", "systemd User Service Status: ws.service".bold().cyan());
-    println!("  Installed: {}", if status.installed { "Yes".green() } else { "No".red() });
-    println!("  Active:    {}", if status.active { "active (running)".green() } else { "inactive".yellow() });
-    println!("  Enabled:   {}", if status.enabled { "enabled".green() } else { "disabled".dimmed() });
+    println!(
+        "{}",
+        "systemd User Service Status: ws.service".bold().cyan()
+    );
+    println!(
+        "  Installed: {}",
+        if status.installed {
+            "Yes".green()
+        } else {
+            "No".red()
+        }
+    );
+    println!(
+        "  Active:    {}",
+        if status.active {
+            "active (running)".green()
+        } else {
+            "inactive".yellow()
+        }
+    );
+    println!(
+        "  Enabled:   {}",
+        if status.enabled {
+            "enabled".green()
+        } else {
+            "disabled".dimmed()
+        }
+    );
     if !status.unit_path.is_empty() {
         println!("  Unit Path: {}", status.unit_path);
     }

@@ -12,9 +12,9 @@ pub fn run_raw_bridge(socket_path: String, service_name: String) -> Result<i32, 
         .map_err(|e| format!("Failed building Tokio runtime: {}", e))?;
 
     rt.block_on(async move {
-        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-        use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
+        use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
         use std::io::{Read, Write};
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 
         let stream = tokio::net::UnixStream::connect(&sock)
             .await
@@ -26,20 +26,28 @@ pub fn run_raw_bridge(socket_path: String, service_name: String) -> Result<i32, 
         // Send AttachRaw request
         let req = serde_json::to_string(&crate::daemon::DaemonRequest::AttachRaw {
             service: service_name.clone(),
-        }).map_err(|e| e.to_string())? + "\n";
+        })
+        .map_err(|e| e.to_string())?
+            + "\n";
 
-        writer.write_all(req.as_bytes()).await.map_err(|e| e.to_string())?;
+        writer
+            .write_all(req.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
         writer.flush().await.map_err(|e| e.to_string())?;
 
         // Read confirmation response line
         let mut resp_line = String::new();
-        buf_reader.read_line(&mut resp_line).await.map_err(|e| e.to_string())?;
+        buf_reader
+            .read_line(&mut resp_line)
+            .await
+            .map_err(|e| e.to_string())?;
 
         let resp: crate::daemon::DaemonResponse = serde_json::from_str(resp_line.trim())
             .map_err(|e| format!("Invalid daemon response: {}", e))?;
 
         match resp {
-            crate::daemon::DaemonResponse::Success => {},
+            crate::daemon::DaemonResponse::Success => {}
             crate::daemon::DaemonResponse::Error { message } => {
                 return Err(format!("Daemon error: {}", message));
             }

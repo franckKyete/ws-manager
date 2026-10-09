@@ -1,9 +1,9 @@
+use crate::helpers::resolve_ws_and_repo_args;
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use ws_core::output::OutputHandler;
 use ws_core::WorkspaceManager;
-use crate::helpers::resolve_ws_and_repo_args;
 
 pub fn execute_start(
     manager: &mut WorkspaceManager,
@@ -18,7 +18,8 @@ pub fn execute_start(
     interface: Option<&str>,
     lan_ip: Option<&str>,
 ) -> Result<(), String> {
-    let (ws_name, _, resolved_repos) = resolve_ws_and_repo_args(manager, name, None, repos, true, false)?;
+    let (ws_name, _, resolved_repos) =
+        resolve_ws_and_repo_args(manager, name, None, repos, true, false)?;
     let mut target_repos = if !resolved_repos.is_empty() {
         Some(resolved_repos)
     } else {
@@ -57,8 +58,13 @@ pub fn execute_start(
 
 pub fn execute_stop(manager: &WorkspaceManager, name: Option<&str>) -> Result<(), String> {
     let (ws_name, _, _) = resolve_ws_and_repo_args(manager, name, None, None, true, false)?;
-    OutputHandler::print_info(&format!("Stopping services for workspace '@{}'...", ws_name));
-    let stopped = manager.stop_workspace(&ws_name).map_err(|e| e.to_string())?;
+    OutputHandler::print_info(&format!(
+        "Stopping services for workspace '@{}'...",
+        ws_name
+    ));
+    let stopped = manager
+        .stop_workspace(&ws_name)
+        .map_err(|e| e.to_string())?;
     if stopped {
         OutputHandler::print_success(&format!("Workspace session for '@{}' terminated.", ws_name));
     } else {
@@ -88,11 +94,15 @@ pub fn execute_restart(
     repo: Option<&str>,
     repos: Option<&[String]>,
 ) -> Result<(), String> {
-    let (ws_name, _, resolved_repos) = resolve_ws_and_repo_args(manager, name, repo, repos, true, false)?;
+    let (ws_name, _, resolved_repos) =
+        resolve_ws_and_repo_args(manager, name, repo, repos, true, false)?;
     let sock_path = manager.get_session_socket_path(&ws_name);
 
     if !manager.is_session_running(&ws_name) {
-        OutputHandler::print_warning(&format!("No running session for workspace '@{}'. Starting...", ws_name));
+        OutputHandler::print_warning(&format!(
+            "No running session for workspace '@{}'. Starting...",
+            ws_name
+        ));
         return execute_start(
             manager,
             Some(&ws_name),
@@ -111,7 +121,9 @@ pub fn execute_restart(
     let target_repos = if !resolved_repos.is_empty() {
         resolved_repos
     } else {
-        let (meta, _) = manager.get_workspace_info(&ws_name).map_err(|e| e.to_string())?;
+        let (meta, _) = manager
+            .get_workspace_info(&ws_name)
+            .map_err(|e| e.to_string())?;
         meta.repositories.keys().cloned().collect()
     };
 
@@ -126,7 +138,10 @@ pub fn execute_restart(
                 let _ = stream.write_all(req_bytes.as_bytes());
                 let mut buf = [0u8; 1024];
                 let _ = stream.read(&mut buf);
-                OutputHandler::print_success(&format!("Restarted service '%{}' in workspace '@{}'", r, ws_name));
+                OutputHandler::print_success(&format!(
+                    "Restarted service '%{}' in workspace '@{}'",
+                    r, ws_name
+                ));
             }
             Err(e) => {
                 OutputHandler::print_err(&format!("Failed restarting service '%{}': {}", r, e));
@@ -149,7 +164,10 @@ pub fn execute_logs(
     let log_dir = ws_dir.join(".ws").join("logs");
 
     if !log_dir.exists() {
-        OutputHandler::print_warning(&format!("No log directory found for workspace '@{}'.", ws_name));
+        OutputHandler::print_warning(&format!(
+            "No log directory found for workspace '@{}'.",
+            ws_name
+        ));
         return Ok(());
     }
 
@@ -183,7 +201,11 @@ pub fn execute_logs(
         }
 
         if log_files.is_empty() {
-            OutputHandler::print_err(&format!("No log file found for service '%{}' in {}", r, log_dir.display()));
+            OutputHandler::print_err(&format!(
+                "No log file found for service '%{}' in {}",
+                r,
+                log_dir.display()
+            ));
             return Ok(());
         }
     } else if let Ok(entries) = fs::read_dir(&log_dir) {

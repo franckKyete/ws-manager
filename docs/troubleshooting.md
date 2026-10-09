@@ -33,7 +33,8 @@ Running `ws lock @develop #server` results in:
 
 #### Cause:
 
-In Bash and Zsh, `#` is the shell comment character when preceded by a space. The shell strips `#server` before passing arguments to the CLI.
+In Bash and Zsh, `#` is the shell comment character when preceded by a space.
+The shell strips `#server` before passing arguments to the CLI.
 
 #### Resolution:
 
@@ -51,11 +52,13 @@ ws lock @develop server
 
 #### Problem:
 
-After a machine crash or ungraceful shutdown, `ws start` reports that a session is already active, but no processes are running.
+After a machine crash or ungraceful shutdown, `ws start` reports that a session
+is already active, but no processes are running.
 
 #### Resolution:
 
-1. `ws` automatically validates PID liveness on startup and cleans up dead sockets.
+1. `ws` automatically validates PID liveness on startup and cleans up dead
+   sockets.
 2. If needed, you can force stop the workspace:
    ```bash
    ws stop @<name>
@@ -81,7 +84,8 @@ A service fails to start with `EADDRINUSE: address already in use :8080`.
    # or check system-wide
    lsof -i :8080
    ```
-2. If another workspace session is holding the port, stop it with `ws stop @other-workspace`.
+2. If another workspace session is holding the port, stop it with
+   `ws stop @other-workspace`.
 
 ---
 
@@ -107,7 +111,8 @@ git -C bares/<repo>.git worktree prune
 
 #### Problem:
 
-Running `ws create @feat %server:feature/new-api:existing` fails with `Branch 'feature/new-api' does not exist`.
+Running `ws create @feat %server:feature/new-api:existing` fails with
+`Branch 'feature/new-api' does not exist`.
 
 #### Resolution:
 
@@ -125,11 +130,14 @@ Then retry creating the workspace.
 
 #### Problem:
 
-When running `ws shell @develop %server`, your prompt does not display `[@develop] server $`.
+When running `ws shell @develop %server`, your prompt does not display
+`[@develop] server $`.
 
 #### Resolution:
 
-`ws shell` injects `$WS_WORKSPACE` and `$WS_REPO` into the subshell environment. Ensure your shell config (`.bashrc` or `.zshrc`) supports customized prompts, or check the variables directly:
+`ws shell` injects `$WS_WORKSPACE` and `$WS_REPO` into the subshell environment.
+Ensure your shell config (`.bashrc` or `.zshrc`) supports customized prompts, or
+check the variables directly:
 
 ```bash
 echo "Workspace: $WS_WORKSPACE, Repo: $WS_REPO"

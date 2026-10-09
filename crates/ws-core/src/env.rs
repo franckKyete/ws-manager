@@ -1,7 +1,7 @@
+use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use regex::Regex;
 
 use crate::models::AppConfig;
 use crate::network::{allocate_workspace_ports, compute_preferred_service_port, get_lan_ip};
@@ -96,92 +96,109 @@ impl EnvEngine {
         }
         if let Some(wd) = workspaces_dir {
             result = result.replace("${WORKSPACES_DIR}", &wd.display().to_string());
-            result = result.replace("${WORKSPACE_DIR}", &wd.join(workspace_name).display().to_string());
+            result = result.replace(
+                "${WORKSPACE_DIR}",
+                &wd.join(workspace_name).display().to_string(),
+            );
         }
 
         // 3. Port expressions ${PORT:3000} -> base + slot * 10
-        result = PORT_EXPR_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            if let Ok(base) = caps[1].parse::<u16>() {
-                compute_preferred_service_port(base, slot, 10).to_string()
-            } else {
-                caps[0].to_string()
-            }
-        }).to_string();
+        result = PORT_EXPR_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                if let Ok(base) = caps[1].parse::<u16>() {
+                    compute_preferred_service_port(base, slot, 10).to_string()
+                } else {
+                    caps[0].to_string()
+                }
+            })
+            .to_string();
 
         // ${PORT_OFFSET:8000:5} -> base + slot * 5
-        result = PORT_OFFSET_EXPR_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            if let (Ok(base), Ok(mult)) = (caps[1].parse::<u16>(), caps[2].parse::<u16>()) {
-                compute_preferred_service_port(base, slot, mult).to_string()
-            } else {
-                caps[0].to_string()
-            }
-        }).to_string();
+        result = PORT_OFFSET_EXPR_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                if let (Ok(base), Ok(mult)) = (caps[1].parse::<u16>(), caps[2].parse::<u16>()) {
+                    compute_preferred_service_port(base, slot, mult).to_string()
+                } else {
+                    caps[0].to_string()
+                }
+            })
+            .to_string();
 
         // 4. Sibling service discovery
-        result = SVC_PORTS_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            let target = &caps[1];
-            if let Some(sub) = all_ports.get(target) {
-                let mut p_list: Vec<_> = sub.values().map(|p| p.to_string()).collect();
-                p_list.sort();
-                p_list.join(",")
-            } else if let Some(p) = ports.get(target) {
-                p.to_string()
-            } else {
-                "".to_string()
-            }
-        }).to_string();
+        result = SVC_PORTS_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                let target = &caps[1];
+                if let Some(sub) = all_ports.get(target) {
+                    let mut p_list: Vec<_> = sub.values().map(|p| p.to_string()).collect();
+                    p_list.sort();
+                    p_list.join(",")
+                } else if let Some(p) = ports.get(target) {
+                    p.to_string()
+                } else {
+                    "".to_string()
+                }
+            })
+            .to_string();
 
         // ${SERVICE_PORT:<name>:<subport>}
-        result = SVC_PORT_SUB_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            let target = &caps[1];
-            let subport = &caps[2];
-            let combined = format!("{}:{}", target, subport);
-            if let Some(p) = ports.get(&combined) {
-                return p.to_string();
-            }
-            if let Some(sub) = all_ports.get(target) {
-                if let Some(p) = sub.get(subport) {
+        result = SVC_PORT_SUB_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                let target = &caps[1];
+                let subport = &caps[2];
+                let combined = format!("{}:{}", target, subport);
+                if let Some(p) = ports.get(&combined) {
                     return p.to_string();
                 }
-            }
-            "".to_string()
-        }).to_string();
+                if let Some(sub) = all_ports.get(target) {
+                    if let Some(p) = sub.get(subport) {
+                        return p.to_string();
+                    }
+                }
+                "".to_string()
+            })
+            .to_string();
 
         // ${SERVICE_PORT:<name>}
-        result = SVC_PORT_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            let target = &caps[1];
-            if let Some(p) = ports.get(target) {
-                p.to_string()
-            } else {
-                "".to_string()
-            }
-        }).to_string();
+        result = SVC_PORT_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                let target = &caps[1];
+                if let Some(p) = ports.get(target) {
+                    p.to_string()
+                } else {
+                    "".to_string()
+                }
+            })
+            .to_string();
 
         // ${SERVICE_URL:<name>:<subport>}
-        result = SVC_URL_SUB_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            let target = &caps[1];
-            let subport = &caps[2];
-            let combined = format!("{}:{}", target, subport);
-            if let Some(p) = ports.get(&combined) {
-                return format!("http://127.0.0.1:{}", p);
-            }
-            if let Some(sub) = all_ports.get(target) {
-                if let Some(p) = sub.get(subport) {
+        result = SVC_URL_SUB_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                let target = &caps[1];
+                let subport = &caps[2];
+                let combined = format!("{}:{}", target, subport);
+                if let Some(p) = ports.get(&combined) {
                     return format!("http://127.0.0.1:{}", p);
                 }
-            }
-            "".to_string()
-        }).to_string();
+                if let Some(sub) = all_ports.get(target) {
+                    if let Some(p) = sub.get(subport) {
+                        return format!("http://127.0.0.1:{}", p);
+                    }
+                }
+                "".to_string()
+            })
+            .to_string();
 
         // ${SERVICE_URL:<name>}
-        result = SVC_URL_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            let target = &caps[1];
-            if let Some(p) = ports.get(target) {
-                format!("http://127.0.0.1:{}", p)
-            } else {
-                "".to_string()
-            }
-        }).to_string();
+        result = SVC_URL_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                let target = &caps[1];
+                if let Some(p) = ports.get(target) {
+                    format!("http://127.0.0.1:{}", p)
+                } else {
+                    "".to_string()
+                }
+            })
+            .to_string();
 
         let resolved_lan_ip = match lan_ip {
             Some(ip) => ip.to_string(),
@@ -196,63 +213,73 @@ impl EnvEngine {
         };
 
         // ${SERVICE_URL_LAN:<name>:<subport>}
-        result = SVC_URL_LAN_SUB_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            let target = &caps[1];
-            let subport = &caps[2];
-            let combined = format!("{}:{}", target, subport);
-            if let Some(p) = ports.get(&combined) {
-                return format!("http://{}:{}", resolved_lan_ip, p);
-            }
-            if let Some(sub) = all_ports.get(target) {
-                if let Some(p) = sub.get(subport) {
+        result = SVC_URL_LAN_SUB_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                let target = &caps[1];
+                let subport = &caps[2];
+                let combined = format!("{}:{}", target, subport);
+                if let Some(p) = ports.get(&combined) {
                     return format!("http://{}:{}", resolved_lan_ip, p);
                 }
-            }
-            "".to_string()
-        }).to_string();
+                if let Some(sub) = all_ports.get(target) {
+                    if let Some(p) = sub.get(subport) {
+                        return format!("http://{}:{}", resolved_lan_ip, p);
+                    }
+                }
+                "".to_string()
+            })
+            .to_string();
 
         // ${SERVICE_URL_LAN:<name>}
-        result = SVC_URL_LAN_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            let target = &caps[1];
-            if let Some(p) = ports.get(target) {
-                format!("http://{}:{}", resolved_lan_ip, p)
-            } else {
-                "".to_string()
-            }
-        }).to_string();
+        result = SVC_URL_LAN_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                let target = &caps[1];
+                if let Some(p) = ports.get(target) {
+                    format!("http://{}:{}", resolved_lan_ip, p)
+                } else {
+                    "".to_string()
+                }
+            })
+            .to_string();
 
         // ${SERVICE_URL_PUBLIC:<name>:<subport>}
-        result = SVC_URL_PUB_SUB_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            let target = &caps[1];
-            let subport = &caps[2];
-            let combined = format!("{}:{}", target, subport);
-            if let Some(p) = ports.get(&combined) {
-                return format!("https://{}:{}", resolved_public_host, p);
-            }
-            if let Some(sub) = all_ports.get(target) {
-                if let Some(p) = sub.get(subport) {
+        result = SVC_URL_PUB_SUB_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                let target = &caps[1];
+                let subport = &caps[2];
+                let combined = format!("{}:{}", target, subport);
+                if let Some(p) = ports.get(&combined) {
                     return format!("https://{}:{}", resolved_public_host, p);
                 }
-            }
-            "".to_string()
-        }).to_string();
+                if let Some(sub) = all_ports.get(target) {
+                    if let Some(p) = sub.get(subport) {
+                        return format!("https://{}:{}", resolved_public_host, p);
+                    }
+                }
+                "".to_string()
+            })
+            .to_string();
 
         // ${SERVICE_URL_PUBLIC:<name>}
-        result = SVC_URL_PUB_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            let target = &caps[1];
-            if let Some(p) = ports.get(target) {
-                format!("https://{}:{}", resolved_public_host, p)
-            } else {
-                "".to_string()
-            }
-        }).to_string();
+        result = SVC_URL_PUB_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                let target = &caps[1];
+                if let Some(p) = ports.get(target) {
+                    format!("https://{}:{}", resolved_public_host, p)
+                } else {
+                    "".to_string()
+                }
+            })
+            .to_string();
 
         // 5. Host env fallbacks ${ENV:KEY:-default} or ${ENV:KEY}
-        result = ENV_FALLBACK_REGEX.replace_all(&result, |caps: &regex::Captures| {
-            let key = &caps[1];
-            let fallback = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-            std::env::var(key).unwrap_or_else(|_| fallback.to_string())
-        }).to_string();
+        result = ENV_FALLBACK_REGEX
+            .replace_all(&result, |caps: &regex::Captures| {
+                let key = &caps[1];
+                let fallback = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+                std::env::var(key).unwrap_or_else(|_| fallback.to_string())
+            })
+            .to_string();
 
         result
     }
@@ -291,7 +318,9 @@ impl EnvEngine {
 
         if let Some(pr) = project_root {
             let scripts_dir = pr.join("scripts");
-            if scripts_dir.exists() && (cmd.starts_with("scripts/") || cmd.starts_with("./scripts/")) {
+            if scripts_dir.exists()
+                && (cmd.starts_with("scripts/") || cmd.starts_with("./scripts/"))
+            {
                 let first_word = cmd.split_whitespace().next().unwrap_or("");
                 let script_rel = first_word.trim_start_matches("./");
                 let candidate = pr.join(script_rel);
@@ -372,7 +401,7 @@ impl EnvEngine {
                 workspace_name,
                 repo_name,
                 slot,
-                Some(&pr),
+                Some(pr),
                 Some(&app_config.workspaces_dir),
                 Some(ports_ref),
                 None,
@@ -393,15 +422,30 @@ impl EnvEngine {
             if !svc_name.contains(':') {
                 let upper = svc_name.to_uppercase().replace('-', "_");
                 resolved.insert(format!("WS_SERVICE_{}_PORT", upper), p.to_string());
-                resolved.insert(format!("WS_SERVICE_{}_URL", upper), format!("http://127.0.0.1:{}", p));
-                resolved.insert(format!("WS_SERVICE_{}_URL_LAN", upper), format!("http://{}:{}", resolved_lan_ip, p));
+                resolved.insert(
+                    format!("WS_SERVICE_{}_URL", upper),
+                    format!("http://127.0.0.1:{}", p),
+                );
+                resolved.insert(
+                    format!("WS_SERVICE_{}_URL_LAN", upper),
+                    format!("http://{}:{}", resolved_lan_ip, p),
+                );
             } else {
                 let parts: Vec<&str> = svc_name.splitn(2, ':').collect();
                 let upper = parts[0].to_uppercase().replace('-', "_");
                 let sub_upper = parts[1].to_uppercase().replace('-', "_");
-                resolved.insert(format!("WS_SERVICE_{}_PORT_{}", upper, sub_upper), p.to_string());
-                resolved.insert(format!("WS_SERVICE_{}_URL_{}", upper, sub_upper), format!("http://127.0.0.1:{}", p));
-                resolved.insert(format!("WS_SERVICE_{}_URL_LAN_{}", upper, sub_upper), format!("http://{}:{}", resolved_lan_ip, p));
+                resolved.insert(
+                    format!("WS_SERVICE_{}_PORT_{}", upper, sub_upper),
+                    p.to_string(),
+                );
+                resolved.insert(
+                    format!("WS_SERVICE_{}_URL_{}", upper, sub_upper),
+                    format!("http://127.0.0.1:{}", p),
+                );
+                resolved.insert(
+                    format!("WS_SERVICE_{}_URL_LAN_{}", upper, sub_upper),
+                    format!("http://{}:{}", resolved_lan_ip, p),
+                );
             }
         }
 
@@ -455,11 +499,19 @@ impl EnvEngine {
 
         for item in copy_files {
             let (src_rel, dst_rel) = if let Some(s) = item.as_str() {
-                let d = if s.starts_with("files/") { &s[6..] } else { s };
+                let d = s.strip_prefix("files/").unwrap_or(s);
                 (s.to_string(), d.to_string())
             } else if let Some(obj) = item.as_object() {
-                let s = obj.get("source").or_else(|| obj.get("src")).and_then(|v| v.as_str()).unwrap_or("");
-                let d = obj.get("dest").or_else(|| obj.get("dst")).and_then(|v| v.as_str()).unwrap_or(s);
+                let s = obj
+                    .get("source")
+                    .or_else(|| obj.get("src"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let d = obj
+                    .get("dest")
+                    .or_else(|| obj.get("dst"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(s);
                 (s.to_string(), d.to_string())
             } else {
                 continue;
@@ -617,14 +669,21 @@ impl EnvEngine {
 
         let mut services_data: HashMap<String, serde_json::Value> = HashMap::new();
         let mut env_lines = vec![
-            format!("# Auto-generated service discovery for workspace @{}\n", workspace_name),
+            format!(
+                "# Auto-generated service discovery for workspace @{}\n",
+                workspace_name
+            ),
             format!("WS_WORKSPACE={}\n", workspace_name),
             format!("WS_SLOT={}\n", slot),
             format!("WS_LAN_IP={}\n", resolved_lan_ip),
             format!("WS_PUBLIC_HOST={}\n\n", pub_host),
         ];
 
-        let mut base_services: Vec<String> = service_ports.keys().filter(|k| !k.contains(':')).cloned().collect();
+        let mut base_services: Vec<String> = service_ports
+            .keys()
+            .filter(|k| !k.contains(':'))
+            .cloned()
+            .collect();
         base_services.sort();
         if base_services.is_empty() && !service_ports.is_empty() {
             let mut unique_bases = std::collections::HashSet::new();
@@ -655,12 +714,15 @@ impl EnvEngine {
                 if !all_ports_list.contains(&p_str) {
                     all_ports_list.push(p_str);
                 }
-                urls_data.insert(p_label.clone(), serde_json::json!({
-                    "port": p_val,
-                    "url_local": format!("http://127.0.0.1:{}", p_val),
-                    "url_lan": format!("http://{}:{}", resolved_lan_ip, p_val),
-                    "url_public": format!("http://{}:{}", pub_host, p_val),
-                }));
+                urls_data.insert(
+                    p_label.clone(),
+                    serde_json::json!({
+                        "port": p_val,
+                        "url_local": format!("http://127.0.0.1:{}", p_val),
+                        "url_lan": format!("http://{}:{}", resolved_lan_ip, p_val),
+                        "url_public": format!("http://{}:{}", pub_host, p_val),
+                    }),
+                );
             }
             if all_ports_list.is_empty() && primary_port > 0 {
                 all_ports_list.push(primary_port.to_string());
@@ -686,22 +748,44 @@ impl EnvEngine {
 
             let s_upper = s_name.to_uppercase().replace('-', "_");
             env_lines.push(format!("WS_SERVICE_{}_PORT={}\n", s_upper, primary_port));
-            env_lines.push(format!("WS_SERVICE_{}_PORTS={}\n", s_upper, all_ports_list.join(",")));
+            env_lines.push(format!(
+                "WS_SERVICE_{}_PORTS={}\n",
+                s_upper,
+                all_ports_list.join(",")
+            ));
             env_lines.push(format!("WS_SERVICE_{}_URL={}\n", s_upper, url_local));
             env_lines.push(format!("WS_SERVICE_{}_URL_LOCAL={}\n", s_upper, url_local));
             env_lines.push(format!("WS_SERVICE_{}_URL_LAN={}\n", s_upper, url_lan));
             env_lines.push(format!("WS_SERVICE_{}_URL_PUBLIC={}\n", s_upper, url_pub));
             env_lines.push(format!("WS_SERVICE_{}_HOST=127.0.0.1\n", s_upper));
-            env_lines.push(format!("WS_SERVICE_{}_HOST_LAN={}\n", s_upper, resolved_lan_ip));
+            env_lines.push(format!(
+                "WS_SERVICE_{}_HOST_LAN={}\n",
+                s_upper, resolved_lan_ip
+            ));
 
             for (p_label, &p_val) in &sub_ports {
                 if p_label != "default" {
                     let lbl_upper = p_label.to_uppercase().replace('-', "_");
-                    env_lines.push(format!("WS_SERVICE_{}_PORT_{}={}\n", s_upper, lbl_upper, p_val));
-                    env_lines.push(format!("WS_SERVICE_{}_URL_{}=http://127.0.0.1:{}\n", s_upper, lbl_upper, p_val));
-                    env_lines.push(format!("WS_SERVICE_{}_URL_LOCAL_{}=http://127.0.0.1:{}\n", s_upper, lbl_upper, p_val));
-                    env_lines.push(format!("WS_SERVICE_{}_URL_LAN_{}=http://{}:{}\n", s_upper, lbl_upper, resolved_lan_ip, p_val));
-                    env_lines.push(format!("WS_SERVICE_{}_URL_PUBLIC_{}=http://{}:{}\n", s_upper, lbl_upper, pub_host, p_val));
+                    env_lines.push(format!(
+                        "WS_SERVICE_{}_PORT_{}={}\n",
+                        s_upper, lbl_upper, p_val
+                    ));
+                    env_lines.push(format!(
+                        "WS_SERVICE_{}_URL_{}=http://127.0.0.1:{}\n",
+                        s_upper, lbl_upper, p_val
+                    ));
+                    env_lines.push(format!(
+                        "WS_SERVICE_{}_URL_LOCAL_{}=http://127.0.0.1:{}\n",
+                        s_upper, lbl_upper, p_val
+                    ));
+                    env_lines.push(format!(
+                        "WS_SERVICE_{}_URL_LAN_{}=http://{}:{}\n",
+                        s_upper, lbl_upper, resolved_lan_ip, p_val
+                    ));
+                    env_lines.push(format!(
+                        "WS_SERVICE_{}_URL_PUBLIC_{}=http://{}:{}\n",
+                        s_upper, lbl_upper, pub_host, p_val
+                    ));
                 }
             }
             env_lines.push("\n".to_string());
@@ -724,7 +808,9 @@ impl EnvEngine {
         Ok(json_path)
     }
 
-    pub fn read_service_discovery_descriptor(workspace_dir: &Path) -> Option<HashMap<String, serde_json::Value>> {
+    pub fn read_service_discovery_descriptor(
+        workspace_dir: &Path,
+    ) -> Option<HashMap<String, serde_json::Value>> {
         let json_path = workspace_dir.join(".ws").join("services.json");
         if json_path.exists() {
             if let Ok(content) = fs::read_to_string(&json_path) {

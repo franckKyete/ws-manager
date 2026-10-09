@@ -3,15 +3,53 @@ use std::path::Path;
 use ws_core::WorkspaceManager;
 
 pub const KNOWN_COMMANDS: &[&str] = &[
-    "create", "new", "list", "ls", "info", "end", "close", "delete", "rm", "remove",
-    "status", "exec", "push", "pull", "start", "launch", "run",
-    "attach", "stop", "kill", "restart", "logs", "shell", "enter", "open",
-    "env", "setup", "bridge", "focus", "switch",
-    "repo", "lock", "unlock", "workspace",
-    "project", "init", "add", "fetch", "sync", "doctor", "antigravity",
-    "completion", "_complete",
-    "hub", "clone",
-    "daemon", "service",
+    "create",
+    "new",
+    "list",
+    "ls",
+    "info",
+    "end",
+    "close",
+    "delete",
+    "rm",
+    "remove",
+    "status",
+    "exec",
+    "push",
+    "pull",
+    "start",
+    "launch",
+    "run",
+    "attach",
+    "stop",
+    "kill",
+    "restart",
+    "logs",
+    "shell",
+    "enter",
+    "open",
+    "env",
+    "setup",
+    "bridge",
+    "focus",
+    "switch",
+    "repo",
+    "lock",
+    "unlock",
+    "workspace",
+    "project",
+    "init",
+    "add",
+    "fetch",
+    "sync",
+    "doctor",
+    "antigravity",
+    "completion",
+    "_complete",
+    "hub",
+    "clone",
+    "daemon",
+    "service",
 ];
 
 pub fn clean_workspace(name: Option<&str>) -> Option<String> {
@@ -19,14 +57,20 @@ pub fn clean_workspace(name: Option<&str>) -> Option<String> {
 }
 
 pub fn clean_repo(name: Option<&str>) -> Option<String> {
-    name.map(|n| n.trim_start_matches(&['%', '+', ':', '#', '$'][..]).to_string())
+    name.map(|n| {
+        n.trim_start_matches(&['%', '+', ':', '#', '$'][..])
+            .to_string()
+    })
 }
 
 pub fn clean_repos(repos: Option<&[String]>) -> Option<Vec<String>> {
     repos.map(|r_list| {
         r_list
             .iter()
-            .map(|r| r.trim_start_matches(&['%', '+', ':', '#', '$'][..]).to_string())
+            .map(|r| {
+                r.trim_start_matches(&['%', '+', ':', '#', '$'][..])
+                    .to_string()
+            })
             .collect()
     })
 }
@@ -88,19 +132,29 @@ pub fn resolve_ws_and_repo_args(
     if let Some(n) = name_arg {
         if n.starts_with(&['%', '+', ':', '#', '$'][..]) {
             is_repo_spec = true;
-        } else if detected_ws.is_some() && !manager.has_workspace(&clean_workspace(Some(n)).unwrap()) {
+        } else if detected_ws.is_some()
+            && !manager.has_workspace(&clean_workspace(Some(n)).unwrap())
+        {
             let c_n = clean_repo(Some(n)).unwrap();
-            if manager.config.repositories.contains_key(&c_n) {
-                is_repo_spec = true;
-            } else if manager.config.repositories.values().any(|r| {
-                r.checkout == c_n || Path::new(&r.checkout).file_name().map(|f| f.to_str().unwrap() == c_n).unwrap_or(false)
-            }) {
+            if manager.config.repositories.contains_key(&c_n)
+                || manager.config.repositories.values().any(|r| {
+                    r.checkout == c_n
+                        || Path::new(&r.checkout)
+                            .file_name()
+                            .map(|f| f.to_str().unwrap() == c_n)
+                            .unwrap_or(false)
+                })
+            {
                 is_repo_spec = true;
             } else if let Some(ref d_ws) = detected_ws {
                 if let Ok((meta, _)) = manager.get_workspace_info(d_ws) {
                     if meta.repositories.contains_key(&c_n)
                         || meta.repositories.values().any(|s| {
-                            s.path == c_n || Path::new(&s.path).file_name().map(|f| f.to_str().unwrap() == c_n).unwrap_or(false)
+                            s.path == c_n
+                                || Path::new(&s.path)
+                                    .file_name()
+                                    .map(|f| f.to_str().unwrap() == c_n)
+                                    .unwrap_or(false)
                         })
                     {
                         is_repo_spec = true;
@@ -135,14 +189,24 @@ pub fn resolve_ws_and_repo_args(
     }
 
     if require_ws && resolved_ws.is_none() {
-        return Err("Workspace name is required, or command must be run inside a workspace directory.".to_string());
+        return Err(
+            "Workspace name is required, or command must be run inside a workspace directory."
+                .to_string(),
+        );
     }
 
     if require_repo && resolved_repo.is_none() {
-        return Err("Repository name is required, or command must be run inside a repository worktree.".to_string());
+        return Err(
+            "Repository name is required, or command must be run inside a repository worktree."
+                .to_string(),
+        );
     }
 
-    Ok((resolved_ws.unwrap_or_default(), resolved_repo, resolved_repos))
+    Ok((
+        resolved_ws.unwrap_or_default(),
+        resolved_repo,
+        resolved_repos,
+    ))
 }
 
 #[cfg(test)]
@@ -169,7 +233,11 @@ mod tests {
 
     #[test]
     fn test_normalize_cli_args_inverted_workspace() {
-        let args = vec!["@feat".to_string(), "start".to_string(), "--tmux".to_string()];
+        let args = vec![
+            "@feat".to_string(),
+            "start".to_string(),
+            "--tmux".to_string(),
+        ];
         let norm = normalize_cli_args(&args);
         assert_eq!(norm, vec!["start", "@feat", "--tmux"]);
     }
@@ -190,7 +258,11 @@ mod tests {
 
     #[test]
     fn test_normalize_cli_args_standard_order() {
-        let args = vec!["create".to_string(), "@feat".to_string(), "--all".to_string()];
+        let args = vec![
+            "create".to_string(),
+            "@feat".to_string(),
+            "--all".to_string(),
+        ];
         let norm = normalize_cli_args(&args);
         assert_eq!(norm, vec!["create", "@feat", "--all"]);
     }
