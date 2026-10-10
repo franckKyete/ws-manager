@@ -22,22 +22,44 @@ pub fn execute_hub_login(
         return Ok(());
     }
 
-    if let (Some(u), Some(p)) = (username, password) {
-        let res = client.login(u, p).map_err(|e| e.to_string())?;
-        if let Some(tok) = res.get("access_token").and_then(|v| v.as_str()) {
-            let base = client.base_url.clone();
-            client
-                .save_session(&base, tok, Some(u))
-                .map_err(|e| e.to_string())?;
-            OutputHandler::print_success(&format!("Successfully logged in to wshub as '{}'", u));
-            return Ok(());
-        }
-    }
+    match (username, password) {
+        (Some(u), Some(p)) => {
+            let res = client.login(u, p).map_err(|e| e.to_string())?;
+            let tok = client.token.clone().or_else(|| {
+                res.get("token")
+                    .or_else(|| res.get("access_token"))
+                    .or_else(|| {
+                        res.get("data")
+                            .and_then(|d| d.get("token").or_else(|| d.get("access_token")))
+                    })
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+            });
 
-    Err(
-        "Either --token or (--username and --password) must be specified for 'ws hub login'."
-            .to_string(),
-    )
+            if let Some(ref t) = tok {
+                let base = client.base_url.clone();
+                client
+                    .save_session(&base, t, Some(u))
+                    .map_err(|e| e.to_string())?;
+                OutputHandler::print_success(&format!(
+                    "Successfully logged in to wshub as '{}'",
+                    u
+                ));
+                Ok(())
+            } else {
+                Err(
+                    "Login succeeded but server response did not contain an authentication token."
+                        .to_string(),
+                )
+            }
+        }
+        (Some(_), None) => Err("Missing --password for username authentication.".to_string()),
+        (None, Some(_)) => Err("Missing --username for password authentication.".to_string()),
+        (None, None) => Err(
+            "Either --token or (--username and --password) must be specified for 'ws hub login'."
+                .to_string(),
+        ),
+    }
 }
 
 pub fn execute_hub_logout() -> Result<(), String> {
@@ -54,10 +76,27 @@ pub fn execute_hub_whoami() -> Result<(), String> {
     let client = HubClient::default();
     let res = client.whoami().map_err(|e| e.to_string())?;
     println!("{}", "wshub Current Session:".bold().cyan());
-    if let Some(u) = res.get("username").and_then(|v| v.as_str()) {
+
+    let user_obj = res
+        .get("user")
+        .or_else(|| res.get("data").and_then(|d| d.get("user")))
+        .unwrap_or(&res);
+
+    let username = user_obj
+        .get("username")
+        .and_then(|v| v.as_str())
+        .or_else(|| res.get("username").and_then(|v| v.as_str()))
+        .or(client.username.as_deref());
+
+    let email = user_obj
+        .get("email")
+        .and_then(|v| v.as_str())
+        .or_else(|| res.get("email").and_then(|v| v.as_str()));
+
+    if let Some(u) = username {
         println!("  User:  {}", u.green());
     }
-    if let Some(e) = res.get("email").and_then(|v| v.as_str()) {
+    if let Some(e) = email {
         println!("  Email: {}", e);
     }
     println!("  URL:   {}", client.base_url);
@@ -386,4 +425,30 @@ pub fn execute_hub_auto_save_stop(manager: &WorkspaceManager) -> Result<(), Stri
         )),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_execute_hub_login_arg_validation() {
+        let res_no_args = execute_hub_login(None, None, None, None);
+        assert_eq!(
+            res_no_args.unwrap_err(),
+            "Either --token or (--username and --password) must be specified for 'ws hub login'."
+        );
+
+        let res_user_only = execute_hub_login(None, None, Some("alice"), None);
+        assert_eq!(
+            res_user_only.unwrap_err(),
+            "Missing --password for username authentication."
+        );
+
+        let res_pass_only = execute_hub_login(None, None, None, Some("secret"));
+        assert_eq!(
+            res_pass_only.unwrap_err(),
+            "Missing --username for password authentication."
+        );
+    }
 }

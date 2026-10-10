@@ -1,5 +1,5 @@
 use reqwest::blocking::Client;
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{HeaderMap, AUTHORIZATION};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,6 +18,7 @@ pub struct HubSessionData {
 pub struct HubClient {
     pub base_url: String,
     pub token: Option<String>,
+    pub username: Option<String>,
     pub config_path: PathBuf,
     client: Client,
 }
@@ -33,7 +34,7 @@ impl HubClient {
             .map(|p| p.to_path_buf())
             .unwrap_or(default_config);
 
-        let (saved_url, saved_token) = Self::load_saved_config(&cfg_path);
+        let (saved_url, saved_token, saved_username) = Self::load_saved_config(&cfg_path);
 
         let final_url = url
             .map(|s| s.to_string())
@@ -56,14 +57,15 @@ impl HubClient {
         Self {
             base_url: final_url,
             token: final_token,
+            username: saved_username,
             config_path: cfg_path,
             client,
         }
     }
 
-    pub fn load_saved_config(path: &Path) -> (Option<String>, Option<String>) {
+    pub fn load_saved_config(path: &Path) -> (Option<String>, Option<String>, Option<String>) {
         if !path.is_file() {
-            return (None, None);
+            return (None, None, None);
         }
         if let Ok(content) = fs::read_to_string(path) {
             if let Ok(data) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
@@ -75,10 +77,14 @@ impl HubClient {
                     .get("token")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                return (url, token);
+                let username = data
+                    .get("username")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                return (url, token, username);
             }
         }
-        (None, None)
+        (None, None, None)
     }
 
     pub fn save_session(&mut self, url: &str, token: &str, username: Option<&str>) -> Result<()> {
@@ -102,6 +108,7 @@ impl HubClient {
 
         self.base_url = clean_url;
         self.token = Some(token.to_string());
+        self.username = username.map(|s| s.to_string());
         Ok(())
     }
 
@@ -109,6 +116,7 @@ impl HubClient {
         if self.config_path.is_file() {
             let _ = fs::remove_file(&self.config_path);
             self.token = None;
+            self.username = None;
             true
         } else {
             false
@@ -174,6 +182,17 @@ impl HubClient {
             });
         }
 
+        // Standard wshub envelope: {"status": "success", "data": ...}
+        if let Some(data) = parsed_json.as_object().and_then(|obj| {
+            if obj.contains_key("data") {
+                Some(obj["data"].clone())
+            } else {
+                None
+            }
+        }) {
+            return Ok(data);
+        }
+
         Ok(parsed_json)
     }
 
@@ -203,18 +222,32 @@ impl HubClient {
             "password": password,
         });
         let res = self.request(reqwest::Method::POST, "auth/login", Some(&body), None, None)?;
-        if let Some(tok) = res.get("token").and_then(|t| t.as_str()) {
+        let tok = res
+            .get("token")
+            .or_else(|| res.get("access_token"))
+            .or_else(|| {
+                res.get("data")
+                    .and_then(|d| d.get("token").or_else(|| d.get("access_token")))
+            })
+            .and_then(|t| t.as_str());
+
+        if let Some(t) = tok {
             let user = res
                 .get("user")
-                .and_then(|u| u.get("username"))
-                .and_then(|u| u.as_str());
-            self.save_session(&self.base_url.clone(), tok, user)?;
+                .or_else(|| res.get("data").and_then(|d| d.get("user")))
+                .and_then(|u| u.get("username").or_else(|| u.get("email")))
+                .and_then(|u| u.as_str())
+                .unwrap_or(username_or_email);
+            self.save_session(&self.base_url.clone(), t, Some(user))?;
         }
         Ok(res)
     }
 
     pub fn whoami(&self) -> Result<serde_json::Value> {
-        self.request(reqwest::Method::GET, "auth/me", None, None, None)
+        match self.request(reqwest::Method::GET, "auth/whoami", None, None, None) {
+            Ok(v) => Ok(v),
+            Err(_) => self.request(reqwest::Method::GET, "auth/me", None, None, None),
+        }
     }
 
     pub fn create_pat(&self, name: &str) -> Result<serde_json::Value> {
@@ -371,8 +404,9 @@ impl HubClient {
             format!("projects/{}/{}/secrets/{}", namespace, name, key)
         };
         let res = self.request(reqwest::Method::GET, &ep, None, None, None)?;
-        res.get("secret")
-            .and_then(|s| s.get("value"))
+        res.get("value")
+            .or_else(|| res.get("secret").and_then(|s| s.get("value")))
+            .or_else(|| res.get("data").and_then(|d| d.get("value")))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
             .ok_or_else(|| WSError::Hub {
@@ -398,7 +432,11 @@ impl HubClient {
             format!("projects/{}/{}/secrets/{}", namespace, name, key)
         };
         let res = self.request(reqwest::Method::DELETE, &ep, None, None, None)?;
-        Ok(res.get("success").and_then(|v| v.as_bool()).unwrap_or(true))
+        Ok(res
+            .get("deleted")
+            .or_else(|| res.get("success"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true))
     }
 
     pub fn list_files(&self, namespace: &str, name: &str) -> Result<serde_json::Value> {
@@ -418,19 +456,19 @@ impl HubClient {
         rel_file_path: &str,
         content_bytes: Vec<u8>,
     ) -> Result<serde_json::Value> {
-        let mut headers = HeaderMap::new();
-        headers.insert("X-File-Path", HeaderValue::from_str(rel_file_path).unwrap());
-        headers.insert(
-            CONTENT_TYPE,
-            HeaderValue::from_static("application/octet-stream"),
-        );
+        use base64::Engine;
+        let content_b64 = base64::engine::general_purpose::STANDARD.encode(&content_bytes);
+        let body = serde_json::json!({
+            "filePath": rel_file_path,
+            "contentBase64": content_b64,
+        });
 
         self.request(
             reqwest::Method::POST,
             &format!("projects/{}/{}/files", namespace, name),
+            Some(&body),
             None,
-            Some(content_bytes),
-            Some(headers),
+            None,
         )
     }
 
@@ -465,11 +503,28 @@ impl HubClient {
             });
         }
 
-        resp.bytes().map(|b| b.to_vec()).map_err(|e| WSError::Hub {
+        let bytes = resp.bytes().map(|b| b.to_vec()).map_err(|e| WSError::Hub {
             message: e.to_string(),
             status_code: 0,
             details: None,
-        })
+        })?;
+
+        // If wshub returned JSON with base64 encoded content
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+            let b64 = json
+                .get("data")
+                .and_then(|d| d.get("contentBase64"))
+                .or_else(|| json.get("contentBase64"))
+                .and_then(|v| v.as_str());
+            if let Some(encoded) = b64 {
+                use base64::Engine;
+                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded) {
+                    return Ok(decoded);
+                }
+            }
+        }
+
+        Ok(bytes)
     }
 
     pub fn save_workspace_state(
@@ -517,5 +572,125 @@ impl HubClient {
 impl Default for HubClient {
     fn default() -> Self {
         Self::new(None, None, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_load_save_clear_session() {
+        let dir = tempdir().unwrap();
+        let cfg_path = dir.path().join("hub.yml");
+
+        let mut client = HubClient::new(None, None, Some(&cfg_path));
+        assert!(client.token.is_none());
+        assert!(client.username.is_none());
+
+        client
+            .save_session("http://10.0.0.2:8787", "wshub_pat_test123", Some("kyete"))
+            .unwrap();
+
+        assert_eq!(client.base_url, "http://10.0.0.2:8787");
+        assert_eq!(client.token.as_deref(), Some("wshub_pat_test123"));
+        assert_eq!(client.username.as_deref(), Some("kyete"));
+
+        // Verify loaded config from disk
+        let (url, tok, user) = HubClient::load_saved_config(&cfg_path);
+        assert_eq!(url.as_deref(), Some("http://10.0.0.2:8787"));
+        assert_eq!(tok.as_deref(), Some("wshub_pat_test123"));
+        assert_eq!(user.as_deref(), Some("kyete"));
+
+        // Clear session
+        assert!(client.clear_session());
+        assert!(client.token.is_none());
+        assert!(client.username.is_none());
+        assert!(!cfg_path.exists());
+    }
+
+    #[test]
+    fn test_parse_project_identifier() {
+        assert_eq!(
+            HubClient::parse_project_identifier("org/proj").unwrap(),
+            ("org".to_string(), "proj".to_string())
+        );
+        assert_eq!(
+            HubClient::parse_project_identifier("@org/proj").unwrap(),
+            ("org".to_string(), "proj".to_string())
+        );
+        assert!(HubClient::parse_project_identifier("invalid").is_err());
+        assert!(HubClient::parse_project_identifier("/invalid").is_err());
+        assert!(HubClient::parse_project_identifier("org/").is_err());
+    }
+
+    #[test]
+    fn test_token_extraction_from_wshub_response() {
+        let nested_payload = serde_json::json!({
+            "status": "success",
+            "data": {
+                "user": {
+                    "id": "usr_123",
+                    "username": "kyete",
+                    "email": "kyete@test.com"
+                },
+                "token": "wshub_pat_nested_abc"
+            }
+        });
+
+        let tok = nested_payload
+            .get("token")
+            .or_else(|| nested_payload.get("access_token"))
+            .or_else(|| {
+                nested_payload
+                    .get("data")
+                    .and_then(|d| d.get("token").or_else(|| d.get("access_token")))
+            })
+            .and_then(|t| t.as_str());
+
+        assert_eq!(tok, Some("wshub_pat_nested_abc"));
+
+        let user = nested_payload
+            .get("user")
+            .or_else(|| nested_payload.get("data").and_then(|d| d.get("user")))
+            .and_then(|u| u.get("username").or_else(|| u.get("email")))
+            .and_then(|u| u.as_str());
+
+        assert_eq!(user, Some("kyete"));
+    }
+
+    #[test]
+    fn test_token_extraction_from_flat_payloads() {
+        let flat_pat = serde_json::json!({
+            "token": "wshub_pat_flat_123",
+            "user": { "username": "alice" }
+        });
+
+        let tok1 = flat_pat
+            .get("token")
+            .or_else(|| flat_pat.get("access_token"))
+            .or_else(|| {
+                flat_pat
+                    .get("data")
+                    .and_then(|d| d.get("token").or_else(|| d.get("access_token")))
+            })
+            .and_then(|t| t.as_str());
+        assert_eq!(tok1, Some("wshub_pat_flat_123"));
+
+        let flat_access_tok = serde_json::json!({
+            "access_token": "bearer_jwt_xyz"
+        });
+
+        let tok2 = flat_access_tok
+            .get("token")
+            .or_else(|| flat_access_tok.get("access_token"))
+            .or_else(|| {
+                flat_access_tok
+                    .get("data")
+                    .and_then(|d| d.get("token").or_else(|| d.get("access_token")))
+            })
+            .and_then(|t| t.as_str());
+        assert_eq!(tok2, Some("bearer_jwt_xyz"));
     }
 }
