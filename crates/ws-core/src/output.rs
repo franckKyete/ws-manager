@@ -726,20 +726,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_terminal_width_env_override() {
+    fn test_terminal_width_and_create_table() {
         std::env::set_var("COLUMNS", "65");
         assert_eq!(OutputHandler::get_terminal_width(), 65);
 
         std::env::set_var("COLUMNS", "120");
         assert_eq!(OutputHandler::get_terminal_width(), 120);
 
-        std::env::remove_var("COLUMNS");
-        let detected = OutputHandler::get_terminal_width();
-        assert!(detected >= 20);
-    }
-
-    #[test]
-    fn test_create_table_uses_terminal_width() {
         std::env::set_var("COLUMNS", "72");
         let table = OutputHandler::create_table();
         assert_eq!(table.width(), Some(72));
@@ -747,7 +740,10 @@ mod tests {
             table.content_arrangement(),
             comfy_table::ContentArrangement::Dynamic
         ));
+
         std::env::remove_var("COLUMNS");
+        let detected = OutputHandler::get_terminal_width();
+        assert!(detected >= 20);
     }
 
     #[test]
