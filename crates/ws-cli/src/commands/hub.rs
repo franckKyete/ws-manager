@@ -1,18 +1,100 @@
 use crate::helpers::resolve_ws_and_repo_args;
 use colored::Colorize;
+use comfy_table::{Cell, Color};
 use std::fs;
 use std::path::{Path, PathBuf};
 use ws_core::hub::HubClient;
 use ws_core::output::OutputHandler;
 use ws_core::WorkspaceManager;
 
+pub fn execute_hub_discover(timeout_ms: u64, set: bool) -> Result<(), String> {
+    OutputHandler::print_info(&format!(
+        "Scanning for wshub servers on local network (LAN) (timeout: {}ms)...",
+        timeout_ms
+    ));
+    let hubs = ws_core::hub_discovery::discover_local_hubs(timeout_ms, 8788);
+    if hubs.is_empty() {
+        OutputHandler::print_info("No wshub servers discovered on local network.");
+        return Ok(());
+    }
+
+    let mut table = OutputHandler::create_table();
+    table.set_header(vec![
+        Cell::new("Hostname").fg(Color::Cyan),
+        Cell::new("Primary URL").fg(Color::Cyan),
+        Cell::new("Version").fg(Color::Cyan),
+        Cell::new("Latency").fg(Color::Cyan),
+        Cell::new("IPs").fg(Color::Cyan),
+    ]);
+
+    for hub in &hubs {
+        table.add_row(vec![
+            Cell::new(&hub.hostname).fg(Color::Green),
+            Cell::new(&hub.url).fg(Color::White),
+            Cell::new(&hub.version).fg(Color::Yellow),
+            Cell::new(format!("{} ms", hub.latency_ms)).fg(Color::Blue),
+            Cell::new(hub.ips.join(", ")),
+        ]);
+    }
+
+    println!("{table}");
+
+    if set {
+        let best_hub = &hubs[0];
+        let client = HubClient::default();
+        client.update_active_url(&best_hub.url);
+        OutputHandler::print_success(&format!(
+            "Set active wshub URL to '{}' in configuration.",
+            best_hub.url
+        ));
+    }
+
+    Ok(())
+}
+
 pub fn execute_hub_login(
     url: Option<&str>,
     token: Option<&str>,
     username: Option<&str>,
     password: Option<&str>,
+    discover: bool,
 ) -> Result<(), String> {
-    let mut client = HubClient::new(url, token, None);
+    let effective_url = if discover {
+        OutputHandler::print_info("Discovering local wshub on LAN...");
+        let discovered = ws_core::hub_discovery::discover_local_hubs(1500, 8788);
+        if let Some(hub) = discovered.first() {
+            OutputHandler::print_success(&format!(
+                "Discovered wshub at '{}' (host: {})",
+                hub.url, hub.hostname
+            ));
+            Some(hub.url.clone())
+        } else {
+            OutputHandler::print_info(
+                "No local wshub found on LAN; using specified or default URL.",
+            );
+            url.map(|s| s.to_string())
+        }
+    } else if url.is_none() {
+        let default_client = HubClient::default();
+        if default_client.token.is_none() && default_client.base_url == "https://hub.ws.dev" {
+            let discovered = ws_core::hub_discovery::discover_local_hubs(800, 8788);
+            if let Some(hub) = discovered.first() {
+                OutputHandler::print_info(&format!(
+                    "Auto-detected local wshub at '{}' (host: {})",
+                    hub.url, hub.hostname
+                ));
+                Some(hub.url.clone())
+            } else {
+                None
+            }
+        } else {
+            Some(default_client.base_url)
+        }
+    } else {
+        url.map(|s| s.to_string())
+    };
+
+    let mut client = HubClient::new(effective_url.as_deref(), token, None);
     if let Some(tok) = token {
         let base = client.base_url.clone();
         client
@@ -99,7 +181,7 @@ pub fn execute_hub_whoami() -> Result<(), String> {
     if let Some(e) = email {
         println!("  Email: {}", e);
     }
-    println!("  URL:   {}", client.base_url);
+    println!("  URL:   {}", client.active_url());
     Ok(())
 }
 
@@ -433,19 +515,19 @@ mod tests {
 
     #[test]
     fn test_execute_hub_login_arg_validation() {
-        let res_no_args = execute_hub_login(None, None, None, None);
+        let res_no_args = execute_hub_login(None, None, None, None, false);
         assert_eq!(
             res_no_args.unwrap_err(),
             "Either --token or (--username and --password) must be specified for 'ws hub login'."
         );
 
-        let res_user_only = execute_hub_login(None, None, Some("alice"), None);
+        let res_user_only = execute_hub_login(None, None, Some("alice"), None, false);
         assert_eq!(
             res_user_only.unwrap_err(),
             "Missing --password for username authentication."
         );
 
-        let res_pass_only = execute_hub_login(None, None, None, Some("secret"));
+        let res_pass_only = execute_hub_login(None, None, None, Some("secret"), false);
         assert_eq!(
             res_pass_only.unwrap_err(),
             "Missing --username for password authentication."

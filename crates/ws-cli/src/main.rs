@@ -296,16 +296,19 @@ fn main() {
             target_dir,
         } => execute_hub_clone(&project, target_dir.as_deref()),
         Commands::Hub(args) => match args.action {
+            Some(HubAction::Discover { timeout, set }) => execute_hub_discover(timeout, set),
             Some(HubAction::Login {
                 url,
                 token,
                 username,
                 password,
+                discover,
             }) => execute_hub_login(
                 url.as_deref(),
                 token.as_deref(),
                 username.as_deref(),
                 password.as_deref(),
+                discover,
             ),
             Some(HubAction::Whoami) => execute_hub_whoami(),
             Some(HubAction::Logout) => execute_hub_logout(),

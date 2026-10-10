@@ -12,6 +12,8 @@ pub struct HubSessionData {
     pub token: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub username: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fallback_urls: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -19,7 +21,9 @@ pub struct HubClient {
     pub base_url: String,
     pub token: Option<String>,
     pub username: Option<String>,
+    pub fallback_urls: Vec<String>,
     pub config_path: PathBuf,
+    current_url: std::sync::Arc<std::sync::RwLock<String>>,
     client: Client,
 }
 
@@ -34,7 +38,8 @@ impl HubClient {
             .map(|p| p.to_path_buf())
             .unwrap_or(default_config);
 
-        let (saved_url, saved_token, saved_username) = Self::load_saved_config(&cfg_path);
+        let (saved_url, saved_token, saved_username, saved_fallbacks) =
+            Self::load_saved_config(&cfg_path);
 
         let final_url = url
             .map(|s| s.to_string())
@@ -50,22 +55,29 @@ impl HubClient {
             .or(saved_token);
 
         let client = Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(3))
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .unwrap_or_default();
+
+        let current_url = std::sync::Arc::new(std::sync::RwLock::new(final_url.clone()));
 
         Self {
             base_url: final_url,
             token: final_token,
             username: saved_username,
+            fallback_urls: saved_fallbacks,
             config_path: cfg_path,
+            current_url,
             client,
         }
     }
 
-    pub fn load_saved_config(path: &Path) -> (Option<String>, Option<String>, Option<String>) {
+    pub fn load_saved_config(
+        path: &Path,
+    ) -> (Option<String>, Option<String>, Option<String>, Vec<String>) {
         if !path.is_file() {
-            return (None, None, None);
+            return (None, None, None, Vec::new());
         }
         if let Ok(content) = fs::read_to_string(path) {
             if let Ok(data) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
@@ -81,20 +93,44 @@ impl HubClient {
                     .get("username")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                return (url, token, username);
+                let fallback_urls = data
+                    .get("fallback_urls")
+                    .and_then(|v| v.as_sequence())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                return (url, token, username, fallback_urls);
             }
         }
-        (None, None, None)
+        (None, None, None, Vec::new())
+    }
+
+    pub fn active_url(&self) -> String {
+        self.current_url.read().unwrap().clone()
     }
 
     pub fn save_session(&mut self, url: &str, token: &str, username: Option<&str>) -> Result<()> {
         let _ = fs::create_dir_all(self.config_path.parent().unwrap_or_else(|| Path::new(".")));
         let clean_url = url.trim_end_matches('/').to_string();
 
+        let mut fallbacks = self.fallback_urls.clone();
+        if self.token.is_some()
+            && !self.base_url.is_empty()
+            && self.base_url != clean_url
+            && !fallbacks.contains(&self.base_url)
+        {
+            fallbacks.push(self.base_url.clone());
+        }
+        fallbacks.retain(|u| u != &clean_url);
+
         let session = HubSessionData {
             url: clean_url.clone(),
             token: token.to_string(),
             username: username.map(|s| s.to_string()),
+            fallback_urls: fallbacks.clone(),
         };
 
         let yaml_str = serde_yaml::to_string(&session)?;
@@ -106,9 +142,11 @@ impl HubClient {
             let _ = fs::set_permissions(&self.config_path, fs::Permissions::from_mode(0o600));
         }
 
-        self.base_url = clean_url;
+        self.base_url = clean_url.clone();
+        *self.current_url.write().unwrap() = clean_url;
         self.token = Some(token.to_string());
         self.username = username.map(|s| s.to_string());
+        self.fallback_urls = fallbacks;
         Ok(())
     }
 
@@ -117,9 +155,77 @@ impl HubClient {
             let _ = fs::remove_file(&self.config_path);
             self.token = None;
             self.username = None;
+            self.fallback_urls.clear();
             true
         } else {
             false
+        }
+    }
+
+    pub fn try_reconnect(&self) -> Option<String> {
+        use crate::hub_discovery::{discover_local_hubs, quick_ping_hub};
+        use crate::output::OutputHandler;
+
+        let current = self.active_url();
+
+        // 1. Try fallback URLs
+        for fb in &self.fallback_urls {
+            if fb != &current && quick_ping_hub(fb, 500) {
+                OutputHandler::print_info(&format!(
+                    "Reconnecting to fallback wshub endpoint at '{}'...",
+                    fb
+                ));
+                self.update_active_url(fb);
+                return Some(fb.clone());
+            }
+        }
+
+        // Also try localhost:8787 if not already checked
+        if current != "http://127.0.0.1:8787"
+            && current != "http://localhost:8787"
+            && quick_ping_hub("http://127.0.0.1:8787", 300)
+        {
+            OutputHandler::print_info(
+                "Found local wshub at 'http://127.0.0.1:8787', reconnecting...",
+            );
+            self.update_active_url("http://127.0.0.1:8787");
+            return Some("http://127.0.0.1:8787".to_string());
+        }
+
+        // 2. Discover via LAN UDP probe
+        OutputHandler::print_info("Searching for wshub instances on local network (LAN)...");
+        let discovered = discover_local_hubs(1500, 8788);
+        if let Some(hub) = discovered.first() {
+            OutputHandler::print_success(&format!(
+                "Discovered wshub at '{}' (host: {}, latency: {}ms)",
+                hub.url, hub.hostname, hub.latency_ms
+            ));
+            self.update_active_url(&hub.url);
+            return Some(hub.url.clone());
+        }
+
+        None
+    }
+
+    pub fn update_active_url(&self, new_url: &str) {
+        let clean = new_url.trim_end_matches('/').to_string();
+        *self.current_url.write().unwrap() = clean.clone();
+
+        if self.config_path.is_file() {
+            if let Ok(content) = fs::read_to_string(&self.config_path) {
+                if let Ok(mut session) = serde_yaml::from_str::<HubSessionData>(&content) {
+                    if session.url != clean {
+                        if !session.fallback_urls.contains(&session.url) {
+                            session.fallback_urls.push(session.url.clone());
+                        }
+                        session.url = clean;
+                        session.fallback_urls.retain(|u| u != &session.url);
+                        if let Ok(yaml_str) = serde_yaml::to_string(&session) {
+                            let _ = fs::write(&self.config_path, yaml_str);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -132,24 +238,38 @@ impl HubClient {
         headers_extra: Option<HeaderMap>,
     ) -> Result<serde_json::Value> {
         let clean_ep = endpoint.trim_start_matches('/');
-        let url = format!("{}/api/v1/{}", self.base_url, clean_ep);
+        let mut active_base = self.active_url();
 
-        let mut req = self.client.request(method, &url);
-        if let Some(ref tok) = self.token {
-            req = req.header(AUTHORIZATION, format!("Bearer {}", tok));
+        let send_req = |base: &str| {
+            let url = format!("{}/api/v1/{}", base, clean_ep);
+            let mut req = self.client.request(method.clone(), &url);
+            if let Some(ref tok) = self.token {
+                req = req.header(AUTHORIZATION, format!("Bearer {}", tok));
+            }
+            if let Some(ref hdrs) = headers_extra {
+                req = req.headers(hdrs.clone());
+            }
+            if let Some(body) = json_body {
+                req = req.json(body);
+            } else if let Some(ref bytes) = raw_body {
+                req = req.body(bytes.clone());
+            }
+            req.send()
+        };
+
+        let mut resp_res = send_req(&active_base);
+
+        // If connection failed or timed out, attempt failover/reconnection
+        if let Err(ref e) = resp_res {
+            if e.is_connect() || e.is_timeout() {
+                if let Some(new_url) = self.try_reconnect() {
+                    active_base = new_url;
+                    resp_res = send_req(&active_base);
+                }
+            }
         }
 
-        if let Some(hdrs) = headers_extra {
-            req = req.headers(hdrs);
-        }
-
-        if let Some(body) = json_body {
-            req = req.json(body);
-        } else if let Some(bytes) = raw_body {
-            req = req.body(bytes);
-        }
-
-        let resp = req.send().map_err(|e| WSError::Hub {
+        let resp = resp_res.map_err(|e| WSError::Hub {
             message: format!("Network request failed: {}", e),
             status_code: 0,
             details: None,
@@ -482,14 +602,29 @@ impl HubClient {
             "projects/{}/{}/files/download?path={}",
             namespace, name, rel_file_path
         );
-        let url = format!("{}/api/v1/{}", self.base_url, clean_ep);
+        let mut active_base = self.active_url();
 
-        let mut req = self.client.get(&url);
-        if let Some(ref tok) = self.token {
-            req = req.header(AUTHORIZATION, format!("Bearer {}", tok));
+        let send_req = |base: &str| {
+            let url = format!("{}/api/v1/{}", base, clean_ep);
+            let mut req = self.client.get(&url);
+            if let Some(ref tok) = self.token {
+                req = req.header(AUTHORIZATION, format!("Bearer {}", tok));
+            }
+            req.send()
+        };
+
+        let mut resp_res = send_req(&active_base);
+
+        if let Err(ref e) = resp_res {
+            if e.is_connect() || e.is_timeout() {
+                if let Some(new_url) = self.try_reconnect() {
+                    active_base = new_url;
+                    resp_res = send_req(&active_base);
+                }
+            }
         }
 
-        let resp = req.send().map_err(|e| WSError::Hub {
+        let resp = resp_res.map_err(|e| WSError::Hub {
             message: e.to_string(),
             status_code: 0,
             details: None,
@@ -598,15 +733,25 @@ mod tests {
         assert_eq!(client.username.as_deref(), Some("kyete"));
 
         // Verify loaded config from disk
-        let (url, tok, user) = HubClient::load_saved_config(&cfg_path);
+        let (url, tok, user, fallbacks) = HubClient::load_saved_config(&cfg_path);
         assert_eq!(url.as_deref(), Some("http://10.0.0.2:8787"));
         assert_eq!(tok.as_deref(), Some("wshub_pat_test123"));
         assert_eq!(user.as_deref(), Some("kyete"));
+        assert!(fallbacks.is_empty());
+
+        // Update active URL to a new network IP and verify fallbacks are populated
+        client.update_active_url("http://192.168.1.50:8787");
+        assert_eq!(client.active_url(), "http://192.168.1.50:8787");
+
+        let (new_url, _, _, new_fallbacks) = HubClient::load_saved_config(&cfg_path);
+        assert_eq!(new_url.as_deref(), Some("http://192.168.1.50:8787"));
+        assert_eq!(new_fallbacks, vec!["http://10.0.0.2:8787"]);
 
         // Clear session
         assert!(client.clear_session());
         assert!(client.token.is_none());
         assert!(client.username.is_none());
+        assert!(client.fallback_urls.is_empty());
         assert!(!cfg_path.exists());
     }
 

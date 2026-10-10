@@ -589,6 +589,21 @@ pub struct HubCommandArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum HubAction {
+    #[command(about = "Discover wshub instances on local network (LAN)")]
+    Discover {
+        #[arg(
+            short = 't',
+            long = "timeout",
+            default_value = "1500",
+            help = "Discovery listen timeout in milliseconds"
+        )]
+        timeout: u64,
+        #[arg(
+            long = "set",
+            help = "Save the discovered hub as the active endpoint in configuration"
+        )]
+        set: bool,
+    },
     #[command(about = "Authenticate with wshub")]
     Login {
         #[arg(long = "url")]
@@ -599,6 +614,11 @@ pub enum HubAction {
         username: Option<String>,
         #[arg(short = 'p', long = "password")]
         password: Option<String>,
+        #[arg(
+            long = "discover",
+            help = "Auto-discover wshub on LAN if --url is not provided"
+        )]
+        discover: bool,
     },
     #[command(about = "Display active wshub user profile and session")]
     Whoami,

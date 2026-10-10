@@ -5,6 +5,7 @@ pub mod env;
 pub mod errors;
 pub mod git;
 pub mod hub;
+pub mod hub_discovery;
 pub mod models;
 pub mod multiplexer;
 pub mod network;
