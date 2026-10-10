@@ -1,13 +1,20 @@
 # 💻 CLI Reference Manual
 
-`ws` provides a clean, intentional command hierarchy organized across 5 core domains:
+`ws` provides a clean, intentional command hierarchy organized across 5 core
+domains:
 
-1. [**Workspace Lifecycle**](#1-workspace-lifecycle) (`create`, `list`, `info`, `end`, `close`, `status`, `exec`, `push`, `pull`)
-2. [**Worktree & Repository Operations**](#2-worktree--repository-operations) (`repo add`, `repo remove`, `repo lock`, `repo unlock`, `lock`, `unlock`)
-3. [**Service Runtime & Multiplexers**](#3-service-runtime--multiplexers) (`start`, `attach`, `stop`, `restart`, `logs`, `bridge`)
-4. [**Developer Shell & Environment**](#4-developer-shell--environment) (`shell`, `env`, `setup`)
-5. [**Project Store Management**](#5-project-store-management) (`project init`, `project add`, `project fetch`, `project sync`, `doctor`, `antigravity`)
-6. [**Universal Inverted Syntax**](#6-universal-inverted-syntax) (`ws @<name> <command>`)
+1. [**Workspace Lifecycle**](#1-workspace-lifecycle) (`create`, `list`, `info`,
+   `end`, `close`, `status`, `exec`, `push`, `pull`)
+2. [**Worktree & Repository Operations**](#2-worktree--repository-operations)
+   (`repo add`, `repo remove`, `repo lock`, `repo unlock`, `lock`, `unlock`)
+3. [**Service Runtime & Multiplexers**](#3-service-runtime--multiplexers)
+   (`start`, `attach`, `stop`, `restart`, `logs`, `bridge`)
+4. [**Developer Shell & Environment**](#4-developer-shell--environment)
+   (`shell`, `env`, `setup`)
+5. [**Project Store Management**](#5-project-store-management) (`project init`,
+   `project add`, `project fetch`, `project sync`, `doctor`, `antigravity`)
+6. [**Universal Inverted Syntax**](#6-universal-inverted-syntax)
+   (`ws @<name> <command>`)
 
 ---
 
@@ -15,10 +22,13 @@
 
 To ensure absolute clarity in command arguments:
 
-- **Workspaces** use the **`@`** prefix: `@develop`, `@feat-auth`, `@hotfix-401`.
-- **Repositories & Services** use the **`%`** prefix: `%server`, `%mobile`, `%frontend`.
+- **Workspaces** use the **`@`** prefix: `@develop`, `@feat-auth`,
+  `@hotfix-401`.
+- **Repositories & Services** use the **`%`** prefix: `%server`, `%mobile`,
+  `%frontend`.
 
-_(Note: The CLI is forgiving and also accepts un-prefixed names or `+repo`, `:repo`)_
+_(Note: The CLI is forgiving and also accepts un-prefixed names or `+repo`,
+`:repo`)_
 
 ---
 
@@ -34,16 +44,16 @@ ws create @<name> [%repo[:branch[:mode]] ...] [--all] [--existing] [-f <file.yml
 
 #### Arguments & Options
 
-| Argument / Flag           | Type       | Description                                                                                   |
-| :------------------------ | :--------- | :-------------------------------------------------------------------------------------------- |
-| `@<name>`                 | Positional | Target workspace name (required unless `-f` is used).                                         |
-| `%<repo>[:branch[:mode]]` | Positional | Repository name with optional target branch and branch creation mode (`new` or `existing`).   |
-| `--all`                   | Flag       | Include all repositories defined in `repositories.yml`.                                       |
-| `--existing`              | Flag       | Default to checking out existing branches rather than creating new `feature/<name>` branches. |
-| `-f`, `--file <file.yml>` | Option     | Path to a declarative workspace YAML configuration file.                                      |
-| `--setup`                 | Flag       | Automatically run setup scripts and environment sync immediately after workspace creation.    |
-| `--cmd`, `--command <cmd>`| Option     | Command to run inside the workspace Tmux window upon creation (overrides config default).     |
-| `--no-tmux`               | Flag       | Skip opening a dedicated Tmux window for this workspace.                                      |
+| Argument / Flag            | Type       | Description                                                                                   |
+| :------------------------- | :--------- | :-------------------------------------------------------------------------------------------- |
+| `@<name>`                  | Positional | Target workspace name (required unless `-f` is used).                                         |
+| `%<repo>[:branch[:mode]]`  | Positional | Repository name with optional target branch and branch creation mode (`new` or `existing`).   |
+| `--all`                    | Flag       | Include all repositories defined in `repositories.yml`.                                       |
+| `--existing`               | Flag       | Default to checking out existing branches rather than creating new `feature/<name>` branches. |
+| `-f`, `--file <file.yml>`  | Option     | Path to a declarative workspace YAML configuration file.                                      |
+| `--setup`                  | Flag       | Automatically run setup scripts and environment sync immediately after workspace creation.    |
+| `--cmd`, `--command <cmd>` | Option     | Command to run inside the workspace Tmux window upon creation (overrides config default).     |
+| `--no-tmux`                | Flag       | Skip opening a dedicated Tmux window for this workspace.                                      |
 
 #### Examples
 
@@ -68,7 +78,8 @@ ws create -f team-setup.yml --setup
 
 ### `ws list` / `ws ls`
 
-Lists all existing workspaces with their active branch mappings, creation timestamps, and filesystem paths.
+Lists all existing workspaces with their active branch mappings, creation
+timestamps, and filesystem paths.
 
 ```bash
 ws list
@@ -80,7 +91,9 @@ ws ls
 
 ### `ws info`
 
-Displays detailed inspection information for a workspace, including worktree paths, branch names, file lock status, active presentation engine, and live process statuses with listening ports.
+Displays detailed inspection information for a workspace, including worktree
+paths, branch names, file lock status, active presentation engine, and live
+process statuses with listening ports.
 
 ```bash
 ws info @<name>
@@ -96,7 +109,9 @@ ws info @develop
 
 ### `ws focus` / `ws switch`
 
-Focuses or switches to the workspace's Tmux window. If run inside Tmux, selects and switches client to that window. If run outside Tmux, attaches to the project session focused on that window.
+Focuses or switches to the workspace's Tmux window. If run inside Tmux, selects
+and switches client to that window. If run outside Tmux, attaches to the project
+session focused on that window.
 
 ```bash
 ws focus @<name>
@@ -114,11 +129,20 @@ ws focus @feat-auth
 
 ### `ws end` / `ws close`
 
-Safely ends and closes a workspace. Before pruning Git worktrees and removing the workspace directory, `ws end` verifies that:
-1. **All work has been committed**: Checks for uncommitted changes (staged, unstaged, and untracked files). Prevents closing if uncommitted work is found.
-2. **All work has been merged**: Checks if feature branches have been merged into their base branch (defaulting to the bare repo default branch, e.g. `main` or `master`). Prevents closing if unmerged commits exist.
-3. **Session successfully stopped**: If services are running under the background daemon, ensures the session is cleanly terminated before files are deleted.
-4. **Tmux window closed**: If configured, cleanly terminates the workspace's Tmux window.
+Safely ends and closes a workspace. Before pruning Git worktrees and removing
+the workspace directory, `ws end` verifies that:
+
+1. **All work has been committed**: Checks for uncommitted changes (staged,
+   unstaged, and untracked files). Prevents closing if uncommitted work is
+   found.
+2. **All work has been merged**: Checks if feature branches have been merged
+   into their base branch (defaulting to the bare repo default branch, e.g.
+   `main` or `master`). Prevents closing if unmerged commits exist.
+3. **Session successfully stopped**: If services are running under the
+   background daemon, ensures the session is cleanly terminated before files are
+   deleted.
+4. **Tmux window closed**: If configured, cleanly terminates the workspace's
+   Tmux window.
 
 ```bash
 ws end @<name> [--no-merge] [-f|--force] [--delete-branch] [-t|--target <branch>] [--no-tmux]
@@ -128,13 +152,13 @@ ws close @<name> [--no-merge] [-f|--force] [--delete-branch] [-t|--target <branc
 
 #### Options
 
-| Flag | Description |
-| :--- | :--- |
-| `--no-merge` | Allow closing even if committed changes have not been merged into the base branch. *(Note: `--no-merge` does NOT bypass uncommitted work!)* |
-| `-f`, `--force` | Force close regardless of uncommitted changes, unmerged branches, or active sessions. |
-| `--delete-branch` | Also delete the Git feature branch from the bare repository store. |
-| `-t`, `--target`, `--target-branch <branch>` | Base branch to check merge status against (default: repo default branch, e.g. `main` or `master`). |
-| `--no-tmux` | Skip closing the workspace's Tmux window. |
+| Flag                                         | Description                                                                                                                                 |
+| :------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--no-merge`                                 | Allow closing even if committed changes have not been merged into the base branch. _(Note: `--no-merge` does NOT bypass uncommitted work!)_ |
+| `-f`, `--force`                              | Force close regardless of uncommitted changes, unmerged branches, or active sessions.                                                       |
+| `--delete-branch`                            | Also delete the Git feature branch from the bare repository store.                                                                          |
+| `-t`, `--target`, `--target-branch <branch>` | Base branch to check merge status against (default: repo default branch, e.g. `main` or `master`).                                          |
+| `--no-tmux`                                  | Skip closing the workspace's Tmux window.                                                                                                   |
 
 #### Examples
 
@@ -159,7 +183,9 @@ ws end @feat-auth --force
 
 ### `ws status`
 
-Runs `git status` across all repository worktrees in the workspace and renders a combined overview table highlighting uncommitted changes, untracked files, and branch divergence.
+Runs `git status` across all repository worktrees in the workspace and renders a
+combined overview table highlighting uncommitted changes, untracked files, and
+branch divergence.
 
 ```bash
 ws status @<name>
@@ -175,7 +201,8 @@ ws status @develop
 
 ### `ws exec`
 
-Executes an arbitrary shell command across all or a subset of repository worktrees inside the workspace.
+Executes an arbitrary shell command across all or a subset of repository
+worktrees inside the workspace.
 
 ```bash
 ws exec [@<name>] [%repos...] [--all] [--repos r1,r2] [--] <command...>
@@ -183,13 +210,13 @@ ws exec [@<name>] [%repos...] [--all] [--repos r1,r2] [--] <command...>
 
 #### Options
 
-| Argument / Flag   | Default | Description                                              |
-| :---------------- | :------ | :------------------------------------------------------- |
-| `@<name>`         | Current | Workspace name (defaults to active detected workspace).  |
-| `%repos...`       | All     | Specific repositories to execute in (`%hub %web`).       |
-| `--all`           | All     | Explicitly target all repositories in the workspace.     |
-| `--repos <list>`  | All     | Comma-separated list of repository names.                |
-| `--`              | -       | Delimiter separating `ws` arguments from child command.  |
+| Argument / Flag  | Default | Description                                             |
+| :--------------- | :------ | :------------------------------------------------------ |
+| `@<name>`        | Current | Workspace name (defaults to active detected workspace). |
+| `%repos...`      | All     | Specific repositories to execute in (`%hub %web`).      |
+| `--all`          | All     | Explicitly target all repositories in the workspace.    |
+| `--repos <list>` | All     | Comma-separated list of repository names.               |
+| `--`             | -       | Delimiter separating `ws` arguments from child command. |
 
 #### Examples
 
@@ -207,12 +234,12 @@ ws exec @develop -- git clean -fd
 ws exec @feat-auth %server %mobile -- npm test
 ```
 
-
 ---
 
 ### `ws push`
 
-Pushes committed changes across workspace repositories to their upstream Git remotes. Skips locked/frozen repositories automatically.
+Pushes committed changes across workspace repositories to their upstream Git
+remotes. Skips locked/frozen repositories automatically.
 
 ```bash
 ws push @<name> [%repos...] [--repos r1,r2] [--remote <name>]
@@ -235,7 +262,9 @@ ws push @feat-auth %server %mobile --remote origin
 
 ### `ws pull`
 
-Pulls remote updates for workspace repositories. Automatically reports conflicts, dirty worktree states, and network errors in formatted diagnostic tables.
+Pulls remote updates for workspace repositories. Automatically reports
+conflicts, dirty worktree states, and network errors in formatted diagnostic
+tables.
 
 ```bash
 ws pull @<name> [%repos...] [--repos r1,r2] [--remote <name>]
@@ -273,7 +302,8 @@ ws repo add @develop %server:main --existing
 
 ### `ws repo remove` / `ws repo rm`
 
-Removes a repository worktree from an existing workspace and cleans up its Git worktree metadata.
+Removes a repository worktree from an existing workspace and cleans up its Git
+worktree metadata.
 
 ```bash
 ws repo remove @<workspace> %<repo> [--delete-branch]
@@ -295,7 +325,9 @@ ws repo remove @develop %mobile --delete-branch
 
 ### `ws repo lock` / `ws lock`
 
-Locks a repository worktree by setting all Git-tracked files to read-only (`chmod a-w`). Keeps untracked build artifacts and environment files (`.env`, `node_modules/`, `target/`) writable.
+Locks a repository worktree by setting all Git-tracked files to read-only
+(`chmod a-w`). Keeps untracked build artifacts and environment files (`.env`,
+`node_modules/`, `target/`) writable.
 
 ```bash
 ws repo lock @<workspace> %<repo>
@@ -313,7 +345,8 @@ ws lock @automatic-401-logout %server
 
 ### `ws repo unlock` / `ws unlock`
 
-Unlocks a previously locked repository worktree, restoring standard write permissions (`chmod u+w`) to tracked files.
+Unlocks a previously locked repository worktree, restoring standard write
+permissions (`chmod u+w`) to tracked files.
 
 ```bash
 ws repo unlock @<workspace> %<repo>
@@ -333,7 +366,8 @@ ws unlock @automatic-401-logout %server
 
 ### `ws start` / `ws launch` / `ws run`
 
-Starts workspace services concurrently under a persistent background supervisor daemon and displays the requested presentation interface.
+Starts workspace services concurrently under a persistent background supervisor
+daemon and displays the requested presentation interface.
 
 ```bash
 ws start @<name> [%repos...] [--all] [--tmux] [-z|--zellij] [-t|--terminal] [--stream] [-d|--daemon] [--attach %repo] [--switch] [--mode <mode>] [--interface <iface>] [--ip <ip>]
@@ -341,19 +375,19 @@ ws start @<name> [%repos...] [--all] [--tmux] [-z|--zellij] [-t|--terminal] [--s
 
 #### Options
 
-| Flag                                         | Description                                                                                                    |
-| :------------------------------------------- | :------------------------------------------------------------------------------------------------------------- |
-| `%repos...`                                  | Specific services to start (starts all configured services if omitted or `--all` is passed).                   |
-| `--tmux`                                     | Launch services in a Tmux session with side-by-side vertical panes.                                            |
-| `-z`, `--zellij`                             | Launch services in a Zellij tiled split grid session.                                                          |
-| `-t`, `--terminal`                           | Launch each service in a separate native OS terminal window.                                                   |
-| `--stream`                                   | Stream raw multiplexed stdout/stderr directly to terminal without interactive TUI.                             |
-| `-d`, `--daemon`                             | Launch services detached in background daemon without opening a UI.                                            |
-| `--attach %repo`                             | Launch and immediately focus single service terminal output.                                                   |
-| `-s`, `--switch`                             | Migrate presentation engine on-the-fly with **zero downtime**.                                                 |
-| `-m`, `--mode <mode>`                        | Presentation engine mode: `tui`, `tmux`, `zellij`, `terminal`, `stream`, `daemon`, `attach`.                   |
-| `--interface`, `--iface`, `--lan-interface`  | Select network interface (`wlan0`, `eno1`) or type (`wifi`, `ethernet`) to resolve `${LAN_IP}`. Prioritizes Wi-Fi by default. |
-| `--ip`, `--lan-ip`                           | Explicit host LAN IP address override (e.g. `192.168.24.178`).                                                 |
+| Flag                                        | Description                                                                                                                   |
+| :------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------- |
+| `%repos...`                                 | Specific services to start (starts all configured services if omitted or `--all` is passed).                                  |
+| `--tmux`                                    | Launch services in a Tmux session with side-by-side vertical panes.                                                           |
+| `-z`, `--zellij`                            | Launch services in a Zellij tiled split grid session.                                                                         |
+| `-t`, `--terminal`                          | Launch each service in a separate native OS terminal window.                                                                  |
+| `--stream`                                  | Stream raw multiplexed stdout/stderr directly to terminal without interactive TUI.                                            |
+| `-d`, `--daemon`                            | Launch services detached in background daemon without opening a UI.                                                           |
+| `--attach %repo`                            | Launch and immediately focus single service terminal output.                                                                  |
+| `-s`, `--switch`                            | Migrate presentation engine on-the-fly with **zero downtime**.                                                                |
+| `-m`, `--mode <mode>`                       | Presentation engine mode: `tui`, `tmux`, `zellij`, `terminal`, `stream`, `daemon`, `attach`.                                  |
+| `--interface`, `--iface`, `--lan-interface` | Select network interface (`wlan0`, `eno1`) or type (`wifi`, `ethernet`) to resolve `${LAN_IP}`. Prioritizes Wi-Fi by default. |
+| `--ip`, `--lan-ip`                          | Explicit host LAN IP address override (e.g. `192.168.24.178`).                                                                |
 
 #### Examples
 
@@ -414,7 +448,8 @@ ws attach @develop %mobile
 
 ### `ws stop` / `ws kill`
 
-Gracefully terminates all running services and shuts down the workspace background daemon.
+Gracefully terminates all running services and shuts down the workspace
+background daemon.
 
 ```bash
 ws stop @<name>
@@ -430,7 +465,8 @@ ws stop @develop
 
 ### `ws restart`
 
-Restarts running services inside an active workspace session without terminating the daemon.
+Restarts running services inside an active workspace session without terminating
+the daemon.
 
 ```bash
 ws restart @<name> [%repos...]
@@ -446,7 +482,8 @@ ws restart @develop %server
 
 ### `ws logs`
 
-Views or tails persistent log files for workspace services stored in `.ws/logs/`.
+Views or tails persistent log files for workspace services stored in
+`.ws/logs/`.
 
 ```bash
 ws logs @<name> [%repo] [-f|--follow] [-n <lines>]
@@ -469,7 +506,8 @@ ws logs @develop %server -f -n 100
 
 ### `ws bridge`
 
-Connects a raw terminal I/O bridge directly into a running service's Master PTY inside the daemon.
+Connects a raw terminal I/O bridge directly into a running service's Master PTY
+inside the daemon.
 
 ```bash
 ws bridge @<name> %<repo>
@@ -487,7 +525,8 @@ ws bridge @develop %mobile
 
 ### `ws shell` / `ws enter` / `ws open`
 
-Spawns an interactive subshell configured specifically for the target workspace or worktree.
+Spawns an interactive subshell configured specifically for the target workspace
+or worktree.
 
 ```bash
 ws shell @<name> [%worktree]
@@ -503,7 +542,8 @@ ws shell @develop %server
 
 ### `ws env`
 
-Inspects or synchronizes environment variables configured for workspace repositories.
+Inspects or synchronizes environment variables configured for workspace
+repositories.
 
 ```bash
 ws env @<name> [%repo] [--sync] [--interface <iface>] [--ip <ip>]
@@ -511,11 +551,11 @@ ws env @<name> [%repo] [--sync] [--interface <iface>] [--ip <ip>]
 
 #### Options
 
-| Flag                                         | Description                                                                                                    |
-| :------------------------------------------- | :------------------------------------------------------------------------------------------------------------- |
-| `--sync`                                     | Write resolved environment variables into worktree `.env` files.                                               |
-| `--interface`, `--iface`, `--lan-interface`  | Select network interface (`wlan0`, `eno1`) or type (`wifi`, `ethernet`) to resolve `${LAN_IP}`. Prioritizes Wi-Fi by default. |
-| `--ip`, `--lan-ip`                           | Explicit host LAN IP address override (e.g. `192.168.24.178`).                                                 |
+| Flag                                        | Description                                                                                                                   |
+| :------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------- |
+| `--sync`                                    | Write resolved environment variables into worktree `.env` files.                                                              |
+| `--interface`, `--iface`, `--lan-interface` | Select network interface (`wlan0`, `eno1`) or type (`wifi`, `ethernet`) to resolve `${LAN_IP}`. Prioritizes Wi-Fi by default. |
+| `--ip`, `--lan-ip`                          | Explicit host LAN IP address override (e.g. `192.168.24.178`).                                                                |
 
 #### Examples
 
@@ -534,7 +574,8 @@ ws env @develop --sync
 
 ### `ws setup`
 
-Runs dependency installation and configuration scripts defined in `repositories.yml`.
+Runs dependency installation and configuration scripts defined in
+`repositories.yml`.
 
 ```bash
 ws setup @<name> [%repos...] [--all] [--dry-run] [--skip-scripts] [--interface <iface>] [--ip <ip>]
@@ -542,13 +583,13 @@ ws setup @<name> [%repos...] [--all] [--dry-run] [--skip-scripts] [--interface <
 
 #### Options
 
-| Flag                                         | Description                                                                                                    |
-| :------------------------------------------- | :------------------------------------------------------------------------------------------------------------- |
-| `--all`                                      | Run setup for all repositories in workspace.                                                                   |
-| `--dry-run`                                  | Print commands that would be executed without running them.                                                    |
-| `--skip-scripts`                             | Only sync environment variables and file copies without executing scripts.                                     |
-| `--interface`, `--iface`, `--lan-interface`  | Select network interface (`wlan0`, `eno1`) or type (`wifi`, `ethernet`) to resolve `${LAN_IP}`. Prioritizes Wi-Fi by default. |
-| `--ip`, `--lan-ip`                           | Explicit host LAN IP address override (e.g. `192.168.24.178`).                                                 |
+| Flag                                        | Description                                                                                                                   |
+| :------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------- |
+| `--all`                                     | Run setup for all repositories in workspace.                                                                                  |
+| `--dry-run`                                 | Print commands that would be executed without running them.                                                                   |
+| `--skip-scripts`                            | Only sync environment variables and file copies without executing scripts.                                                    |
+| `--interface`, `--iface`, `--lan-interface` | Select network interface (`wlan0`, `eno1`) or type (`wifi`, `ethernet`) to resolve `${LAN_IP}`. Prioritizes Wi-Fi by default. |
+| `--ip`, `--lan-ip`                          | Explicit host LAN IP address override (e.g. `192.168.24.178`).                                                                |
 
 #### Examples
 
@@ -566,7 +607,10 @@ ws setup @develop --all --interface wlan0
 
 ### `ws project init` / `ws init`
 
-Initializes bare Git repositories in `bares/` and generates `repositories.yml` with sensible defaults for `tmux` (`session` set to project folder, `command: nvim`, `switch: true`) and `hub` (`auto_save` every 5m). Existing configurations are preserved if already present.
+Initializes bare Git repositories in `bares/` and generates `repositories.yml`
+with sensible defaults for `tmux` (`session` set to project folder,
+`command: nvim`, `switch: true`) and `hub` (`auto_save` every 5m). Existing
+configurations are preserved if already present.
 
 ```bash
 ws project init [alias=URL ...]
@@ -584,7 +628,8 @@ ws project init server=git@github.com:org/api.git mobile=git@github.com:org/app.
 
 ### `ws project add` / `ws add`
 
-Clones an additional bare repository into `bares/` and registers it in `repositories.yml`.
+Clones an additional bare repository into `bares/` and registers it in
+`repositories.yml`.
 
 ```bash
 ws project add <alias=URL>
@@ -610,7 +655,8 @@ ws project fetch
 
 ### `ws project sync` / `ws sync`
 
-Runs `git worktree prune` across all bare repositories and cleans up stale references.
+Runs `git worktree prune` across all bare repositories and cleans up stale
+references.
 
 ```bash
 ws project sync
@@ -620,7 +666,9 @@ ws project sync
 
 ### `ws doctor`
 
-Runs an automated system diagnostic check verifying Git version, multiplexer availability (`tmux`, `zellij`), bare repository integrity, socket permissions, and environment health.
+Runs an automated system diagnostic check verifying Git version, multiplexer
+availability (`tmux`, `zellij`), bare repository integrity, socket permissions,
+and environment health.
 
 ```bash
 ws doctor
@@ -630,7 +678,9 @@ ws doctor
 
 ### `ws completion`
 
-Generates or installs shell autocompletion scripts for Zsh, Bash, and Fish, providing tab-completion for subcommands, workspaces (`@<name>`), repositories (`%<repo>`), and flags.
+Generates or installs shell autocompletion scripts for Zsh, Bash, and Fish,
+providing tab-completion for subcommands, workspaces (`@<name>`), repositories
+(`%<repo>`), and flags.
 
 ```bash
 ws completion [zsh|bash|fish|install]
@@ -651,19 +701,21 @@ ws completion bash
 
 ---
 
-
 ---
 
 ## 6. wshub Cloud Collaboration & Replication
 
 ### `ws hub login`
-Authenticates with the `wshub` server and saves an encrypted session token in `~/.config/ws/hub.yml`.
+
+Authenticates with the `wshub` server and saves an encrypted session token in
+`~/.config/ws/hub.yml`.
 
 ```bash
 ws hub login [--url <url>] [--token <pat_token>] [-u <username>] [-p <password>]
 ```
 
 ### `ws hub whoami`
+
 Displays the currently authenticated wshub user profile and active server.
 
 ```bash
@@ -671,7 +723,9 @@ ws hub whoami
 ```
 
 ### `ws hub clone` / `ws clone`
-Clones project blueprint, downloads secret files from the vault, and clones all bare repositories in one command.
+
+Clones project blueprint, downloads secret files from the vault, and clones all
+bare repositories in one command.
 
 ```bash
 ws clone <org/project> [target_dir]
@@ -679,13 +733,16 @@ ws hub clone <org/project> [target_dir]
 ```
 
 ### `ws hub publish`
-Publishes a local workspace project blueprint (`repositories.yml`) and automation scripts to wshub.
+
+Publishes a local workspace project blueprint (`repositories.yml`) and
+automation scripts to wshub.
 
 ```bash
 ws hub publish [<org/project>] [-d <description>]
 ```
 
 ### `ws hub push`
+
 Pushes local project configuration updates as a new linear blueprint revision.
 
 ```bash
@@ -693,21 +750,27 @@ ws hub push [-m <changelog_message>]
 ```
 
 ### `ws hub pull`
-Pulls the latest blueprint from wshub and clones any newly added bare repositories.
+
+Pulls the latest blueprint from wshub and clones any newly added bare
+repositories.
 
 ```bash
 ws hub pull
 ```
 
 ### `ws hub sync`
-Synchronizes project blueprint, clones missing bare repositories, and updates vault secrets/files in one step.
+
+Synchronizes project blueprint, clones missing bare repositories, and updates
+vault secrets/files in one step.
 
 ```bash
 ws hub sync
 ```
 
 ### `ws hub state save` & `ws hub resume`
-Snapshots active workspace branches, locks, and local configuration for cross-machine resumption.
+
+Snapshots active workspace branches, locks, and local configuration for
+cross-machine resumption.
 
 ```bash
 # Save workspace state to hub
@@ -718,7 +781,10 @@ ws hub resume @develop
 ```
 
 ### `ws service` & `ws daemon`
-Manages the machine-wide `ws.service` user systemd unit which continuously monitors all registered projects on your machine and performs periodic Hub auto-saving.
+
+Manages the machine-wide `ws.service` user systemd unit which continuously
+monitors all registered projects on your machine and performs periodic Hub
+auto-saving.
 
 ```bash
 # Install, enable, and start ws.service (runs on boot)
@@ -740,10 +806,15 @@ ws service logs
 ws daemon run [--tick 15]
 ```
 
-The daemon automatically watches `repositories.yml` and `workspace.yml` in real time, auto-pushing blueprint revisions on `repositories.yml` edits and auto-saving workspace states on `workspace.yml` edits. Projects not yet published on `wshub` are automatically published on first save or push.
+The daemon automatically watches `repositories.yml` and `workspace.yml` in real
+time, auto-pushing blueprint revisions on `repositories.yml` edits and
+auto-saving workspace states on `workspace.yml` edits. Projects not yet
+published on `wshub` are automatically published on first save or push.
 
 ### `ws project`
-Manages project bare repositories and the global project registry for the background daemon.
+
+Manages project bare repositories and the global project registry for the
+background daemon.
 
 ```bash
 # List all registered projects monitored by ws.service
@@ -757,7 +828,9 @@ ws project unregister [/path/to/project]
 ```
 
 ### `ws hub auto-save`
-Controls periodic auto-saving of workspace states to `wshub`. Works with change-detection caching to skip redundant uploads when worktrees are unchanged.
+
+Controls periodic auto-saving of workspace states to `wshub`. Works with
+change-detection caching to skip redundant uploads when worktrees are unchanged.
 
 ```bash
 # Check daemon status, interval, and workspace snapshot history
@@ -772,7 +845,9 @@ ws hub auto-save service status
 ```
 
 ### `ws hub secret`
-Manages zero-Git encrypted project secrets and sensitive files (`.pem`, `.json`, certificates) in the wshub AES-256-GCM vault.
+
+Manages zero-Git encrypted project secrets and sensitive files (`.pem`, `.json`,
+certificates) in the wshub AES-256-GCM vault.
 
 ```bash
 # List secrets
@@ -795,7 +870,8 @@ ws hub secret pull
 
 ## 7. Universal Inverted Syntax
 
-All workspace-scoped commands support the intuitive **`ws @<name> <verb>`** inverted syntax:
+All workspace-scoped commands support the intuitive **`ws @<name> <verb>`**
+inverted syntax:
 
 ```bash
 ws @develop start --tmux
@@ -810,4 +886,3 @@ ws @develop push
 ws @develop pull
 ws @develop stop
 ```
-

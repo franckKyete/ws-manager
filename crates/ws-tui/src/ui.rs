@@ -1,5 +1,5 @@
-/// High-performance Ratatui terminal user interface with multi-pane grid, in-pane scrollback,
-/// lossless window resizing, horizontal panning, smooth trackpad scrolling, text selection, and clipboard copy/paste.
+//! High-performance Ratatui terminal user interface with multi-pane grid, in-pane scrollback,
+//! lossless window resizing, horizontal panning, smooth trackpad scrolling, text selection, and clipboard copy/paste.
 
 use std::collections::HashMap;
 use std::io::{stdout, Stdout};
@@ -35,7 +35,6 @@ pub struct TextSelection {
     pub end: (usize, usize),
     pub is_selecting: bool,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UIMode {
@@ -94,7 +93,6 @@ impl<'a> WorkspaceTUI<'a> {
         }
     }
 
-
     pub fn get_cursor(&self, service: &str) -> (usize, usize) {
         self.cursors.get(service).copied().unwrap_or((0, 0))
     }
@@ -102,8 +100,6 @@ impl<'a> WorkspaceTUI<'a> {
     pub fn set_cursor(&mut self, service: &str, pos: (usize, usize)) {
         self.cursors.insert(service.to_string(), pos);
     }
-
-
 
     pub fn focused_service_name(&self) -> &str {
         if self.service_names.is_empty() {
@@ -120,7 +116,8 @@ impl<'a> WorkspaceTUI<'a> {
                 let sub = (-delta) as usize;
                 self.scroll_offsets.insert(name, old.saturating_sub(sub));
             } else {
-                self.scroll_offsets.insert(name, old.saturating_add(delta as usize));
+                self.scroll_offsets
+                    .insert(name, old.saturating_add(delta as usize));
             }
         }
     }
@@ -131,9 +128,11 @@ impl<'a> WorkspaceTUI<'a> {
             let old = self.horizontal_offsets.get(&name).copied().unwrap_or(0);
             if delta < 0 {
                 let sub = (-delta) as usize;
-                self.horizontal_offsets.insert(name, old.saturating_sub(sub));
+                self.horizontal_offsets
+                    .insert(name, old.saturating_sub(sub));
             } else {
-                self.horizontal_offsets.insert(name, old.saturating_add(delta as usize).min(200));
+                self.horizontal_offsets
+                    .insert(name, old.saturating_add(delta as usize).min(200));
             }
         }
     }
@@ -191,7 +190,11 @@ impl<'a> WorkspaceTUI<'a> {
         let res = self.event_loop(&mut terminal).await;
 
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
         terminal.show_cursor()?;
 
         res
@@ -226,8 +229,10 @@ impl<'a> WorkspaceTUI<'a> {
                                         && mouse.row >= rect.y
                                         && mouse.row < rect.y + rect.height
                                     {
-                                        let rel_col = (mouse.column.saturating_sub(rect.x + 1)) as usize;
-                                        let rel_row = (mouse.row.saturating_sub(rect.y + 1)) as usize;
+                                        let rel_col =
+                                            (mouse.column.saturating_sub(rect.x + 1)) as usize;
+                                        let rel_row =
+                                            (mouse.row.saturating_sub(rect.y + 1)) as usize;
                                         let max_col = (rect.width.saturating_sub(2)) as usize;
                                         let max_row = (rect.height.saturating_sub(2)) as usize;
                                         let pos = (rel_col.min(max_col), rel_row.min(max_row));
@@ -236,7 +241,9 @@ impl<'a> WorkspaceTUI<'a> {
                                     }
                                 }
                                 if let Some((name, pos)) = hit {
-                                    if let Some(idx) = self.service_names.iter().position(|s| s == &name) {
+                                    if let Some(idx) =
+                                        self.service_names.iter().position(|s| s == &name)
+                                    {
                                         self.focused_index = idx;
                                     }
                                     self.set_cursor(&name, pos);
@@ -254,8 +261,10 @@ impl<'a> WorkspaceTUI<'a> {
                                 let mut drag_update = None;
                                 if let Some(ref sel) = self.selection {
                                     if let Some(rect) = self.pane_rects.get(&sel.service) {
-                                        let rel_col = (mouse.column.saturating_sub(rect.x + 1)) as usize;
-                                        let rel_row = (mouse.row.saturating_sub(rect.y + 1)) as usize;
+                                        let rel_col =
+                                            (mouse.column.saturating_sub(rect.x + 1)) as usize;
+                                        let rel_row =
+                                            (mouse.row.saturating_sub(rect.y + 1)) as usize;
                                         let max_col = (rect.width.saturating_sub(2)) as usize;
                                         let max_row = (rect.height.saturating_sub(2)) as usize;
                                         let pos = (rel_col.min(max_col), rel_row.min(max_row));
@@ -273,7 +282,10 @@ impl<'a> WorkspaceTUI<'a> {
 
                             // Mouse up: finalize selection and copy to clipboard
                             MouseEventKind::Up(MouseButton::Left) => {
-                                let sel_info = self.selection.as_ref().map(|s| (s.service.clone(), s.start, s.end));
+                                let sel_info = self
+                                    .selection
+                                    .as_ref()
+                                    .map(|s| (s.service.clone(), s.start, s.end));
                                 if let Some((service, start, end)) = sel_info {
                                     if start != end {
                                         let text = self.extract_selected_text(&service, start, end);
@@ -297,7 +309,9 @@ impl<'a> WorkspaceTUI<'a> {
                             MouseEventKind::Down(MouseButton::Right) => {
                                 if let Some(clip_text) = get_from_clipboard() {
                                     let focused = self.focused_service_name().to_string();
-                                    self.supervisor.send_input(&focused, clip_text.as_bytes()).await;
+                                    self.supervisor
+                                        .send_input(&focused, clip_text.as_bytes())
+                                        .await;
                                 }
                             }
                             _ => {}
@@ -314,21 +328,27 @@ impl<'a> WorkspaceTUI<'a> {
                         if self.mode == UIMode::Interactive {
                             if key.code == KeyCode::Esc
                                 || (key.modifiers.contains(KeyModifiers::CONTROL)
-                                    && (key.code == KeyCode::Char('x') || key.code == KeyCode::Char('w') || key.code == KeyCode::Char('W')))
+                                    && (key.code == KeyCode::Char('x')
+                                        || key.code == KeyCode::Char('w')
+                                        || key.code == KeyCode::Char('W')))
                             {
                                 self.mode = UIMode::Navigation;
                                 continue;
                             }
 
-
                             // Clipboard paste in interactive mode (Ctrl+V or Ctrl+Shift+V)
-                            if (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('v'))
-                                || (key.modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                            if (key.modifiers.contains(KeyModifiers::CONTROL)
+                                && key.code == KeyCode::Char('v'))
+                                || (key
+                                    .modifiers
+                                    .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
                                     && key.code == KeyCode::Char('V'))
                             {
                                 if let Some(clip_text) = get_from_clipboard() {
                                     let focused = self.focused_service_name().to_string();
-                                    self.supervisor.send_input(&focused, clip_text.as_bytes()).await;
+                                    self.supervisor
+                                        .send_input(&focused, clip_text.as_bytes())
+                                        .await;
                                 }
                                 continue;
                             }
@@ -363,7 +383,11 @@ impl<'a> WorkspaceTUI<'a> {
                         // 2. Vim Visual Mode
                         if self.mode == UIMode::Visual {
                             let focused = self.focused_service_name().to_string();
-                            let rect = self.pane_rects.get(&focused).cloned().unwrap_or(Rect::new(0, 0, 80, 24));
+                            let rect = self
+                                .pane_rects
+                                .get(&focused)
+                                .cloned()
+                                .unwrap_or(Rect::new(0, 0, 80, 24));
                             let max_col = (rect.width.saturating_sub(2)) as usize;
                             let max_row = (rect.height.saturating_sub(2)) as usize;
                             let (mut col, mut row) = self.get_cursor(&focused);
@@ -374,7 +398,9 @@ impl<'a> WorkspaceTUI<'a> {
                                     self.selection = None;
                                     self.mode = UIMode::Navigation;
                                 }
-                                KeyCode::Char('w') | KeyCode::Char('W') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                KeyCode::Char('w') | KeyCode::Char('W')
+                                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
                                     self.selection = None;
                                     self.mode = UIMode::Navigation;
                                 }
@@ -382,7 +408,11 @@ impl<'a> WorkspaceTUI<'a> {
                                 // Yank / Copy selection
                                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                                     if let Some(ref sel) = self.selection {
-                                        let text = self.extract_selected_text(&sel.service, sel.start, sel.end);
+                                        let text = self.extract_selected_text(
+                                            &sel.service,
+                                            sel.start,
+                                            sel.end,
+                                        );
                                         if !text.is_empty() {
                                             copy_to_clipboard(&text);
                                             self.copy_toast = Some((
@@ -456,13 +486,19 @@ impl<'a> WorkspaceTUI<'a> {
                         }
 
                         // 3. Navigation Mode
-                        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+                        if key.modifiers.contains(KeyModifiers::CONTROL)
+                            && key.code == KeyCode::Char('c')
+                        {
                             self.supervisor.stop_all().await;
                             return Ok(0);
                         }
 
                         let focused = self.focused_service_name().to_string();
-                        let rect = self.pane_rects.get(&focused).cloned().unwrap_or(Rect::new(0, 0, 80, 24));
+                        let rect = self
+                            .pane_rects
+                            .get(&focused)
+                            .cloned()
+                            .unwrap_or(Rect::new(0, 0, 80, 24));
                         let max_col = (rect.width.saturating_sub(2)) as usize;
                         let max_row = (rect.height.saturating_sub(2)) as usize;
                         let (mut col, mut row) = self.get_cursor(&focused);
@@ -489,7 +525,9 @@ impl<'a> WorkspaceTUI<'a> {
                             KeyCode::Char('l') | KeyCode::Right => {
                                 col = col.saturating_add(1).min(max_col);
                             }
-                            KeyCode::Char('w') | KeyCode::Char('W') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            KeyCode::Char('w') | KeyCode::Char('W')
+                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
                                 self.selection = None;
                                 self.scroll_bottom();
                             }
@@ -526,8 +564,6 @@ impl<'a> WorkspaceTUI<'a> {
                                 self.scroll_bottom();
                             }
 
-
-
                             // Enter Vim Visual Selection Mode at current cursor position
                             KeyCode::Char('v') => {
                                 self.mode = UIMode::Visual;
@@ -553,11 +589,15 @@ impl<'a> WorkspaceTUI<'a> {
                             }
 
                             // Clipboard Copy & Paste in Navigation Mode
-                            KeyCode::Char('y') | KeyCode::Char('Y') => self.copy_selection_or_focused(),
+                            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                                self.copy_selection_or_focused()
+                            }
                             KeyCode::Char('p') => {
                                 if let Some(clip_text) = get_from_clipboard() {
                                     let focused = self.focused_service_name().to_string();
-                                    self.supervisor.send_input(&focused, clip_text.as_bytes()).await;
+                                    self.supervisor
+                                        .send_input(&focused, clip_text.as_bytes())
+                                        .await;
                                 }
                             }
 
@@ -632,15 +672,14 @@ impl<'a> WorkspaceTUI<'a> {
         }
     }
 
-
     fn render_ui(&mut self, f: &mut Frame) {
         let terminal_size = f.size();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),                                  // Header
+                Constraint::Length(3),                                      // Header
                 Constraint::Length(terminal_size.height.saturating_sub(5)), // Main Body
-                Constraint::Length(2),                                  // Footer
+                Constraint::Length(2),                                      // Footer
             ])
             .split(terminal_size);
 
@@ -649,7 +688,6 @@ impl<'a> WorkspaceTUI<'a> {
 
         // 2. Render Service Panes
         self.render_body(f, chunks[1]);
-
 
         // 3. Render Footer
         self.render_footer(f, chunks[2]);
@@ -817,20 +855,10 @@ impl<'a> WorkspaceTUI<'a> {
 
         let focused_name = self.focused_service_name().to_string();
         for i in 0..half {
-            self.render_service_pane(
-                f,
-                left_rows[i],
-                &names[i],
-                names[i] == focused_name,
-            );
+            self.render_service_pane(f, left_rows[i], &names[i], names[i] == focused_name);
         }
         for i in half..count {
-            self.render_service_pane(
-                f,
-                right_rows[i - half],
-                &names[i],
-                names[i] == focused_name,
-            );
+            self.render_service_pane(f, right_rows[i - half], &names[i], names[i] == focused_name);
         }
     }
 
@@ -973,8 +1001,6 @@ impl<'a> WorkspaceTUI<'a> {
         f.render_widget(paragraph, area);
     }
 
-
-
     fn render_footer(&self, f: &mut Frame, area: Rect) {
         let footer_line = match self.mode {
             UIMode::Visual => Line::from(vec![
@@ -1065,12 +1091,13 @@ impl<'a> WorkspaceTUI<'a> {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(" Detach (Keep Running)  •  ", Style::default().fg(Color::DarkGray)),
+                Span::styled(
+                    " Detach (Keep Running)  •  ",
+                    Style::default().fg(Color::DarkGray),
+                ),
                 Span::styled(
                     "[q/Ctrl+C]",
-                    Style::default()
-                        .fg(Color::Red)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" Stop Session  •  ", Style::default().fg(Color::DarkGray)),
                 Span::styled(
@@ -1106,18 +1133,31 @@ impl<'a> WorkspaceTUI<'a> {
         f.render_widget(paragraph, area);
     }
 
-    pub fn extract_selected_text(&self, service: &str, start: (usize, usize), end: (usize, usize)) -> String {
+    pub fn extract_selected_text(
+        &self,
+        service: &str,
+        start: (usize, usize),
+        end: (usize, usize),
+    ) -> String {
         let mut visible_lines = Vec::new();
         if let Some(svc) = self.supervisor.services.get(service) {
-            let rect = self.pane_rects.get(service).cloned().unwrap_or(Rect::new(0, 0, 80, 24));
+            let rect = self
+                .pane_rects
+                .get(service)
+                .cloned()
+                .unwrap_or(Rect::new(0, 0, 80, 24));
             let usable_height = (rect.height.saturating_sub(2)) as usize;
             let usable_width = (rect.width.saturating_sub(2)) as usize;
             let requested_offset = self.scroll_offsets.get(service).copied().unwrap_or(0);
             let horiz_offset = self.horizontal_offsets.get(service).copied().unwrap_or(0);
 
             if let Ok(mut buf) = svc.buffer.try_write() {
-                let (formatted_rows, _) =
-                    buf.get_formatted_rows(requested_offset, horiz_offset, usable_height, usable_width);
+                let (formatted_rows, _) = buf.get_formatted_rows(
+                    requested_offset,
+                    horiz_offset,
+                    usable_height,
+                    usable_width,
+                );
                 for row in formatted_rows {
                     match row.into_text() {
                         Ok(t) => visible_lines.extend(t.lines),
@@ -1189,7 +1229,7 @@ impl<'a> WorkspaceTUI<'a> {
             .fg(Color::Rgb(255, 255, 255))
             .add_modifier(Modifier::BOLD);
 
-        for row_idx in 0..lines.len() {
+        for (row_idx, line) in lines.iter_mut().enumerate() {
             if row_idx < start_r || row_idx > end_r {
                 continue;
             }
@@ -1208,7 +1248,7 @@ impl<'a> WorkspaceTUI<'a> {
                 continue;
             }
 
-            let old_spans = std::mem::take(&mut lines[row_idx].spans);
+            let old_spans = std::mem::take(&mut line.spans);
             let mut new_spans = Vec::new();
             let mut cur_col = 0;
 
@@ -1228,21 +1268,28 @@ impl<'a> WorkspaceTUI<'a> {
                 } else {
                     // 1. Part before selection
                     if from_col > span_start {
-                        let before_str: String = span_chars[0..(from_col - span_start)].iter().collect();
+                        let before_str: String =
+                            span_chars[0..(from_col - span_start)].iter().collect();
                         new_spans.push(Span::styled(before_str, span.style));
                     }
 
                     // 2. Selected part
-                    let sel_start_idx = if from_col > span_start { from_col - span_start } else { 0 };
-                    let sel_end_idx = if to_col < span_end { to_col - span_start } else { span_len };
+                    let sel_start_idx = from_col.saturating_sub(span_start);
+                    let sel_end_idx = if to_col < span_end {
+                        to_col - span_start
+                    } else {
+                        span_len
+                    };
                     if sel_start_idx < sel_end_idx {
-                        let sel_str: String = span_chars[sel_start_idx..sel_end_idx].iter().collect();
+                        let sel_str: String =
+                            span_chars[sel_start_idx..sel_end_idx].iter().collect();
                         new_spans.push(Span::styled(sel_str, sel_style));
                     }
 
                     // 3. Part after selection
                     if to_col < span_end {
-                        let after_str: String = span_chars[(to_col - span_start)..span_len].iter().collect();
+                        let after_str: String =
+                            span_chars[(to_col - span_start)..span_len].iter().collect();
                         new_spans.push(Span::styled(after_str, span.style));
                     }
                 }
@@ -1253,7 +1300,7 @@ impl<'a> WorkspaceTUI<'a> {
                 new_spans.push(Span::styled(" ", sel_style));
             }
 
-            lines[row_idx].spans = new_spans;
+            line.spans = new_spans;
         }
 
         lines
@@ -1297,7 +1344,6 @@ impl<'a> WorkspaceTUI<'a> {
             let span_end = span_start + span_len;
             cur_col += span_len;
 
-
             if !cursor_rendered && cursor_col >= span_start && cursor_col < span_end {
                 let offset = cursor_col - span_start;
                 // 1. Before cursor
@@ -1327,6 +1373,3 @@ impl<'a> WorkspaceTUI<'a> {
         lines
     }
 }
-
-
-

@@ -1,4 +1,4 @@
-/// Concurrent Process Supervisor with PTY allocation and process group lifecycle.
+//! Concurrent Process Supervisor with PTY allocation and process group lifecycle.
 
 use std::collections::HashMap;
 use std::fs::{create_dir_all, OpenOptions};
@@ -65,7 +65,6 @@ impl ManagedService {
         }
     }
 
-
     pub async fn send_input(&self, data: &[u8]) -> bool {
         let mut writer_guard = self.master_writer.lock().await;
         if let Some(writer) = writer_guard.as_mut() {
@@ -122,7 +121,6 @@ impl ProcessSupervisor {
             pixel_width: 0,
             pixel_height: 0,
         }) {
-
             Ok(p) => p,
             Err(e) => {
                 let mut status_guard = service.status.write().await;
@@ -191,12 +189,14 @@ impl ProcessSupervisor {
         let port_clone = service.detected_port.clone();
         let status_clone = service.status.clone();
         let raw_tx_clone = service.raw_tx.clone();
-        let log_file_path = self.log_dir.as_ref().map(|d| d.join(format!("{}.log", service.spec.name)));
+        let log_file_path = self
+            .log_dir
+            .as_ref()
+            .map(|d| d.join(format!("{}.log", service.spec.name)));
 
         tokio::task::spawn_blocking(move || {
-            let mut file_handle = log_file_path.and_then(|p| {
-                OpenOptions::new().create(true).append(true).open(p).ok()
-            });
+            let mut file_handle = log_file_path
+                .and_then(|p| OpenOptions::new().create(true).append(true).open(p).ok());
 
             let mut buf = [0u8; 1024];
             while let Ok(n) = reader.read(&mut buf) {
@@ -229,8 +229,6 @@ impl ProcessSupervisor {
                 // Broadcast raw output stream to attached bridge clients
                 let _ = raw_tx_clone.send(buf[..n].to_vec());
 
-
-
                 if let Some(fh) = file_handle.as_mut() {
                     let _ = fh.write_all(&buf[..n]);
                 }
@@ -238,7 +236,10 @@ impl ProcessSupervisor {
 
             // Mark stopped
             let mut mut_child = child;
-            let exit_code = mut_child.wait().map(|status| status.exit_code() as i32).unwrap_or(0);
+            let exit_code = mut_child
+                .wait()
+                .map(|status| status.exit_code() as i32)
+                .unwrap_or(0);
             if let Ok(mut status_guard) = status_clone.try_write() {
                 *status_guard = ServiceStatus::Stopped(exit_code);
             }
@@ -349,7 +350,6 @@ impl ProcessSupervisor {
             let _ = h.await;
         }
     }
-
 
     pub async fn send_input(&self, name: &str, data: &[u8]) -> bool {
         if let Some(service) = self.services.get(name) {

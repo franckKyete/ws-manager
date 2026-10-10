@@ -1,0 +1,42 @@
+[package]
+name = "ws-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ws-tui = { path = "../ws-tui" }
+fnug-vt100 = { path = "../vt100" }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+
+tokio = { version = "1.36", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "blocking", "multipart"] }
+
+regex = "1.10"
+lazy_static = "1.4"
+chrono = { version = "0.4", features = ["serde"] }
+
+sha2 = "0.10"
+hex = "0.4"
+
+colored = "2.1"
+comfy-table = "7.1"
+crossterm = "0.27"
+
+notify = "6.1"
+dirs = "5.0"
+thiserror = "1.0"
+anyhow = "1.0"
+nix = { version = "0.28", features = ["process", "signal", "term", "fs"] }
+libc = "0.2"
+base64 = "0.22"
+
+
+
+[dev-dependencies]
+tempfile = "3.10"
+
+[lints]
+workspace = true

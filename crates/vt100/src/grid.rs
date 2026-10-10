@@ -116,7 +116,6 @@ impl Grid {
             }
         }
 
-
         if self.scroll_bottom >= size.rows {
             self.scroll_bottom = size.rows - 1;
         }
@@ -128,7 +127,6 @@ impl Grid {
         self.row_clamp_bottom(false);
         self.col_clamp();
     }
-
 
     pub fn pos(&self) -> Pos {
         self.pos
