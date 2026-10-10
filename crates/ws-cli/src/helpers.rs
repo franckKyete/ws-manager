@@ -181,8 +181,20 @@ pub fn resolve_ws_and_repo_args(
     }
 
     if let Some(r_list) = repos_arg {
-        if let Some(c_list) = clean_repos(Some(r_list)) {
-            resolved_repos = c_list;
+        let mut list = clean_repos(Some(r_list)).unwrap_or_default();
+        if is_repo_spec {
+            if let Some(ref r) = resolved_repo {
+                if !list.contains(r) {
+                    list.insert(0, r.clone());
+                }
+            }
+        }
+        if list.is_empty() {
+            if let Some(ref r) = resolved_repo {
+                resolved_repos = vec![r.clone()];
+            }
+        } else {
+            resolved_repos = list;
         }
     } else if let Some(ref r) = resolved_repo {
         resolved_repos = vec![r.clone()];
@@ -265,5 +277,58 @@ mod tests {
         ];
         let norm = normalize_cli_args(&args);
         assert_eq!(norm, vec!["create", "@feat", "--all"]);
+    }
+
+    fn create_test_manager(root: &std::path::Path) -> WorkspaceManager {
+        let config = ws_core::models::AppConfig {
+            project_root: root.to_path_buf(),
+            repositories: std::collections::HashMap::new(),
+            workspaces_dir: root.join("workspaces"),
+            config_file_path: None,
+            global_env: std::collections::HashMap::new(),
+            secret_env: std::collections::HashMap::new(),
+            private_env: std::collections::HashMap::new(),
+            dynamic_env: std::collections::HashMap::new(),
+            setup: Vec::new(),
+            secrets: Vec::new(),
+            copy_files: Vec::new(),
+            tmux: None,
+            hub_auto_save: None,
+            hub_project: None,
+            hub: serde_json::Value::Null,
+        };
+        WorkspaceManager::new(config, None)
+    }
+
+    #[test]
+    fn test_resolve_ws_and_repo_args_omitted_workspace() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ws_root = temp_dir.path();
+        let manager = create_test_manager(ws_root);
+
+        let (_ws, repo, repos) =
+            resolve_ws_and_repo_args(&manager, Some("%manager"), None, Some(&[]), false, false)
+                .unwrap();
+        assert_eq!(repo, Some("manager".to_string()));
+        assert_eq!(repos, vec!["manager".to_string()]);
+    }
+
+    #[test]
+    fn test_resolve_ws_and_repo_args_omitted_ws_multi_repo() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let ws_root = temp_dir.path();
+        let manager = create_test_manager(ws_root);
+
+        let (_ws, repo, repos) = resolve_ws_and_repo_args(
+            &manager,
+            Some("%manager"),
+            None,
+            Some(&["%hub".to_string()]),
+            false,
+            false,
+        )
+        .unwrap();
+        assert_eq!(repo, Some("manager".to_string()));
+        assert_eq!(repos, vec!["manager".to_string(), "hub".to_string()]);
     }
 }

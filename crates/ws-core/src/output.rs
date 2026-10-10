@@ -11,6 +11,109 @@ use crate::utils::format_relative_time;
 pub struct OutputHandler;
 
 impl OutputHandler {
+    /// Dynamically determine current terminal width, checking COLUMNS, crossterm, and ioctl.
+    pub fn get_terminal_width() -> u16 {
+        // 1. Check COLUMNS environment variable override (useful for testing and scripting)
+        if let Ok(cols_str) = std::env::var("COLUMNS") {
+            if let Ok(cols) = cols_str.trim().parse::<u16>() {
+                if cols >= 20 {
+                    return cols;
+                }
+            }
+        }
+
+        // 2. Try crossterm terminal size
+        if let Ok((width, _)) = crossterm::terminal::size() {
+            if width >= 20 {
+                return width;
+            }
+        }
+
+        // 3. Fallback on Unix: check ioctl TIOCGWINSZ on standard fds and /dev/tty
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+
+            for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO, libc::STDIN_FILENO] {
+                unsafe {
+                    let mut ws = libc::winsize {
+                        ws_row: 0,
+                        ws_col: 0,
+                        ws_xpixel: 0,
+                        ws_ypixel: 0,
+                    };
+                    if libc::ioctl(fd, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col >= 20 {
+                        return ws.ws_col;
+                    }
+                }
+            }
+
+            if let Ok(tty) = std::fs::File::open("/dev/tty") {
+                unsafe {
+                    let mut ws = libc::winsize {
+                        ws_row: 0,
+                        ws_col: 0,
+                        ws_xpixel: 0,
+                        ws_ypixel: 0,
+                    };
+                    if libc::ioctl(tty.as_raw_fd(), libc::TIOCGWINSZ, &mut ws) == 0
+                        && ws.ws_col >= 20
+                    {
+                        return ws.ws_col;
+                    }
+                }
+            }
+        }
+
+        // 4. Default safe fallback
+        80
+    }
+
+    /// Helper to initialize tables with responsive dynamic arrangement and detected terminal width.
+    pub fn create_table() -> Table {
+        let width = Self::get_terminal_width();
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_content_arrangement(comfy_table::ContentArrangement::Dynamic)
+            .set_width(width);
+        table
+    }
+
+    /// Helper to word-wrap text to a given maximum visual width.
+    pub fn wrap_text(text: &str, width: usize) -> Vec<String> {
+        if width == 0 {
+            return vec![text.to_string()];
+        }
+        let mut lines = Vec::new();
+        for paragraph in text.lines() {
+            if paragraph.trim().is_empty() {
+                lines.push(String::new());
+                continue;
+            }
+            let mut current_line = String::new();
+            for word in paragraph.split_whitespace() {
+                if current_line.is_empty() {
+                    current_line.push_str(word);
+                } else if current_line.chars().count() + 1 + word.chars().count() <= width {
+                    current_line.push(' ');
+                    current_line.push_str(word);
+                } else {
+                    lines.push(current_line);
+                    current_line = word.to_string();
+                }
+            }
+            if !current_line.is_empty() {
+                lines.push(current_line);
+            }
+        }
+        if lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines
+    }
+
     pub fn print_success(message: &str) {
         println!("{} {}", "✔".bold().green(), message.bold().white());
     }
@@ -28,18 +131,29 @@ impl OutputHandler {
     }
 
     pub fn print_error(message: &str, details: Option<&str>) {
+        let term_width = Self::get_terminal_width();
+        let prefix = format!("╭─ {} ", "Error".bold().red());
+        let prefix_len = 3 + "Error".len() + 1;
+        let dashes = term_width.saturating_sub(prefix_len as u16).max(3);
+        let bottom_dashes = term_width.saturating_sub(1).max(3);
+        let content_width = (term_width as usize).saturating_sub(4).max(20);
+
         eprintln!();
-        eprintln!("╭─ {} ────────────────────────────╮", "Error".bold().red());
-        eprintln!("│ {}", message.bold().red());
+        eprintln!("{}{}", prefix, "─".repeat(dashes as usize).red());
+        for line in Self::wrap_text(message, content_width) {
+            eprintln!("│ {}", line.bold().red());
+        }
         if let Some(d) = details {
             if !d.is_empty() {
                 eprintln!("│");
                 for line in d.lines() {
-                    eprintln!("│ {}", line.bright_red());
+                    for wrapped in Self::wrap_text(line, content_width) {
+                        eprintln!("│ {}", wrapped.bright_red());
+                    }
                 }
             }
         }
-        eprintln!("╰──────────────────────────────────────────╯");
+        eprintln!("╰{}", "─".repeat(bottom_dashes as usize).red());
         eprintln!();
     }
 
@@ -56,20 +170,28 @@ impl OutputHandler {
     }
 
     pub fn print_rollback_notice(reason: &str, restored: bool) {
+        let term_width = Self::get_terminal_width();
+        let title = "Rollback Executed";
+        let prefix = format!("╭─ {} ", title.bold().yellow());
+        let prefix_len = 3 + title.len() + 1;
+        let dashes = term_width.saturating_sub(prefix_len as u16).max(3);
+        let bottom_dashes = term_width.saturating_sub(1).max(3);
+        let content_width = (term_width as usize).saturating_sub(4).max(20);
+
         eprintln!();
-        eprintln!(
-            "╭─ {} ───────────────────╮",
-            "Rollback Executed".bold().yellow()
-        );
-        eprintln!("│ {}: {}", "Workspace Creation Failed".bold().red(), reason);
+        eprintln!("{}{}", prefix, "─".repeat(dashes as usize).yellow());
+        let full_reason = format!("Workspace Creation Failed: {}", reason);
+        for line in Self::wrap_text(&full_reason, content_width) {
+            eprintln!("│ {}", line.bold().red());
+        }
         if restored {
             eprintln!("│");
-            eprintln!(
-                "│ {} Filesystem and Git branches restored.",
-                "↺ Automatic rollback executed.".bold().yellow()
-            );
+            let notice = "↺ Automatic rollback executed. Filesystem and Git branches restored.";
+            for line in Self::wrap_text(notice, content_width) {
+                eprintln!("│ {}", line.bold().yellow());
+            }
         }
-        eprintln!("╰──────────────────────────────────────────╯");
+        eprintln!("╰{}", "─".repeat(bottom_dashes as usize).yellow());
         eprintln!();
     }
 
@@ -96,7 +218,8 @@ impl OutputHandler {
             println!();
         }
 
-        println!("{}", "─".repeat(60).dimmed());
+        let term_width = Self::get_terminal_width();
+        println!("{}", "─".repeat(term_width as usize).dimmed());
         println!();
     }
 
@@ -118,11 +241,8 @@ impl OutputHandler {
             return;
         }
 
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["NAME", "STATUS", "CREATED", "REPOSITORIES"]);
+        let mut table = Self::create_table();
+        table.set_header(vec!["NAME", "STATUS", "CREATED", "REPOSITORIES"]);
 
         let mut sorted = workspaces.to_vec();
         sorted.sort_by(|a, b| a.name.cmp(&b.name));
@@ -163,11 +283,15 @@ impl OutputHandler {
         active_engine: Option<&str>,
         running_services: Option<&HashMap<String, serde_json::Value>>,
     ) {
+        let term_width = Self::get_terminal_width();
+        let title = format!("Workspace Info: @{}", metadata.name);
+        let prefix = format!("╭─ {} ", title.bold().green());
+        let prefix_len = 3 + title.chars().count() + 1;
+        let dashes = term_width.saturating_sub(prefix_len as u16).max(3);
+        let bottom_dashes = term_width.saturating_sub(1).max(3);
+
         println!();
-        println!(
-            "╭─ {} ───────────────────────",
-            format!("Workspace Info: @{}", metadata.name).bold().green()
-        );
+        println!("{}{}", prefix, "─".repeat(dashes as usize).dimmed());
         let created_str = if metadata.created.is_empty() {
             "-"
         } else {
@@ -261,7 +385,7 @@ impl OutputHandler {
                 println!("│       File Mode: {}", "Read-only (locked)".yellow());
             }
         }
-        println!("╰──────────────────────────────────────────╯");
+        println!("╰{}", "─".repeat(bottom_dashes as usize).dimmed());
         println!();
     }
 
@@ -269,17 +393,14 @@ impl OutputHandler {
         workspace_name: &str,
         results: &HashMap<String, HashMap<String, String>>,
     ) {
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "REPOSITORY",
-                "STATUS",
-                "BRANCH",
-                "REMOTE",
-                "DETAILS / REASON",
-            ]);
+        let mut table = Self::create_table();
+        table.set_header(vec![
+            "REPOSITORY",
+            "STATUS",
+            "BRANCH",
+            "REMOTE",
+            "DETAILS / REASON",
+        ]);
 
         for (repo_name, res) in results {
             let status = res.get("status").map(|s| s.as_str()).unwrap_or("unknown");
@@ -311,17 +432,14 @@ impl OutputHandler {
         workspace_name: &str,
         results: &HashMap<String, HashMap<String, String>>,
     ) {
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "REPOSITORY",
-                "STATUS",
-                "BRANCH",
-                "REMOTE",
-                "DETAILS / REASON",
-            ]);
+        let mut table = Self::create_table();
+        table.set_header(vec![
+            "REPOSITORY",
+            "STATUS",
+            "BRANCH",
+            "REMOTE",
+            "DETAILS / REASON",
+        ]);
 
         for (repo_name, res) in results {
             let status = res.get("status").map(|s| s.as_str()).unwrap_or("unknown");
@@ -350,16 +468,13 @@ impl OutputHandler {
     }
 
     pub fn print_setup_summary(workspace_name: &str, results: &HashMap<String, serde_json::Value>) {
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                "REPOSITORY",
-                "STATUS",
-                "ENV SYNC",
-                "DETAILS / COMMANDS",
-            ]);
+        let mut table = Self::create_table();
+        table.set_header(vec![
+            "REPOSITORY",
+            "STATUS",
+            "ENV SYNC",
+            "DETAILS / COMMANDS",
+        ]);
 
         for (repo_name, res) in results {
             let status = res
@@ -494,22 +609,50 @@ impl OutputHandler {
 
     pub fn print_command_output(command: &str, stdout: &str, stderr: &str, returncode: i32) {
         println!();
-        let border = if returncode == 0 { "green" } else { "red" };
-        println!(
-            "╭─ Command: {} (exit {}) ──────────────────────────",
-            command, returncode
-        );
+        let term_width = Self::get_terminal_width();
+        let title = format!("Command: {} (exit {})", command, returncode);
+        let prefix = if returncode == 0 {
+            format!("╭─ {} ", title.bold().green())
+        } else {
+            format!("╭─ {} ", title.bold().red())
+        };
+        let prefix_len = 3 + title.chars().count() + 1;
+        let dashes = term_width.saturating_sub(prefix_len as u16).max(3);
+        let bottom_dashes = term_width.saturating_sub(1).max(3);
+
+        if returncode == 0 {
+            println!("{}{}", prefix, "─".repeat(dashes as usize).dimmed());
+        } else {
+            println!("{}{}", prefix, "─".repeat(dashes as usize).red());
+        }
+
+        let content_width = (term_width as usize).saturating_sub(4).max(20);
+
         if !stdout.trim().is_empty() {
-            println!("Output:\n{}", stdout.trim());
+            println!("│ {}", "Output:".bold().white());
+            for line in stdout.trim().lines() {
+                for wrapped in Self::wrap_text(line, content_width) {
+                    println!("│ {}", wrapped);
+                }
+            }
         }
         if !stderr.trim().is_empty() {
-            println!("Errors/Warnings:\n{}", stderr.trim().red());
+            println!("│ {}", "Errors/Warnings:".bold().red());
+            for line in stderr.trim().lines() {
+                for wrapped in Self::wrap_text(line, content_width) {
+                    println!("│ {}", wrapped.red());
+                }
+            }
         }
         if stdout.trim().is_empty() && stderr.trim().is_empty() {
-            println!("(no console output)");
+            println!("│ {}", "(no console output)".dimmed());
         }
-        println!("╰───────────────────────────────────────────────────");
-        let _ = border;
+
+        if returncode == 0 {
+            println!("╰{}", "─".repeat(bottom_dashes as usize).dimmed());
+        } else {
+            println!("╰{}", "─".repeat(bottom_dashes as usize).red());
+        }
     }
 
     pub fn print_env_table(
@@ -520,11 +663,8 @@ impl OutputHandler {
     ) {
         use crate::models::is_secret_val;
 
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["VARIABLE", "RESOLVED VALUE"]);
+        let mut table = Self::create_table();
+        table.set_header(vec!["VARIABLE", "RESOLVED VALUE"]);
 
         if env_vars.is_empty() {
             table.add_row(vec![
@@ -557,11 +697,8 @@ impl OutputHandler {
     }
 
     pub fn print_launch_summary(workspace_name: &str, launch_entries: &[(String, String, String)]) {
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["REPOSITORY", "WORKING DIRECTORY", "LAUNCH COMMAND"]);
+        let mut table = Self::create_table();
+        table.set_header(vec!["REPOSITORY", "WORKING DIRECTORY", "LAUNCH COMMAND"]);
 
         if launch_entries.is_empty() {
             table.add_row(vec![
@@ -581,5 +718,89 @@ impl OutputHandler {
 
         println!("Launch Commands for Workspace '{}'", workspace_name);
         println!("{}", table);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_terminal_width_env_override() {
+        std::env::set_var("COLUMNS", "65");
+        assert_eq!(OutputHandler::get_terminal_width(), 65);
+
+        std::env::set_var("COLUMNS", "120");
+        assert_eq!(OutputHandler::get_terminal_width(), 120);
+
+        std::env::remove_var("COLUMNS");
+        let detected = OutputHandler::get_terminal_width();
+        assert!(detected >= 20);
+    }
+
+    #[test]
+    fn test_create_table_uses_terminal_width() {
+        std::env::set_var("COLUMNS", "72");
+        let table = OutputHandler::create_table();
+        assert_eq!(table.width(), Some(72));
+        assert!(matches!(
+            table.content_arrangement(),
+            comfy_table::ContentArrangement::Dynamic
+        ));
+        std::env::remove_var("COLUMNS");
+    }
+
+    #[test]
+    fn test_table_dynamic_width() {
+        for width in [65, 80, 100, 120] {
+            let mut table = Table::new();
+            table
+                .load_preset(UTF8_FULL)
+                .apply_modifier(UTF8_ROUND_CORNERS)
+                .set_content_arrangement(comfy_table::ContentArrangement::Dynamic)
+                .set_width(width)
+                .set_header(vec!["NAME", "STATUS", "CREATED", "REPOSITORIES"]);
+
+            table.add_row(vec![
+                Cell::new("full-rust-migration"),
+                Cell::new("active"),
+                Cell::new("3h ago"),
+                Cell::new("web:feature/full-rust-migration, hub:feature/full-rust-migration, manager:feature/full-rust-migration"),
+            ]);
+
+            table.add_row(vec![
+                Cell::new("main"),
+                Cell::new("active"),
+                Cell::new("16 days ago"),
+                Cell::new("manager:main, web:main, hub:main"),
+            ]);
+
+            let rendered = table.to_string();
+            println!("\n=== RENDERED (width {}) ===\n{}", width, rendered);
+            for line in rendered.lines() {
+                assert!(
+                    line.chars().count() <= width as usize,
+                    "Line exceeds width {}: {} (len {})",
+                    width,
+                    line,
+                    line.chars().count()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_wrap_text() {
+        let msg = "Explicit repository selection required for setup in workspace '@full-rust-migration'. Specify '--all' to setup all repositories, or specify repositories using '%repo1 %repo2' or '--repos r1,r2'.";
+        let wrapped = OutputHandler::wrap_text(msg, 60);
+        assert!(wrapped.len() > 1);
+        for line in &wrapped {
+            assert!(
+                line.chars().count() <= 60,
+                "Line exceeds width 60: '{}' ({})",
+                line,
+                line.chars().count()
+            );
+        }
     }
 }
