@@ -2,7 +2,7 @@ use crate::helpers::resolve_ws_and_repo_args;
 use colored::Colorize;
 use comfy_table::{Cell, Color};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use ws_core::hub::HubClient;
 use ws_core::output::OutputHandler;
 use ws_core::WorkspaceManager;
@@ -185,37 +185,18 @@ pub fn execute_hub_whoami() -> Result<(), String> {
     Ok(())
 }
 
-pub fn execute_hub_clone(identifier: &str, destination: Option<&Path>) -> Result<(), String> {
-    let client = HubClient::default();
-    let (ns, name) = HubClient::parse_project_identifier(identifier).map_err(|e| e.to_string())?;
-
-    OutputHandler::print_info(&format!(
-        "Fetching project blueprint '{}/{}' from wshub...",
-        ns, name
+pub fn execute_hub_clone(
+    manager: &WorkspaceManager,
+    identifier: &str,
+    destination: Option<&Path>,
+) -> Result<(), String> {
+    let dest = manager
+        .clone_from_hub(identifier, destination)
+        .map_err(|e| e.to_string())?;
+    OutputHandler::print_success(&format!(
+        "Successfully cloned workspace project to '{}'",
+        dest.display()
     ));
-    let proj = client.get_project(&ns, &name).map_err(|e| e.to_string())?;
-
-    let dest_dir = destination
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from(&name));
-
-    fs::create_dir_all(&dest_dir).map_err(|e| e.to_string())?;
-
-    if let Some(raw_yaml) = proj
-        .get("blueprint")
-        .and_then(|b| b.get("yaml"))
-        .and_then(|y| y.as_str())
-    {
-        let repo_yml_path = dest_dir.join("repositories.yml");
-        fs::write(&repo_yml_path, raw_yaml).map_err(|e| e.to_string())?;
-        OutputHandler::print_success(&format!(
-            "Saved project blueprint to '{}'",
-            repo_yml_path.display()
-        ));
-    } else {
-        return Err("Project does not have an active blueprint on wshub.".to_string());
-    }
-
     Ok(())
 }
 
@@ -225,13 +206,9 @@ pub fn execute_hub_push(
     silent: bool,
 ) -> Result<(), String> {
     let msg = message.unwrap_or("Pushed blueprint update from ws CLI");
-    let res = manager
+    manager
         .hub_push(msg, None, silent)
         .map_err(|e| e.to_string())?;
-    if let Some(rev) = res.get("revision") {
-        let ver = rev.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
-        OutputHandler::print_success(&format!("Pushed blueprint revision v{}", ver));
-    }
     Ok(())
 }
 
@@ -240,7 +217,12 @@ pub fn execute_hub_pull(
     project: Option<&str>,
 ) -> Result<(), String> {
     let res = manager.hub_pull(project).map_err(|e| e.to_string())?;
-    if let Some(rev) = res.get("version").and_then(|v| v.as_i64()) {
+    let ver = res
+        .get("latestRevision")
+        .and_then(|r| r.get("version"))
+        .or_else(|| res.get("version"))
+        .and_then(|v| v.as_i64());
+    if let Some(rev) = ver {
         OutputHandler::print_success(&format!(
             "Updated local repositories.yml to wshub blueprint v{}",
             rev
@@ -263,11 +245,39 @@ pub fn execute_hub_status(manager: &WorkspaceManager) -> Result<(), String> {
     match client.get_project(&ns, &p_name) {
         Ok(proj) => {
             println!("  Remote Project:  {}", "Connected".green());
-            if let Some(vis) = proj.get("visibility").and_then(|v| v.as_str()) {
+            let proj_obj = proj.get("project").unwrap_or(&proj);
+            if let Some(desc) = proj_obj.get("description").and_then(|d| d.as_str()) {
+                if !desc.trim().is_empty() {
+                    println!("  Description:     {}", desc);
+                }
+            }
+            let is_private = proj_obj
+                .get("isPrivate")
+                .or_else(|| proj.get("isPrivate"))
+                .and_then(|p| p.as_bool());
+            if let Some(priv_val) = is_private {
+                println!(
+                    "  Visibility:      {}",
+                    if priv_val { "private" } else { "public" }
+                );
+            } else if let Some(vis) = proj.get("visibility").and_then(|v| v.as_str()) {
                 println!("  Visibility:      {}", vis);
             }
-            if let Some(rev) = proj.get("current_version").and_then(|v| v.as_i64()) {
-                println!("  Latest Version:  v{}", rev);
+            let rev = proj
+                .get("latestRevision")
+                .and_then(|r| r.get("version"))
+                .or_else(|| proj.get("current_version"))
+                .or_else(|| proj.get("version"))
+                .and_then(|v| v.as_i64());
+            if let Some(ver) = rev {
+                println!("  Latest Version:  v{}", ver);
+            }
+            if let Some(created_at) = proj
+                .get("latestRevision")
+                .and_then(|r| r.get("createdAt"))
+                .and_then(|c| c.as_str())
+            {
+                println!("  Last Updated:    {}", created_at);
             }
         }
         Err(e) => {
@@ -340,8 +350,9 @@ pub fn execute_hub_secret_list(manager: &WorkspaceManager) -> Result<(), String>
             for item in arr {
                 let k = item.get("key").and_then(|v| v.as_str()).unwrap_or("");
                 let scope = item
-                    .get("scope")
+                    .get("repoName")
                     .and_then(|v| v.as_str())
+                    .or_else(|| item.get("scope").and_then(|v| v.as_str()))
                     .unwrap_or("global");
                 println!("  {:30} (scope: {})", k.bold(), scope);
             }

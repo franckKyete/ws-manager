@@ -294,7 +294,7 @@ fn main() {
         Commands::Clone {
             project,
             target_dir,
-        } => execute_hub_clone(&project, target_dir.as_deref()),
+        } => execute_hub_clone(&manager, &project, target_dir.as_deref()),
         Commands::Hub(args) => match args.action {
             Some(HubAction::Discover { timeout, set }) => execute_hub_discover(timeout, set),
             Some(HubAction::Login {
@@ -315,7 +315,7 @@ fn main() {
             Some(HubAction::Clone {
                 project,
                 target_dir,
-            }) => execute_hub_clone(&project, target_dir.as_deref()),
+            }) => execute_hub_clone(&manager, &project, target_dir.as_deref()),
             Some(HubAction::Publish {
                 project,
                 description,

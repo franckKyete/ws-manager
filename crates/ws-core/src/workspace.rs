@@ -2699,18 +2699,18 @@ impl WorkspaceManager {
         ));
         let data = client.get_project(&namespace, &name)?;
 
-        let latest_rev = data.get("latestRevision").ok_or_else(|| {
-            WSError::Config(format!(
-                "Project '{}/{}' has no valid blueprint revisions.",
-                namespace, name
-            ))
-        })?;
-
-        let blueprint_yaml = latest_rev
-            .get("blueprintYaml")
+        let blueprint_yaml = data
+            .get("latestRevision")
+            .and_then(|r| r.get("blueprintYaml"))
+            .or_else(|| data.get("blueprintYaml"))
+            .or_else(|| data.get("blueprint").and_then(|b| b.get("yaml")))
+            .or_else(|| data.get("blueprint"))
             .and_then(|y| y.as_str())
             .ok_or_else(|| {
-                WSError::Config("Latest revision is missing blueprintYaml".to_string())
+                WSError::Config(format!(
+                    "Project '{}/{}' has no valid blueprint revisions on wshub.",
+                    namespace, name
+                ))
             })?;
 
         let dest_dir = if let Some(td) = target_dir {
@@ -2729,7 +2729,12 @@ impl WorkspaceManager {
         std::fs::write(&config_path, blueprint_yaml)?;
         OutputHandler::print_success(&format!("Wrote {}", config_path.display()));
 
-        if let Some(scripts_raw) = latest_rev.get("scriptsJson").and_then(|s| s.as_str()) {
+        let scripts_raw = data
+            .get("latestRevision")
+            .and_then(|r| r.get("scriptsJson"))
+            .or_else(|| data.get("scriptsJson"))
+            .and_then(|s| s.as_str());
+        if let Some(scripts_raw) = scripts_raw {
             if let Ok(scripts_dict) = serde_json::from_str::<HashMap<String, String>>(scripts_raw) {
                 let scripts_dir = dest_dir.join("scripts");
                 let _ = ensure_directory(&scripts_dir);
@@ -3046,17 +3051,20 @@ impl WorkspaceManager {
         let (namespace, name) = self.get_project_namespace_and_name(project_identifier);
 
         let data = client.get_project(&namespace, &name)?;
-        let latest_rev = data.get("latestRevision").ok_or_else(|| {
-            WSError::Config(format!(
-                "Project '{}/{}' has no revisions.",
-                namespace, name
-            ))
-        })?;
-
-        let blueprint_yaml = latest_rev
-            .get("blueprintYaml")
+        let blueprint_yaml = data
+            .get("latestRevision")
+            .and_then(|r| r.get("blueprintYaml"))
+            .or_else(|| data.get("blueprintYaml"))
+            .or_else(|| data.get("blueprint").and_then(|b| b.get("yaml")))
+            .or_else(|| data.get("blueprint"))
             .and_then(|y| y.as_str())
-            .unwrap_or("");
+            .ok_or_else(|| {
+                WSError::Config(format!(
+                    "Project '{}/{}' has no revisions on wshub.",
+                    namespace, name
+                ))
+            })?;
+
         let config_file = self
             .config
             .config_file_path
@@ -3065,6 +3073,28 @@ impl WorkspaceManager {
 
         std::fs::write(&config_file, blueprint_yaml)?;
         OutputHandler::print_success(&format!("Updated {} to revision", config_file.display()));
+
+        // Reload config and clone newly added bare repos if any
+        if let Ok(new_cfg) =
+            ConfigLoader::load_config(Some(&config_file), Some(&self.config.workspaces_dir), true)
+        {
+            let bares_dir = self.config.project_root.join("bares");
+            if bares_dir.is_dir() {
+                for (repo_name, repo_cfg) in &new_cfg.repositories {
+                    let bare_path = bares_dir.join(format!("{}.git", repo_name));
+                    if !bare_path.exists() {
+                        if let Some(ref url) = repo_cfg.url {
+                            OutputHandler::print_info(&format!(
+                                "Cloning newly added bare repository '{}'...",
+                                repo_name
+                            ));
+                            let _ = self.git.clone_bare(url, &bare_path);
+                        }
+                    }
+                }
+            }
+            self.config = new_cfg;
+        }
 
         Ok(data)
     }
@@ -3529,7 +3559,18 @@ impl WorkspaceManager {
         let client = HubClient::default();
         let (namespace, name) = self.get_project_namespace_and_name(project_identifier);
 
-        let state_val = client.get_workspace_state(&namespace, &name, workspace_name)?;
+        let raw_val = client.get_workspace_state(&namespace, &name, workspace_name)?;
+        let state_val = if let Some(s) = raw_val.get("stateJson").and_then(|v| v.as_str()) {
+            serde_json::from_str::<serde_json::Value>(s).unwrap_or(raw_val)
+        } else if let Some(d) = raw_val.get("data") {
+            if let Some(s) = d.get("stateJson").and_then(|v| v.as_str()) {
+                serde_json::from_str::<serde_json::Value>(s).unwrap_or_else(|_| d.clone())
+            } else {
+                d.clone()
+            }
+        } else {
+            raw_val
+        };
         let meta: WorkspaceMetadata = serde_json::from_value(state_val.clone()).map_err(|e| {
             WSError::Config(format!(
                 "Invalid saved state for '{}': {}",

@@ -474,7 +474,7 @@ impl HubClient {
             "repoName": repo_name,
         });
         self.request(
-            reqwest::Method::POST,
+            reqwest::Method::PUT,
             &format!("projects/{}/{}/secrets", namespace, name),
             Some(&body),
             None,
@@ -517,8 +517,8 @@ impl HubClient {
     ) -> Result<String> {
         let ep = if let Some(r) = repo_name {
             format!(
-                "projects/{}/{}/secrets/{}?repoName={}",
-                namespace, name, key, r
+                "projects/{}/{}/secrets/{}?repo={}&repoName={}",
+                namespace, name, key, r, r
             )
         } else {
             format!("projects/{}/{}/secrets/{}", namespace, name, key)
@@ -545,8 +545,8 @@ impl HubClient {
     ) -> Result<bool> {
         let ep = if let Some(r) = repo_name {
             format!(
-                "projects/{}/{}/secrets/{}?repoName={}",
-                namespace, name, key, r
+                "projects/{}/{}/secrets/{}?repo={}&repoName={}",
+                namespace, name, key, r, r
             )
         } else {
             format!("projects/{}/{}/secrets/{}", namespace, name, key)
@@ -554,6 +554,7 @@ impl HubClient {
         let res = self.request(reqwest::Method::DELETE, &ep, None, None, None)?;
         Ok(res
             .get("deleted")
+            .or_else(|| res.get("data").and_then(|d| d.get("deleted")))
             .or_else(|| res.get("success"))
             .and_then(|v| v.as_bool())
             .unwrap_or(true))
@@ -669,10 +670,14 @@ impl HubClient {
         workspace_name: &str,
         state_data: &serde_json::Value,
     ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({
+            "workspaceName": workspace_name,
+            "stateJson": state_data.to_string(),
+        });
         self.request(
             reqwest::Method::POST,
-            &format!("projects/{}/{}/states/{}", namespace, name, workspace_name),
-            Some(state_data),
+            &format!("workspaces/{}/{}/states", namespace, name),
+            Some(&body),
             None,
             None,
         )
@@ -684,19 +689,29 @@ impl HubClient {
         name: &str,
         workspace_name: &str,
     ) -> Result<serde_json::Value> {
-        self.request(
+        let res = self.request(
             reqwest::Method::GET,
-            &format!("projects/{}/{}/states/{}", namespace, name, workspace_name),
+            &format!(
+                "workspaces/{}/{}/states/{}",
+                namespace, name, workspace_name
+            ),
             None,
             None,
             None,
-        )
+        )?;
+        let data = res.get("data").unwrap_or(&res);
+        if let Some(state_json_str) = data.get("stateJson").and_then(|s| s.as_str()) {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(state_json_str) {
+                return Ok(parsed);
+            }
+        }
+        Ok(data.clone())
     }
 
     pub fn list_workspace_states(&self, namespace: &str, name: &str) -> Result<serde_json::Value> {
         self.request(
             reqwest::Method::GET,
-            &format!("projects/{}/{}/states", namespace, name),
+            &format!("workspaces/{}/{}/states", namespace, name),
             None,
             None,
             None,
