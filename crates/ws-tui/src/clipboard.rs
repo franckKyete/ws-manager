@@ -1,9 +1,9 @@
-/// Cross-platform clipboard helper supporting persistent native clipboard, Linux CLI utilities, and ANSI OSC 52.
+//! Cross-platform clipboard helper supporting persistent native clipboard, Linux CLI utilities, and ANSI OSC 52.
 
+use base64::Engine;
 use std::io::{stdout, Write};
 use std::sync::Mutex;
 use std::sync::OnceLock;
-use base64::Engine;
 
 static CLIPBOARD: OnceLock<Mutex<Option<arboard::Clipboard>>> = OnceLock::new();
 

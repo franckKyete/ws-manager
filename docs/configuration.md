@@ -1,12 +1,17 @@
 # ⚙️ Configuration Specification
 
-`ws` is configured declaratively using YAML. This document details the schema and behavior of the project configuration file (`repositories.yml`), declarative workspace templates (`workspace.yml`), environment variable scoping, and automated setup scripts.
+`ws` is configured declaratively using YAML. This document details the schema
+and behavior of the project configuration file (`repositories.yml`), declarative
+workspace templates (`workspace.yml`), environment variable scoping, and
+automated setup scripts.
 
 ---
 
 ## 📄 `repositories.yml` Schema
 
-The `repositories.yml` file resides in the root of your project directory and defines the bare repository store, services, ports, environment variables, and setup pipelines.
+The `repositories.yml` file resides in the root of your project directory and
+defines the bare repository store, services, ports, environment variables, and
+setup pipelines.
 
 ### Full Annotated Example
 
@@ -20,7 +25,7 @@ env:
 # Global workspace setup scripts (executed in workspace root)
 setup:
   scripts:
-    - name: "Global Pre-flight Check"
+    - name: 'Global Pre-flight Check'
       command: "echo 'Preparing workspace: ${WORKSPACE_NAME}'"
 
 # Repositories & Services Definition
@@ -40,15 +45,15 @@ repositories:
           to: .env.local
       # Static & scoped environment variables
       env:
-        PORT: "8080"
-        DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/db_${WORKSPACE_NAME}"
-        SECRET_KEY: "${ENV:DEV_SECRET_KEY:-default_secret}"
+        PORT: '8080'
+        DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/db_${WORKSPACE_NAME}'
+        SECRET_KEY: '${ENV:DEV_SECRET_KEY:-default_secret}'
       # Repository-specific setup scripts executed inside worktree
       scripts:
-        - name: "Install Server Dependencies"
-          command: "npm install"
-        - name: "Run Database Migrations"
-          command: "npm run db:migrate"
+        - name: 'Install Server Dependencies'
+          command: 'npm install'
+        - name: 'Run Database Migrations'
+          command: 'npm run db:migrate'
 
   mobile:
     bare: bares/Renttik-mobile.git
@@ -62,11 +67,11 @@ repositories:
         - from: files/.env.mobile
           to: .env
       env:
-        EXPO_PUBLIC_API_URL: "http://localhost:8080"
-        EXPO_PORT: "8081"
+        EXPO_PUBLIC_API_URL: 'http://localhost:8080'
+        EXPO_PORT: '8081'
       scripts:
-        - name: "Install Mobile Dependencies"
-          command: "npm install"
+        - name: 'Install Mobile Dependencies'
+          command: 'npm install'
 ```
 
 ---
@@ -75,46 +80,56 @@ repositories:
 
 ### Top-Level Fields
 
-| Field           | Type                    | Description                                                                                 |
-| :-------------- | :---------------------- | :------------------------------------------------------------------------------------------ |
-| `env`           | `dict[str, str]`        | Global public environment variables synchronized in blueprint revisions.                    |
-| `secret`        | `dict[str, str]`        | Global sensitive secrets encrypted with AES-256-GCM in wshub Vault.                         |
-| `private`       | `dict[str, str]`        | Global host-specific variables that **never leave the local machine**.                      |
-| `setup.scripts` | `list[ScriptSpec]`      | Global setup scripts executed in the workspace root directory.                              |
-| `tmux`          | `dict` or `str`         | Project Tmux session configuration for workspace windows (`session`, `command`, `switch`).   |
-| `hub`           | `dict`                  | wshub settings: default project identifier and background `auto_save` configuration.        |
-| `repositories`  | `dict[str, RepoConfig]` | Map of repository definitions keyed by repository alias (`server`, `mobile`, etc.).         |
+| Field           | Type                    | Description                                                                                |
+| :-------------- | :---------------------- | :----------------------------------------------------------------------------------------- |
+| `env`           | `dict[str, str]`        | Global public environment variables synchronized in blueprint revisions.                   |
+| `secret`        | `dict[str, str]`        | Global sensitive secrets encrypted with AES-256-GCM in wshub Vault.                        |
+| `private`       | `dict[str, str]`        | Global host-specific variables that **never leave the local machine**.                     |
+| `setup.scripts` | `list[ScriptSpec]`      | Global setup scripts executed in the workspace root directory.                             |
+| `tmux`          | `dict` or `str`         | Project Tmux session configuration for workspace windows (`session`, `command`, `switch`). |
+| `hub`           | `dict`                  | wshub settings: default project identifier and background `auto_save` configuration.       |
+| `repositories`  | `dict[str, RepoConfig]` | Map of repository definitions keyed by repository alias (`server`, `mobile`, etc.).        |
 
 ---
 
 ### 🪟 Tmux Workspace Integration (`tmux:`)
 
-When `tmux` is configured, `ws` automatically manages a project-wide tmux session where each window represents a workspace.
+When `tmux` is configured, `ws` automatically manages a project-wide tmux
+session where each window represents a workspace.
 
 ```yaml
 # Mapping notation
 tmux:
-  session: "Workspace"   # Required: Tmux session name
-  command: "nvim"        # Optional: command to run in newly created windows (default: None -> default shell)
-  switch: false          # Optional: auto-focus new workspace window upon creation (default: false)
+  session: 'Workspace' # Required: Tmux session name
+  command: 'nvim' # Optional: command to run in newly created windows (default: None -> default shell)
+  switch: false # Optional: auto-focus new workspace window upon creation (default: false)
 
 # Or shorthand notation
-tmux: "Workspace"
+tmux: 'Workspace'
 ```
 
-- On `ws create @feat`: creates a new window named `@feat` in the session, working directory set to `workspaces/feat`.
-- On `ws end @feat`: cleanly terminates the window `tmux kill-window -t Workspace:feat`.
+- On `ws create @feat`: creates a new window named `@feat` in the session,
+  working directory set to `workspaces/feat`.
+- On `ws end @feat`: cleanly terminates the window
+  `tmux kill-window -t Workspace:feat`.
 - Switch/focus anytime with `ws focus @feat` or `ws switch @feat`.
 
 ---
 
 ### Environment Variable Tiers & Scoping
 
-`ws` supports three tiers of environment variables to guarantee Zero-Git secrets and local machine isolation:
+`ws` supports three tiers of environment variables to guarantee Zero-Git secrets
+and local machine isolation:
 
-1. **`public` (Default in `env:`)**: Standard non-sensitive configuration (ports, URLs, feature flags) synchronized in plaintext blueprint revisions.
-2. **`secret` (in `secret:` block or `secret:<value>` prefix)**: Sensitive credentials (tokens, passwords, API keys) automatically stripped from the public blueprint, encrypted with **AES-256-GCM** in the wshub Vault, and re-hydrated on clone/sync.
-3. **`private` (in `private:` block or `private:<value>` prefix)**: Developer-only or machine-specific overrides (local tool paths, hardware IPs) that **never leave the local machine**.
+1. **`public` (Default in `env:`)**: Standard non-sensitive configuration
+   (ports, URLs, feature flags) synchronized in plaintext blueprint revisions.
+2. **`secret` (in `secret:` block or `secret:<value>` prefix)**: Sensitive
+   credentials (tokens, passwords, API keys) automatically stripped from the
+   public blueprint, encrypted with **AES-256-GCM** in the wshub Vault, and
+   re-hydrated on clone/sync.
+3. **`private` (in `private:` block or `private:<value>` prefix)**:
+   Developer-only or machine-specific overrides (local tool paths, hardware IPs)
+   that **never leave the local machine**.
 
 #### Example Syntax
 
@@ -138,62 +153,65 @@ repositories:
     bare: bares/server.git
     checkout: server
     env:
-      PORT: "8080"
-      DATABASE_PASSWORD: "secret:postgres_super_pass"  # Encrypted in Vault
-      DEBUG_CACHE: "private:/tmp/my-server-cache"       # Stays local only
+      PORT: '8080'
+      DATABASE_PASSWORD: 'secret:postgres_super_pass' # Encrypted in Vault
+      DEBUG_CACHE: 'private:/tmp/my-server-cache' # Stays local only
 ```
 
 ---
 
 ### ☁️ Hub & Periodic Auto-Save (`hub:`)
 
-When collaborating via `wshub`, you can define project associations and automatic background state synchronization:
+When collaborating via `wshub`, you can define project associations and
+automatic background state synchronization:
 
 ```yaml
 hub:
-  project: "kyete/renttik"   # Default project identifier for hub push/pull/state
+  project: 'kyete/renttik' # Default project identifier for hub push/pull/state
   auto_save:
-    enabled: true             # Enable or disable auto-saving (default: false)
-    interval: "15m"           # Periodic interval (e.g. 5m, 15m, 1h, 30s, or 'never')
-    include_wip: true         # Snapshot uncommitted edits and untracked files (default: true)
-    workspaces: "all"         # "all", "active" (only workspaces with running services), or list ["dev", "feat-auth"]
-    notify: true              # Desktop notifications via D-Bus on success and failure (default: true)
+    enabled: true # Enable or disable auto-saving (default: false)
+    interval: '15m' # Periodic interval (e.g. 5m, 15m, 1h, 30s, or 'never')
+    include_wip: true # Snapshot uncommitted edits and untracked files (default: true)
+    workspaces: 'all' # "all", "active" (only workspaces with running services), or list ["dev", "feat-auth"]
+    notify: true # Desktop notifications via D-Bus on success and failure (default: true)
 ```
 
 #### Auto-Save Configuration Options
 
-| Option | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `enabled` | `boolean` | `false` | Enables periodic background state auto-saving. |
-| `interval` | `string` or `int` | `15m` | Interval between auto-save checks. Supports human durations (`"10m"`, `"1h"`, `"300s"`). |
-| `include_wip` | `boolean` | `true` | When true, includes uncommitted worktree modifications and untracked files. |
-| `workspaces` | `string` or `list[str]` | `"all"` | `"all"` saves all workspaces, `"active"` saves only workspaces with active sessions/supervisors, or an explicit list of workspace names. |
-| `notify` | `boolean` | `true` | Dispatches desktop notifications via D-Bus upon auto-save success and failure. |
+| Option        | Type                    | Default | Description                                                                                                                              |
+| :------------ | :---------------------- | :------ | :--------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`     | `boolean`               | `false` | Enables periodic background state auto-saving.                                                                                           |
+| `interval`    | `string` or `int`       | `15m`   | Interval between auto-save checks. Supports human durations (`"10m"`, `"1h"`, `"300s"`).                                                 |
+| `include_wip` | `boolean`               | `true`  | When true, includes uncommitted worktree modifications and untracked files.                                                              |
+| `workspaces`  | `string` or `list[str]` | `"all"` | `"all"` saves all workspaces, `"active"` saves only workspaces with active sessions/supervisors, or an explicit list of workspace names. |
+| `notify`      | `boolean`               | `true`  | Dispatches desktop notifications via D-Bus upon auto-save success and failure.                                                           |
 
-> [!NOTE]
-> `ws` employs smart fingerprint caching. If a workspace's branch heads and uncommitted files have not changed since the last save, the upload is skipped to save network bandwidth and hub storage.
+> [!NOTE] `ws` employs smart fingerprint caching. If a workspace's branch heads
+> and uncommitted files have not changed since the last save, the upload is
+> skipped to save network bandwidth and hub storage.
 
 ---
 
 ### `RepoConfig` Fields
 
-| Field              | Type                              | Required | Description                                                                                        |
-| :----------------- | :-------------------------------- | :------- | :------------------------------------------------------------------------------------------------- |
-| `bare`             | `string`                          | **Yes**  | Relative or absolute path to the bare Git repository (e.g. `bares/server.git`).                    |
-| `checkout`         | `string`                          | **Yes**  | Subdirectory name where the worktree is checked out inside each workspace (e.g. `Renttik-server`). |
-| `command`          | `string`                          | No       | Service launch command (e.g. `npm run dev`, `cargo run`).                                          |
-| `port`             | `integer`                         | No       | Primary base network port the service listens on (used as default port in discovery and status).   |
-| `ports`            | `list[int]` or `dict[str, int]`   | No       | Multiple base network ports (e.g. `[8080, 8081]` or `{http: 8080, ws: 8081, metrics: 9090}`).     |
-| `depends_on`       | `list[str]`                       | No       | List of service aliases that must start before this service.                                       |
-| `setup.copy_files` | `list[FileCopySpec]`              | No       | File copy specifications to execute during `ws setup` or workspace creation.                       |
-| `setup.env`        | `dict[str, str]`                  | No       | Environment variables specific to this repository worktree.                                        |
-| `setup.scripts`    | `list[ScriptSpec]`                | No       | Setup commands executed sequentially inside the repository worktree directory.                     |
+| Field              | Type                            | Required | Description                                                                                        |
+| :----------------- | :------------------------------ | :------- | :------------------------------------------------------------------------------------------------- |
+| `bare`             | `string`                        | **Yes**  | Relative or absolute path to the bare Git repository (e.g. `bares/server.git`).                    |
+| `checkout`         | `string`                        | **Yes**  | Subdirectory name where the worktree is checked out inside each workspace (e.g. `Renttik-server`). |
+| `command`          | `string`                        | No       | Service launch command (e.g. `npm run dev`, `cargo run`).                                          |
+| `port`             | `integer`                       | No       | Primary base network port the service listens on (used as default port in discovery and status).   |
+| `ports`            | `list[int]` or `dict[str, int]` | No       | Multiple base network ports (e.g. `[8080, 8081]` or `{http: 8080, ws: 8081, metrics: 9090}`).      |
+| `depends_on`       | `list[str]`                     | No       | List of service aliases that must start before this service.                                       |
+| `setup.copy_files` | `list[FileCopySpec]`            | No       | File copy specifications to execute during `ws setup` or workspace creation.                       |
+| `setup.env`        | `dict[str, str]`                | No       | Environment variables specific to this repository worktree.                                        |
+| `setup.scripts`    | `list[ScriptSpec]`              | No       | Setup commands executed sequentially inside the repository worktree directory.                     |
 
 ---
 
 ## 🔄 Dynamic Variable Interpolation & Service Discovery
 
-`ws` provides dynamic template variables and cross-service discovery placeholders inside commands, environment variable values, and setup scripts:
+`ws` provides dynamic template variables and cross-service discovery
+placeholders inside commands, environment variable values, and setup scripts:
 
 ### Standard Template Variables
 
@@ -213,22 +231,25 @@ hub:
 
 ### 🌐 Cross-Service Discovery Placeholders
 
-Services running in the same workspace can reference sibling services without hardcoding ports or IP addresses:
+Services running in the same workspace can reference sibling services without
+hardcoding ports or IP addresses:
 
-| Placeholder                         | Target Scope        | Example Value (Slot 1)           | Best For                                               |
-| :---------------------------------- | :------------------ | :------------------------------- | :----------------------------------------------------- |
-| `${SERVICE_PORT:server}`            | Primary Dynamic Port| `8090`                           | Injecting target primary port into configs / flags.    |
-| `${SERVICE_PORT:server:ws}`         | Named Sub-Port      | `8091`                           | Referencing a specific named port of a multi-port svc. |
-| `${SERVICE_PORTS:server}`           | All Ports (List)    | `8090,8091`                      | Comma-separated list of all allocated ports.           |
-| `${SERVICE_URL:server}`             | Localhost URL       | `http://127.0.0.1:8090`          | Local intra-machine communication (web ➔ API).         |
-| `${SERVICE_URL:server:ws}`          | Localhost Sub-Port  | `http://127.0.0.1:8091`          | Local URL targeting specific sub-port endpoint.        |
-| `${SERVICE_URL_LAN:server}`         | LAN Wi-Fi URL       | `http://192.168.1.45:8090`       | Physical mobile devices (Expo/React Native on phones). |
-| `${SERVICE_URL_LAN:server:ws}`      | LAN Wi-Fi Sub-Port  | `http://192.168.1.45:8091`       | Physical mobile devices connecting to sub-port.        |
-| `${SERVICE_URL_PUBLIC:server}`      | Public / Tunnel URL | `https://myproject.loca.lt:8090` | External webhooks, OAuth callbacks, remote staging.    |
-| `${SERVICE_URL_PUBLIC:server:ws}`   | Public Sub-Port URL | `https://myproject.loca.lt:8091` | External webhooks targeting specific sub-port.         |
+| Placeholder                       | Target Scope         | Example Value (Slot 1)           | Best For                                               |
+| :-------------------------------- | :------------------- | :------------------------------- | :----------------------------------------------------- |
+| `${SERVICE_PORT:server}`          | Primary Dynamic Port | `8090`                           | Injecting target primary port into configs / flags.    |
+| `${SERVICE_PORT:server:ws}`       | Named Sub-Port       | `8091`                           | Referencing a specific named port of a multi-port svc. |
+| `${SERVICE_PORTS:server}`         | All Ports (List)     | `8090,8091`                      | Comma-separated list of all allocated ports.           |
+| `${SERVICE_URL:server}`           | Localhost URL        | `http://127.0.0.1:8090`          | Local intra-machine communication (web ➔ API).         |
+| `${SERVICE_URL:server:ws}`        | Localhost Sub-Port   | `http://127.0.0.1:8091`          | Local URL targeting specific sub-port endpoint.        |
+| `${SERVICE_URL_LAN:server}`       | LAN Wi-Fi URL        | `http://192.168.1.45:8090`       | Physical mobile devices (Expo/React Native on phones). |
+| `${SERVICE_URL_LAN:server:ws}`    | LAN Wi-Fi Sub-Port   | `http://192.168.1.45:8091`       | Physical mobile devices connecting to sub-port.        |
+| `${SERVICE_URL_PUBLIC:server}`    | Public / Tunnel URL  | `https://myproject.loca.lt:8090` | External webhooks, OAuth callbacks, remote staging.    |
+| `${SERVICE_URL_PUBLIC:server:ws}` | Public Sub-Port URL  | `https://myproject.loca.lt:8091` | External webhooks targeting specific sub-port.         |
 
-> [!NOTE]
-> Configured ports are **Base Ports**. At runtime, `ws` automatically computes slot offsets (`base_port + slot * 10`) and conducts real-time TCP socket probing to auto-heal any collisions before launching services. Discovery placeholders always resolve to the **actual live allocated ports**.
+> [!NOTE] Configured ports are **Base Ports**. At runtime, `ws` automatically
+> computes slot offsets (`base_port + slot * 10`) and conducts real-time TCP
+> socket probing to auto-heal any collisions before launching services.
+> Discovery placeholders always resolve to the **actual live allocated ports**.
 
 ### Concrete Cross-Service Example
 
@@ -240,7 +261,9 @@ repositories:
     ports:
       http: 8080
       ws: 8081
-    command: npm run dev -- --http-port ${SERVICE_PORT:server:http} --ws-port ${SERVICE_PORT:server:ws}
+    command:
+      npm run dev -- --http-port ${SERVICE_PORT:server:http} --ws-port
+      ${SERVICE_PORT:server:ws}
 
   mobile:
     bare: bares/mobile.git
@@ -252,50 +275,66 @@ repositories:
     setup:
       env:
         # Physical phone automatically talks to backend API & WebSocket over Wi-Fi:
-        EXPO_PUBLIC_API_URL: "${SERVICE_URL_LAN:server:http}"
-        EXPO_PUBLIC_WS_URL: "${SERVICE_URL_LAN:server:ws}"
+        EXPO_PUBLIC_API_URL: '${SERVICE_URL_LAN:server:http}'
+        EXPO_PUBLIC_WS_URL: '${SERVICE_URL_LAN:server:ws}'
 ```
 
 ---
 
 ### 💉 Auto-Injected Runtime Discovery Variables
 
-When `ws` launches any service or interactive subshell (`ws shell @name %repo`), it automatically injects discovery variables for all services in the workspace:
+When `ws` launches any service or interactive subshell (`ws shell @name %repo`),
+it automatically injects discovery variables for all services in the workspace:
 
 - `WS_WORKSPACE`: Active workspace name (`feat-auth`).
 - `WS_SLOT`: Workspace integer slot (`1`).
 - `WS_LAN_IP`: Host LAN IP (`192.168.1.45`).
-- `WS_SERVICE_<NAME>_PORT`: Resolved primary port (e.g. `WS_SERVICE_SERVER_PORT=8090`).
-- `WS_SERVICE_<NAME>_PORTS`: Comma-separated list of all allocated ports (e.g. `WS_SERVICE_SERVER_PORTS=8090,8091`).
-- `WS_SERVICE_<NAME>_PORT_<SUBPORT>`: Specific sub-port (e.g. `WS_SERVICE_SERVER_PORT_WS=8091`).
-- `WS_SERVICE_<NAME>_URL`: Base localhost URL (e.g. `WS_SERVICE_SERVER_URL=http://127.0.0.1:8090`).
-- `WS_SERVICE_<NAME>_URL_<SUBPORT>`: Sub-port localhost URL (e.g. `WS_SERVICE_SERVER_URL_WS=http://127.0.0.1:8091`).
-- `WS_SERVICE_<NAME>_URL_LAN`: Base LAN URL (e.g. `WS_SERVICE_SERVER_URL_LAN=http://192.168.1.45:8090`).
-- `WS_SERVICE_<NAME>_URL_LAN_<SUBPORT>`: Sub-port LAN URL (e.g. `WS_SERVICE_SERVER_URL_LAN_WS=http://192.168.1.45:8091`).
+- `WS_SERVICE_<NAME>_PORT`: Resolved primary port (e.g.
+  `WS_SERVICE_SERVER_PORT=8090`).
+- `WS_SERVICE_<NAME>_PORTS`: Comma-separated list of all allocated ports (e.g.
+  `WS_SERVICE_SERVER_PORTS=8090,8091`).
+- `WS_SERVICE_<NAME>_PORT_<SUBPORT>`: Specific sub-port (e.g.
+  `WS_SERVICE_SERVER_PORT_WS=8091`).
+- `WS_SERVICE_<NAME>_URL`: Base localhost URL (e.g.
+  `WS_SERVICE_SERVER_URL=http://127.0.0.1:8090`).
+- `WS_SERVICE_<NAME>_URL_<SUBPORT>`: Sub-port localhost URL (e.g.
+  `WS_SERVICE_SERVER_URL_WS=http://127.0.0.1:8091`).
+- `WS_SERVICE_<NAME>_URL_LAN`: Base LAN URL (e.g.
+  `WS_SERVICE_SERVER_URL_LAN=http://192.168.1.45:8090`).
+- `WS_SERVICE_<NAME>_URL_LAN_<SUBPORT>`: Sub-port LAN URL (e.g.
+  `WS_SERVICE_SERVER_URL_LAN_WS=http://192.168.1.45:8091`).
 
 ---
 
 ### 📶 Wireless (Wi-Fi) Adapter Prioritization & Interface Selection
 
-To ensure physical mobile devices running client applications (e.g. Expo / React Native on Android & iOS) can reliably connect to local API backend services, `ws` employs smart network adapter prioritization:
+To ensure physical mobile devices running client applications (e.g. Expo / React
+Native on Android & iOS) can reliably connect to local API backend services,
+`ws` employs smart network adapter prioritization:
 
-1. **Active Wi-Fi Adapter (Default)**: `ws` scans physical network interfaces (`/sys/class/net/*/wireless`, `wlan*`, `wl*`, `wifi*`) and prioritizes active wireless IPv4 addresses.
-2. **Ethernet Fallback**: If no active Wi-Fi interface is detected, physical Ethernet adapters (`eno*`, `eth*`, `enp*`) are selected.
-3. **CLI Interface Flag**: You can select a specific interface or adapter type using `--interface <name|type>` (or `--iface`, `--lan-interface`):
+1. **Active Wi-Fi Adapter (Default)**: `ws` scans physical network interfaces
+   (`/sys/class/net/*/wireless`, `wlan*`, `wl*`, `wifi*`) and prioritizes active
+   wireless IPv4 addresses.
+2. **Ethernet Fallback**: If no active Wi-Fi interface is detected, physical
+   Ethernet adapters (`eno*`, `eth*`, `enp*`) are selected.
+3. **CLI Interface Flag**: You can select a specific interface or adapter type
+   using `--interface <name|type>` (or `--iface`, `--lan-interface`):
    ```bash
    # Select Ethernet explicitly:
    ws start @develop --interface eno1
    # Select Wi-Fi explicitly:
    ws start @develop --interface wifi
    ```
-4. **Explicit IP Override**: You can override the host IP directly using `--ip <ip>` (or `--lan-ip`) or the `WS_LAN_IP` environment variable:
+4. **Explicit IP Override**: You can override the host IP directly using
+   `--ip <ip>` (or `--lan-ip`) or the `WS_LAN_IP` environment variable:
    ```bash
    ws start @develop --ip 192.168.1.55
    ```
 
 ### 📄 Live Service Registry File (`.ws/services.json`)
 
-On startup, `ws` writes a machine-readable discovery descriptor to `workspaces/@<name>/.ws/services.json`:
+On startup, `ws` writes a machine-readable discovery descriptor to
+`workspaces/@<name>/.ws/services.json`:
 
 ```json
 {
@@ -339,7 +378,8 @@ On startup, `ws` writes a machine-readable discovery descriptor to `workspaces/@
 
 ## 🔒 Secret Masking
 
-When inspecting environment variables using `ws env` or printing debug logs, `ws` automatically masks sensitive values containing keywords such as:
+When inspecting environment variables using `ws env` or printing debug logs,
+`ws` automatically masks sensitive values containing keywords such as:
 
 - `SECRET`, `PASSWORD`, `KEY`, `TOKEN`, `CREDENTIAL`, `PRIVATE`, `AUTH`
 
@@ -354,12 +394,13 @@ JWT_SECRET: ********************
 
 ## 📋 Declarative `workspace.yml` Spec Files
 
-In addition to CLI arguments, you can define workspaces declaratively in a YAML file for team consistency and CI pipelines:
+In addition to CLI arguments, you can define workspaces declaratively in a YAML
+file for team consistency and CI pipelines:
 
 ```yaml
 # feature-auth.yml
 name: feat-auth
-description: "Authentication and user session revamp"
+description: 'Authentication and user session revamp'
 
 repositories:
   server:

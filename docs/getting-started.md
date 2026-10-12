@@ -1,15 +1,15 @@
 # 🚀 Getting Started with `ws`
 
-This guide walks you through system requirements, installation, initial project setup, and creating your first multi-repository workspace.
+This guide walks you through system requirements, installation, initial project
+setup, and creating your first multi-repository workspace.
 
 ---
 
 ## 📋 System Requirements
 
 - **Operating System**: Linux (Ubuntu, Debian, Fedora, Arch, etc.) or macOS.
-- **Python**: Python 3.10 or higher.
 - **Git**: Git 2.20 or higher (with `git worktree` support).
-- **Rust / Cargo** _(Optional, for building the native terminal engine)_: Rust 1.75+.
+- **Rust / Cargo**: Rust 1.75+ (`cargo`).
 - **Terminal Multiplexers** _(Optional)_:
   - `tmux` 3.0+ (for `ws start --tmux`)
   - `zellij` 0.39+ (for `ws start --zellij`)
@@ -18,20 +18,18 @@ This guide walks you through system requirements, installation, initial project 
 
 ## 📦 Installation
 
-### Option 1: Global Installation via `pip` / `pipx` (Recommended)
+### Option 1: Global Installation via `cargo install` (Recommended)
 
-Installing `ws` globally makes the `ws` binary available across your entire system:
+Installing `ws` globally makes the `ws` binary available across your entire
+system:
 
 ```bash
 # Clone the repository
 git clone https://github.com/franckKyete/ws-manager.git
 cd ws-manager
 
-# Install using pip
-pip install .
-
-# Or install using pipx (isolated virtual environment)
-pipx install .
+# Install using Cargo
+cargo install --path crates/ws-cli
 ```
 
 Verify your installation:
@@ -43,7 +41,7 @@ ws doctor
 
 ---
 
-### Option 2: Editable Installation for Development
+### Option 2: Build for Development
 
 If you are developing or customizing `ws`:
 
@@ -52,17 +50,16 @@ If you are developing or customizing `ws`:
 git clone https://github.com/franckKyete/ws-manager.git
 cd ws-manager
 
-# Install in editable mode with development dependencies
-pip install -e ".[dev]"
-
-# (Optional) Compile native Rust engine in development mode
+# Build workspace in development mode
 cargo build --workspace
+
+# Run tests
+cargo test --workspace
 ```
 
 Run the automated test suite to ensure everything is operational:
 
 ```bash
-python3 -m pytest ws/tests/ -v
 cargo test --workspace
 ```
 
@@ -70,7 +67,8 @@ cargo test --workspace
 
 ## ⚡ Shell Autocompletion & Suggestions (Zsh, Bash, Fish)
 
-Enable dynamic tab-completion for subcommands, workspaces (`@<name>`), repositories (`%<repo>`), and flags:
+Enable dynamic tab-completion for subcommands, workspaces (`@<name>`),
+repositories (`%<repo>`), and flags:
 
 ### For Zsh (Recommended)
 
@@ -102,14 +100,15 @@ ws completion fish > ~/.config/fish/completions/ws.fish
 
 ---
 
-
 ## 🎓 3-Minute Tutorial: Your First Workspace
 
-Follow these steps to set up a project containing a backend API server and a mobile app.
+Follow these steps to set up a project containing a backend API server and a
+mobile app.
 
 ### Step 1: Initialize Project Bare Repositories
 
-Inside your project root directory (e.g. `~/my-polyrepo-project`), run `ws project init` with your remote Git URLs:
+Inside your project root directory (e.g. `~/my-polyrepo-project`), run
+`ws project init` with your remote Git URLs:
 
 ```bash
 ws project init server=git@github.com:example-org/api-server.git \
@@ -119,7 +118,8 @@ ws project init server=git@github.com:example-org/api-server.git \
 This command:
 
 1. Clones bare repositories into `bares/server.git` and `bares/mobile.git`.
-2. Generates a root `repositories.yml` configuration file with sensible `tmux` and `hub` defaults.
+2. Generates a root `repositories.yml` configuration file with sensible `tmux`
+   and `hub` defaults.
 
 Inspect the generated `repositories.yml`:
 
@@ -160,7 +160,8 @@ Now create a coordinated feature workspace named `@feat-auth`:
 ws create @feat-auth %server %mobile
 ```
 
-Or checkout an existing `main` branch for `%server` while creating a new `feature/auth-ui` branch for `%mobile`:
+Or checkout an existing `main` branch for `%server` while creating a new
+`feature/auth-ui` branch for `%mobile`:
 
 ```bash
 ws create @feat-auth %server:main:existing %mobile:feature/auth-ui:new
@@ -186,7 +187,8 @@ my-polyrepo-project/
 
 ### Step 3: Run Setup Scripts & Environment Sync
 
-Sync `.env` files and run setup scripts (e.g. `npm install`) inside all repositories:
+Sync `.env` files and run setup scripts (e.g. `npm install`) inside all
+repositories:
 
 ```bash
 ws setup @feat-auth --all
@@ -210,7 +212,8 @@ ws start @feat-auth
 
 ### Step 5: Seamless Zero-Downtime Engine Switching
 
-While your services are running in Tmux, switch directly to the Rust TUI without restarting child processes:
+While your services are running in Tmux, switch directly to the Rust TUI without
+restarting child processes:
 
 ```bash
 ws attach @feat-auth --switch
@@ -226,7 +229,8 @@ Open an interactive subshell inside the `%mobile` repository worktree:
 ws shell @feat-auth %mobile
 ```
 
-Your shell prompt updates to `[@feat-auth] mobile $`, and relevant environment variables (`$WS_WORKSPACE`, `$WS_REPO`) are automatically populated.
+Your shell prompt updates to `[@feat-auth] mobile $`, and relevant environment
+variables (`$WS_WORKSPACE`, `$WS_REPO`) are automatically populated.
 
 ---
 
@@ -253,5 +257,7 @@ ws end @feat-auth
 ## 📚 Next Steps
 
 - Explore all command options in the [**CLI Reference**](cli-reference.md).
-- Learn how to configure environment variables and file sync in [**Configuration Specification**](configuration.md).
-- Master multiplexers in [**Multiplexers & Runtime**](multiplexers-and-runtime.md).
+- Learn how to configure environment variables and file sync in
+  [**Configuration Specification**](configuration.md).
+- Master multiplexers in
+  [**Multiplexers & Runtime**](multiplexers-and-runtime.md).
