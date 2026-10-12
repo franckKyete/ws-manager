@@ -404,3 +404,64 @@ fn test_e2e_clone_from_hub_legacy_fallback_format() {
     assert_eq!(content, blueprint_content);
     assert!(clone_target.join("bares/frontend.git").exists());
 }
+
+#[test]
+fn test_e2e_clone_from_hub_default_directory_no_workspaces_affix() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    let original_cwd = std::env::current_dir().unwrap();
+    let temp_work_dir = tempdir().unwrap();
+
+    let blueprint_content = "repositories:\n";
+    let routes = vec![
+        MockRoute {
+            method: "GET".to_string(),
+            path_prefix: "/api/v1/projects/kyete/projecti-ws".to_string(),
+            status_code: 200,
+            body: serde_json::json!({
+                "latestRevision": {
+                    "version": 1,
+                    "blueprintYaml": blueprint_content,
+                }
+            })
+            .to_string(),
+        },
+        MockRoute {
+            method: "GET".to_string(),
+            path_prefix: "/api/v1/projects/kyete/projecti-ws/files".to_string(),
+            status_code: 200,
+            body: serde_json::json!([]).to_string(),
+        },
+        MockRoute {
+            method: "GET".to_string(),
+            path_prefix: "/api/v1/projects/kyete/projecti-ws/secrets".to_string(),
+            status_code: 200,
+            body: serde_json::json!([]).to_string(),
+        },
+    ];
+
+    let server = MockServer::start(routes);
+    std::env::set_var("WS_HUB_URL", &server.url);
+    std::env::set_var("WS_HUB_TOKEN", "test_token_123");
+
+    std::env::set_current_dir(temp_work_dir.path()).unwrap();
+
+    let cfg = ConfigLoader::load_config(None, None, true).unwrap();
+    let manager = WorkspaceManager::new(cfg, None);
+    let res = manager.clone_from_hub("kyete/projecti-ws", None);
+
+    // Restore cwd immediately
+    let _ = std::env::set_current_dir(&original_cwd);
+
+    assert!(res.is_ok(), "clone_from_hub failed: {:?}", res.err());
+    let cloned_path = res.unwrap();
+
+    // Verify folder name is strictly 'projecti-ws' and has no workspaces prefix/suffix
+    assert_eq!(
+        cloned_path.file_name().unwrap().to_str().unwrap(),
+        "projecti-ws"
+    );
+    assert!(!cloned_path.to_str().unwrap().contains("-workspaces"));
+    assert!(!cloned_path.to_str().unwrap().contains("workspaces-"));
+    assert!(cloned_path.join("repositories.yml").exists());
+}

@@ -2668,6 +2668,9 @@ impl WorkspaceManager {
             .to_string_lossy()
             .to_string();
         let clean = proj_dir
+            .strip_prefix("workspaces-")
+            .or_else(|| proj_dir.strip_prefix("workspaces_"))
+            .unwrap_or(&proj_dir)
             .replace("-workspaces", "")
             .replace("_workspaces", "")
             .to_lowercase();
@@ -2716,9 +2719,16 @@ impl WorkspaceManager {
         let dest_dir = if let Some(td) = target_dir {
             td.to_path_buf()
         } else {
-            std::env::current_dir()
-                .unwrap_or_default()
-                .join(format!("{}-workspaces", name))
+            let clean_name = name
+                .strip_prefix("workspaces-")
+                .or_else(|| name.strip_prefix("workspaces_"))
+                .or_else(|| name.strip_prefix("workspaces/"))
+                .unwrap_or(&name);
+            let clean_name = clean_name
+                .strip_suffix("-workspaces")
+                .or_else(|| clean_name.strip_suffix("_workspaces"))
+                .unwrap_or(clean_name);
+            std::env::current_dir().unwrap_or_default().join(clean_name)
         };
 
         ensure_directory(&dest_dir)?;
