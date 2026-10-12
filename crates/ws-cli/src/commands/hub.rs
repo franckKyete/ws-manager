@@ -203,11 +203,12 @@ pub fn execute_hub_clone(
 pub fn execute_hub_push(
     manager: &mut WorkspaceManager,
     message: Option<&str>,
+    project: Option<&str>,
     silent: bool,
 ) -> Result<(), String> {
     let msg = message.unwrap_or("Pushed blueprint update from ws CLI");
     manager
-        .hub_push(msg, None, silent)
+        .hub_push(msg, project, silent)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -291,11 +292,13 @@ pub fn execute_hub_status(manager: &WorkspaceManager) -> Result<(), String> {
 pub fn execute_hub_state_save(
     manager: &WorkspaceManager,
     name: Option<&str>,
-    _message: Option<&str>,
+    project: Option<&str>,
+    no_wip: bool,
+    auto: bool,
 ) -> Result<(), String> {
     let (ws_name, _, _) = resolve_ws_and_repo_args(manager, name, None, None, true, false)?;
     manager
-        .hub_state_save(&ws_name, None, true, false, false)
+        .hub_state_save(&ws_name, project, !no_wip, false, auto)
         .map_err(|e| e.to_string())?;
     OutputHandler::print_success(&format!(
         "Saved workspace state for '@{}' to wshub",
@@ -307,10 +310,12 @@ pub fn execute_hub_state_save(
 pub fn execute_hub_state_restore(
     manager: &mut WorkspaceManager,
     name: Option<&str>,
+    project: Option<&str>,
+    no_wip: bool,
 ) -> Result<(), String> {
     let (ws_name, _, _) = resolve_ws_and_repo_args(manager, name, None, None, true, false)?;
     manager
-        .hub_state_restore(&ws_name, None, true)
+        .hub_state_restore(&ws_name, project, !no_wip)
         .map_err(|e| e.to_string())?;
     OutputHandler::print_success(&format!(
         "Restored workspace state for '@{}' from wshub",
@@ -331,8 +336,11 @@ pub fn execute_hub_auto_save_run(manager: &WorkspaceManager) -> Result<(), Strin
     Ok(())
 }
 
-pub fn execute_hub_secret_list(manager: &WorkspaceManager) -> Result<(), String> {
-    let (ns, p_name) = manager.get_project_namespace_and_name(None);
+pub fn execute_hub_secret_list(
+    manager: &WorkspaceManager,
+    project: Option<&str>,
+) -> Result<(), String> {
+    let (ns, p_name) = manager.get_project_namespace_and_name(project);
     let client = HubClient::default();
     let res = client
         .list_secrets(&ns, &p_name)
@@ -343,7 +351,11 @@ pub fn execute_hub_secret_list(manager: &WorkspaceManager) -> Result<(), String>
             .bold()
             .cyan()
     );
-    if let Some(arr) = res.as_array() {
+    let arr_opt = res
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| res.as_array());
+    if let Some(arr) = arr_opt {
         if arr.is_empty() {
             println!("  No secrets stored.");
         } else {
@@ -366,8 +378,9 @@ pub fn execute_hub_secret_set(
     key: &str,
     value: &str,
     repo: Option<&str>,
+    project: Option<&str>,
 ) -> Result<(), String> {
-    let (ns, p_name) = manager.get_project_namespace_and_name(None);
+    let (ns, p_name) = manager.get_project_namespace_and_name(project);
     let client = HubClient::default();
     client
         .set_secret(&ns, &p_name, key, value, repo)
@@ -380,8 +393,9 @@ pub fn execute_hub_secret_get(
     manager: &WorkspaceManager,
     key: &str,
     repo: Option<&str>,
+    project: Option<&str>,
 ) -> Result<(), String> {
-    let (ns, p_name) = manager.get_project_namespace_and_name(None);
+    let (ns, p_name) = manager.get_project_namespace_and_name(project);
     let client = HubClient::default();
     let res = client
         .get_secret(&ns, &p_name, key, repo)
@@ -394,8 +408,9 @@ pub fn execute_hub_secret_delete(
     manager: &WorkspaceManager,
     key: &str,
     repo: Option<&str>,
+    project: Option<&str>,
 ) -> Result<(), String> {
-    let (ns, p_name) = manager.get_project_namespace_and_name(None);
+    let (ns, p_name) = manager.get_project_namespace_and_name(project);
     let client = HubClient::default();
     client
         .delete_secret(&ns, &p_name, key, repo)
@@ -458,15 +473,32 @@ pub fn execute_hub_secret_pull(
     let files_dir = manager.config.project_root.join("files");
     fs::create_dir_all(&files_dir).map_err(|e| e.to_string())?;
 
-    if let Some(arr) = res.as_array() {
+    let arr_opt = res
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| res.as_array());
+
+    if let Some(arr) = arr_opt {
         for item in arr {
-            if let Some(fname) = item.get("filename").and_then(|v| v.as_str()) {
+            let fname_opt = item
+                .get("filePath")
+                .or_else(|| item.get("filename"))
+                .and_then(|v| v.as_str());
+            if let Some(fname) = fname_opt {
+                let clean_fname = if fname.starts_with("files/") || fname.starts_with("files\\") {
+                    &fname[6..]
+                } else {
+                    fname
+                };
                 if let Ok(bytes) = client.download_file(&ns, &p_name, fname) {
-                    let out_path = files_dir.join(fname);
+                    let out_path = files_dir.join(clean_fname);
+                    if let Some(parent) = out_path.parent() {
+                        let _ = fs::create_dir_all(parent);
+                    }
                     let _ = fs::write(&out_path, bytes);
                     OutputHandler::print_success(&format!(
                         "Downloaded '{}' to files/{}",
-                        fname, fname
+                        fname, clean_fname
                     ));
                 }
             }

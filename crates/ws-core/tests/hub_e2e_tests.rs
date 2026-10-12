@@ -465,3 +465,157 @@ fn test_e2e_clone_from_hub_default_directory_no_workspaces_affix() {
     assert!(!cloned_path.to_str().unwrap().contains("workspaces-"));
     assert!(cloned_path.join("repositories.yml").exists());
 }
+
+#[test]
+fn test_e2e_hub_state_restore_recreates_workspace_with_named_repos() {
+    let _guard = TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+
+    let proj_dir = tempdir().unwrap();
+    let bares_dir = proj_dir.path().join("bares");
+    std::fs::create_dir_all(&bares_dir).unwrap();
+    let bare_repo = bares_dir.join("mono.git");
+
+    // Initialize bare git repository with initial commit and feat-ui branch
+    let init_st = Command::new("git")
+        .args(["init", "--bare", bare_repo.to_str().unwrap()])
+        .status()
+        .expect("git init failed");
+    assert!(init_st.success());
+
+    // Create a temporary clone to commit into bare
+    let seed_dir = tempdir().unwrap();
+    Command::new("git")
+        .args([
+            "clone",
+            bare_repo.to_str().unwrap(),
+            seed_dir.path().to_str().unwrap(),
+        ])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args([
+            "-C",
+            seed_dir.path().to_str().unwrap(),
+            "config",
+            "user.name",
+            "Test",
+        ])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args([
+            "-C",
+            seed_dir.path().to_str().unwrap(),
+            "config",
+            "user.email",
+            "test@test.com",
+        ])
+        .status()
+        .unwrap();
+    std::fs::write(seed_dir.path().join("README.md"), "# mono\n").unwrap();
+    Command::new("git")
+        .args(["-C", seed_dir.path().to_str().unwrap(), "add", "README.md"])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args([
+            "-C",
+            seed_dir.path().to_str().unwrap(),
+            "commit",
+            "-m",
+            "init",
+        ])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args([
+            "-C",
+            seed_dir.path().to_str().unwrap(),
+            "branch",
+            "-M",
+            "main",
+        ])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args([
+            "-C",
+            seed_dir.path().to_str().unwrap(),
+            "push",
+            "origin",
+            "main",
+        ])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args([
+            "-C",
+            seed_dir.path().to_str().unwrap(),
+            "checkout",
+            "-b",
+            "feat-ui",
+        ])
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args([
+            "-C",
+            seed_dir.path().to_str().unwrap(),
+            "push",
+            "origin",
+            "feat-ui",
+        ])
+        .status()
+        .unwrap();
+
+    let repo_yml_content = format!(
+        "repositories:\n  mono:\n    bare: {}\n    checkout: mono\n",
+        bare_repo.display()
+    );
+    let repo_yml = proj_dir.path().join("repositories.yml");
+    std::fs::write(&repo_yml, &repo_yml_content).unwrap();
+
+    // Mock hub route returning state where repositories contains "mono" without "name" field
+    let routes = vec![MockRoute {
+        method: "GET".to_string(),
+        path_prefix: "/api/v1/workspaces/kyete/myproject/states/ui".to_string(),
+        status_code: 200,
+        body: serde_json::json!({
+            "status": "success",
+            "data": {
+                "workspaceName": "ui",
+                "stateJson": serde_json::json!({
+                    "name": "ui",
+                    "repositories": {
+                        "mono": {
+                            "branch": "feat-ui",
+                            "create": true,
+                            "path": "mono"
+                        }
+                    },
+                    "wip": {}
+                }).to_string()
+            }
+        })
+        .to_string(),
+    }];
+
+    let server = MockServer::start(routes);
+    std::env::set_var("WS_HUB_URL", &server.url);
+    std::env::set_var("WS_HUB_TOKEN", "test_token_123");
+
+    let original_cwd = std::env::current_dir().unwrap();
+    std::env::set_current_dir(proj_dir.path()).unwrap();
+
+    let cfg = ConfigLoader::load_config(Some(&repo_yml), None, true).unwrap();
+    let manager = WorkspaceManager::new(cfg, None);
+
+    let res = manager.hub_state_restore("ui", Some("kyete/myproject"), true);
+
+    let _ = std::env::set_current_dir(&original_cwd);
+
+    assert!(res.is_ok(), "hub_state_restore failed: {:?}", res.err());
+    let ws_dir = proj_dir.path().join("workspaces/ui");
+    assert!(ws_dir.exists(), "workspaces/ui directory must exist");
+    assert!(ws_dir.join("mono").exists(), "worktree mono must exist");
+}

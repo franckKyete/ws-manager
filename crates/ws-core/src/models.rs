@@ -289,7 +289,7 @@ impl RepoConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RepoSpec {
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub name: String,
     pub branch: String,
     #[serde(default = "default_true")]
@@ -377,6 +377,17 @@ impl WorkspaceMetadata {
             serde_json::from_value(json_val).map_err(|e| e.to_string())?;
         meta.normalize();
         Ok(meta)
+    }
+
+    pub fn from_json_value(val: serde_json::Value) -> Result<Self, String> {
+        let mut meta: WorkspaceMetadata = serde_json::from_value(val).map_err(|e| e.to_string())?;
+        meta.normalize();
+        Ok(meta)
+    }
+
+    pub fn from_json_str(content: &str) -> Result<Self, String> {
+        let val: serde_json::Value = serde_json::from_str(content).map_err(|e| e.to_string())?;
+        Self::from_json_value(val)
     }
 
     pub fn normalize(&mut self) {

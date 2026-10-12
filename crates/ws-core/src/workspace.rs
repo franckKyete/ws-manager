@@ -3581,19 +3581,41 @@ impl WorkspaceManager {
         } else {
             raw_val
         };
-        let meta: WorkspaceMetadata = serde_json::from_value(state_val.clone()).map_err(|e| {
+        let mut meta = WorkspaceMetadata::from_json_value(state_val.clone()).map_err(|e| {
             WSError::Config(format!(
                 "Invalid saved state for '{}': {}",
                 workspace_name, e
             ))
         })?;
+        meta.normalize();
 
-        let repo_specs: Vec<RepoSpec> = meta.repositories.values().cloned().collect();
-        OutputHandler::print_info(&format!(
-            "Recreating workspace @{} from hub state...",
-            meta.name
-        ));
-        self.create_workspace(&meta.name, &repo_specs, None, false)?;
+        let mut repo_specs: Vec<RepoSpec> = Vec::new();
+        for (r_name, mut spec) in meta.repositories.clone() {
+            if spec.name.is_empty() {
+                spec.name = r_name.clone();
+            }
+            if let Ok(repo_cfg) = self.validate_repository_config(&spec.name) {
+                let branch_exists = self.git.branch_exists(&repo_cfg.bare, &spec.branch);
+                if branch_exists {
+                    spec.create = false;
+                }
+            }
+            repo_specs.push(spec);
+        }
+
+        let ws_dir = self.get_workspace_dir(&meta.name);
+        if !ws_dir.exists() {
+            OutputHandler::print_info(&format!(
+                "Recreating workspace @{} from hub state...",
+                meta.name
+            ));
+            self.create_workspace(&meta.name, &repo_specs, None, false)?;
+        } else {
+            OutputHandler::print_info(&format!(
+                "Workspace @{} already exists locally, restoring state...",
+                meta.name
+            ));
+        }
 
         if apply_wip {
             if let Some(wip_data) = state_val.get("wip").and_then(|w| w.as_object()) {

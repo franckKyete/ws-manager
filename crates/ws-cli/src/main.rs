@@ -321,8 +321,7 @@ fn main() {
                 description,
             }) => execute_hub_publish(&mut manager, project.as_deref(), description.as_deref()),
             Some(HubAction::Push { message, project }) => {
-                let _ = project;
-                execute_hub_push(&mut manager, Some(&message), false)
+                execute_hub_push(&mut manager, Some(&message), project.as_deref(), false)
             }
             Some(HubAction::Pull { project }) => execute_hub_pull(&mut manager, project.as_deref()),
             Some(HubAction::Status { .. }) => execute_hub_status(&manager),
@@ -330,28 +329,49 @@ fn main() {
             Some(HubAction::State { action }) => match action {
                 HubStateAction::Save {
                     workspace,
-                    project: _,
-                    no_wip: _,
-                    auto: _,
-                } => execute_hub_state_save(&manager, Some(&workspace), None),
+                    project,
+                    no_wip,
+                    auto,
+                } => execute_hub_state_save(
+                    &manager,
+                    Some(&workspace),
+                    project.as_deref(),
+                    no_wip,
+                    auto,
+                ),
                 HubStateAction::Restore {
                     workspace,
-                    project: _,
-                    no_wip: _,
-                } => execute_hub_state_restore(&mut manager, Some(&workspace)),
+                    project,
+                    no_wip,
+                } => execute_hub_state_restore(
+                    &mut manager,
+                    Some(&workspace),
+                    project.as_deref(),
+                    no_wip,
+                ),
             },
             Some(HubAction::Resume {
                 workspace,
-                project: _,
-                no_wip: _,
-            }) => execute_hub_state_restore(&mut manager, Some(&workspace)),
+                project,
+                no_wip,
+            }) => execute_hub_state_restore(
+                &mut manager,
+                Some(&workspace),
+                project.as_deref(),
+                no_wip,
+            ),
             Some(HubAction::AutoSave { action }) => match action {
                 Some(HubAutoSaveAction::Status) | None => execute_hub_auto_save_status(&manager),
                 Some(HubAutoSaveAction::Start {
-                    interval: _,
-                    project: _,
+                    interval,
+                    project,
                     daemon,
-                }) => execute_hub_auto_save_start(&manager, None, None, daemon),
+                }) => execute_hub_auto_save_start(
+                    &manager,
+                    interval.as_deref().and_then(|s| s.parse::<u64>().ok()),
+                    project.as_deref(),
+                    daemon,
+                ),
                 Some(HubAutoSaveAction::Stop) => execute_hub_auto_save_stop(&manager),
                 Some(HubAutoSaveAction::Run { .. }) | Some(HubAutoSaveAction::Once { .. }) => {
                     execute_hub_auto_save_run(&manager)
@@ -360,23 +380,27 @@ fn main() {
                 Some(HubAutoSaveAction::Service { action }) => dispatch_service_action(action),
             },
             Some(HubAction::Secret { action }) => match action {
-                HubSecretAction::List { project: _ } => execute_hub_secret_list(&manager),
+                HubSecretAction::List { project } => {
+                    execute_hub_secret_list(&manager, project.as_deref())
+                }
                 HubSecretAction::Set {
                     key,
                     value,
                     repo,
-                    project: _,
-                } => execute_hub_secret_set(&manager, &key, &value, repo.as_deref()),
-                HubSecretAction::Get {
-                    key,
-                    repo,
-                    project: _,
-                } => execute_hub_secret_get(&manager, &key, repo.as_deref()),
-                HubSecretAction::Delete {
-                    key,
-                    repo,
-                    project: _,
-                } => execute_hub_secret_delete(&manager, &key, repo.as_deref()),
+                    project,
+                } => execute_hub_secret_set(
+                    &manager,
+                    &key,
+                    &value,
+                    repo.as_deref(),
+                    project.as_deref(),
+                ),
+                HubSecretAction::Get { key, repo, project } => {
+                    execute_hub_secret_get(&manager, &key, repo.as_deref(), project.as_deref())
+                }
+                HubSecretAction::Delete { key, repo, project } => {
+                    execute_hub_secret_delete(&manager, &key, repo.as_deref(), project.as_deref())
+                }
                 HubSecretAction::Upload { file_path, project } => {
                     execute_hub_secret_upload(&manager, &file_path, project.as_deref())
                 }
