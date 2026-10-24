@@ -1,4 +1,4 @@
-/// Unix domain socket IPC daemon and client for background and detachable workspace session management.
+//! Unix domain socket IPC daemon and client for background and detachable workspace session management.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-
 
 use crossterm::{
     event::{
@@ -80,7 +79,6 @@ pub enum DaemonRequest {
     StopAll,
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceInfo {
     pub name: String,
@@ -118,7 +116,11 @@ pub struct SessionDaemon {
 }
 
 impl SessionDaemon {
-    pub fn new(workspace_name: String, supervisor: Arc<ProcessSupervisor>, socket_path: PathBuf) -> Self {
+    pub fn new(
+        workspace_name: String,
+        supervisor: Arc<ProcessSupervisor>,
+        socket_path: PathBuf,
+    ) -> Self {
         Self {
             workspace_name,
             supervisor,
@@ -163,7 +165,6 @@ impl SessionDaemon {
         let _ = std::fs::remove_file(&self.socket_path);
         Ok(())
     }
-
 
     async fn handle_connection(
         mut stream: UnixStream,
@@ -227,9 +228,16 @@ impl SessionDaemon {
                 }) => {
                     if let Some(s) = supervisor.services.get(&service) {
                         if let Ok(mut buf) = s.buffer.try_write() {
-                            let (rows, actual_offset) =
-                                buf.get_formatted_rows(scrollback_offset, horizontal_offset, height, width);
-                            DaemonResponse::FormattedRows { rows, actual_offset }
+                            let (rows, actual_offset) = buf.get_formatted_rows(
+                                scrollback_offset,
+                                horizontal_offset,
+                                height,
+                                width,
+                            );
+                            DaemonResponse::FormattedRows {
+                                rows,
+                                actual_offset,
+                            }
                         } else {
                             DaemonResponse::FormattedRows {
                                 rows: vec![],
@@ -321,7 +329,6 @@ impl SessionDaemon {
                 Err(e) => DaemonResponse::Error {
                     message: e.to_string(),
                 },
-
             };
 
             let json_resp = serde_json::to_string(&resp)?;
@@ -339,7 +346,6 @@ impl SessionDaemon {
 
         Ok(())
     }
-
 
     fn get_service_infos(supervisor: &ProcessSupervisor) -> Vec<ServiceInfo> {
         let mut svcs = Vec::new();
@@ -427,7 +433,6 @@ impl AttachedSessionClient {
         }
     }
 
-
     pub fn get_cursor(&self, service: &str) -> (usize, usize) {
         self.cursors.get(service).copied().unwrap_or((0, 0))
     }
@@ -435,8 +440,6 @@ impl AttachedSessionClient {
     pub fn set_cursor(&mut self, service: &str, pos: (usize, usize)) {
         self.cursors.insert(service.to_string(), pos);
     }
-
-
 
     pub async fn run(&mut self) -> Result<i32, Box<dyn std::error::Error>> {
         let stream = match UnixStream::connect(&self.socket_path).await {
@@ -457,7 +460,9 @@ impl AttachedSessionClient {
 
         let mut line = String::new();
         if buf_reader.read_line(&mut line).await? > 0 {
-            if let Ok(DaemonResponse::State { services }) = serde_json::from_str::<DaemonResponse>(line.trim()) {
+            if let Ok(DaemonResponse::State { services }) =
+                serde_json::from_str::<DaemonResponse>(line.trim())
+            {
                 self.service_names = services.into_iter().map(|s| s.name).collect();
                 if let Some(ref focus) = self.initial_focus {
                     if let Some(idx) = self.service_names.iter().position(|s| s == focus) {
@@ -473,10 +478,16 @@ impl AttachedSessionClient {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
-        let res = self.event_loop(&mut terminal, &mut buf_reader, &mut writer).await;
+        let res = self
+            .event_loop(&mut terminal, &mut buf_reader, &mut writer)
+            .await;
 
         disable_raw_mode()?;
-        execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
         terminal.show_cursor()?;
 
         res
@@ -494,7 +505,11 @@ impl AttachedSessionClient {
             // Build pane queries based on active screen pane rectangles
             let mut pane_queries = Vec::new();
             for name in &self.service_names {
-                let rect = self.pane_rects.get(name).cloned().unwrap_or(Rect::new(0, 0, 80, 24));
+                let rect = self
+                    .pane_rects
+                    .get(name)
+                    .cloned()
+                    .unwrap_or(Rect::new(0, 0, 80, 24));
                 let usable_height = (rect.height.saturating_sub(2)) as usize;
                 let usable_width = (rect.width.saturating_sub(2)) as usize;
                 let scrollback_offset = self.scroll_offsets.get(name).copied().unwrap_or(0);
@@ -510,7 +525,9 @@ impl AttachedSessionClient {
             }
 
             // Fetch atomic poll state (status + rendered ANSI rows for all panes)
-            let poll_req = serde_json::to_string(&DaemonRequest::PollState { panes: pane_queries })? + "\n";
+            let poll_req = serde_json::to_string(&DaemonRequest::PollState {
+                panes: pane_queries,
+            })? + "\n";
             writer.write_all(poll_req.as_bytes()).await?;
             writer.flush().await?;
 
@@ -546,7 +563,8 @@ impl AttachedSessionClient {
                                     && mouse.row >= rect.y
                                     && mouse.row < rect.y + rect.height
                                 {
-                                    let rel_col = (mouse.column.saturating_sub(rect.x + 1)) as usize;
+                                    let rel_col =
+                                        (mouse.column.saturating_sub(rect.x + 1)) as usize;
                                     let rel_row = (mouse.row.saturating_sub(rect.y + 1)) as usize;
                                     let max_col = (rect.width.saturating_sub(2)) as usize;
                                     let max_row = (rect.height.saturating_sub(2)) as usize;
@@ -556,7 +574,9 @@ impl AttachedSessionClient {
                                 }
                             }
                             if let Some((name, pos)) = hit {
-                                if let Some(idx) = self.service_names.iter().position(|s| s == &name) {
+                                if let Some(idx) =
+                                    self.service_names.iter().position(|s| s == &name)
+                                {
                                     self.focused_index = idx;
                                 }
                                 self.set_cursor(&name, pos);
@@ -573,7 +593,8 @@ impl AttachedSessionClient {
                             let mut drag_update = None;
                             if let Some(ref sel) = self.selection {
                                 if let Some(rect) = self.pane_rects.get(&sel.service) {
-                                    let rel_col = (mouse.column.saturating_sub(rect.x + 1)) as usize;
+                                    let rel_col =
+                                        (mouse.column.saturating_sub(rect.x + 1)) as usize;
                                     let rel_row = (mouse.row.saturating_sub(rect.y + 1)) as usize;
                                     let max_col = (rect.width.saturating_sub(2)) as usize;
                                     let max_row = (rect.height.saturating_sub(2)) as usize;
@@ -591,7 +612,10 @@ impl AttachedSessionClient {
                         }
 
                         MouseEventKind::Up(MouseButton::Left) => {
-                            let sel_info = self.selection.as_ref().map(|s| (s.service.clone(), s.start, s.end));
+                            let sel_info = self
+                                .selection
+                                .as_ref()
+                                .map(|s| (s.service.clone(), s.start, s.end));
                             if let Some((service, start, end)) = sel_info {
                                 if start != end {
                                     let text = self.extract_selected_text(&service, start, end);
@@ -634,23 +658,29 @@ impl AttachedSessionClient {
                         if self.mode == UIMode::Interactive {
                             if key.code == KeyCode::Esc
                                 || (key.modifiers.contains(KeyModifiers::CONTROL)
-                                    && (key.code == KeyCode::Char('x') || key.code == KeyCode::Char('w') || key.code == KeyCode::Char('W')))
+                                    && (key.code == KeyCode::Char('x')
+                                        || key.code == KeyCode::Char('w')
+                                        || key.code == KeyCode::Char('W')))
                             {
                                 self.mode = UIMode::Navigation;
                                 continue;
                             }
 
-
                             // Clipboard paste in interactive mode (Ctrl+V)
-                            if (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('v'))
-                                || (key.modifiers.contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT) && key.code == KeyCode::Char('V'))
+                            if (key.modifiers.contains(KeyModifiers::CONTROL)
+                                && key.code == KeyCode::Char('v'))
+                                || (key
+                                    .modifiers
+                                    .contains(KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+                                    && key.code == KeyCode::Char('V'))
                             {
                                 if let Some(clip_text) = get_from_clipboard() {
                                     let focused = self.focused_service_name().to_string();
-                                    let input_req = serde_json::to_string(&DaemonRequest::SendInput {
-                                        service: focused,
-                                        data: clip_text.into_bytes(),
-                                    })? + "\n";
+                                    let input_req =
+                                        serde_json::to_string(&DaemonRequest::SendInput {
+                                            service: focused,
+                                            data: clip_text.into_bytes(),
+                                        })? + "\n";
                                     writer.write_all(input_req.as_bytes()).await?;
                                     writer.flush().await?;
                                 }
@@ -691,7 +721,11 @@ impl AttachedSessionClient {
                         // 2. Vim Visual Mode
                         if self.mode == UIMode::Visual {
                             let focused = self.focused_service_name().to_string();
-                            let rect = self.pane_rects.get(&focused).cloned().unwrap_or(Rect::new(0, 0, 80, 24));
+                            let rect = self
+                                .pane_rects
+                                .get(&focused)
+                                .cloned()
+                                .unwrap_or(Rect::new(0, 0, 80, 24));
                             let max_col = (rect.width.saturating_sub(2)) as usize;
                             let max_row = (rect.height.saturating_sub(2)) as usize;
                             let (mut col, mut row) = self.get_cursor(&focused);
@@ -702,7 +736,9 @@ impl AttachedSessionClient {
                                     self.selection = None;
                                     self.mode = UIMode::Navigation;
                                 }
-                                KeyCode::Char('w') | KeyCode::Char('W') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                                KeyCode::Char('w') | KeyCode::Char('W')
+                                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                                {
                                     self.selection = None;
                                     self.mode = UIMode::Navigation;
                                 }
@@ -710,7 +746,11 @@ impl AttachedSessionClient {
                                 // Yank / Copy selection
                                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
                                     if let Some(ref sel) = self.selection {
-                                        let text = self.extract_selected_text(&sel.service, sel.start, sel.end);
+                                        let text = self.extract_selected_text(
+                                            &sel.service,
+                                            sel.start,
+                                            sel.end,
+                                        );
                                         if !text.is_empty() {
                                             copy_to_clipboard(&text);
                                             self.copy_toast = Some((
@@ -797,9 +837,12 @@ impl AttachedSessionClient {
                             return Ok(0);
                         }
 
-
                         let focused = self.focused_service_name().to_string();
-                        let rect = self.pane_rects.get(&focused).cloned().unwrap_or(Rect::new(0, 0, 80, 24));
+                        let rect = self
+                            .pane_rects
+                            .get(&focused)
+                            .cloned()
+                            .unwrap_or(Rect::new(0, 0, 80, 24));
                         let max_col = (rect.width.saturating_sub(2)) as usize;
                         let max_row = (rect.height.saturating_sub(2)) as usize;
                         let (mut col, mut row) = self.get_cursor(&focused);
@@ -825,7 +868,9 @@ impl AttachedSessionClient {
                             KeyCode::Char('l') | KeyCode::Right => {
                                 col = col.saturating_add(1).min(max_col);
                             }
-                            KeyCode::Char('w') | KeyCode::Char('W') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            KeyCode::Char('w') | KeyCode::Char('W')
+                                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                            {
                                 self.selection = None;
                                 self.scroll_bottom();
                             }
@@ -862,7 +907,6 @@ impl AttachedSessionClient {
                                 self.scroll_bottom();
                             }
 
-
                             // Enter Vim Visual Selection Mode at current cursor position
                             KeyCode::Char('v') => {
                                 self.mode = UIMode::Visual;
@@ -889,7 +933,8 @@ impl AttachedSessionClient {
 
                             KeyCode::Tab => {
                                 if !self.service_names.is_empty() {
-                                    self.focused_index = (self.focused_index + 1) % self.service_names.len();
+                                    self.focused_index =
+                                        (self.focused_index + 1) % self.service_names.len();
                                 }
                             }
                             KeyCode::BackTab => {
@@ -909,13 +954,17 @@ impl AttachedSessionClient {
                             }
                             KeyCode::Char('r') | KeyCode::Char('R') => {
                                 let name = self.focused_service_name().to_string();
-                                let req = serde_json::to_string(&DaemonRequest::RestartService { service: name })? + "\n";
+                                let req = serde_json::to_string(&DaemonRequest::RestartService {
+                                    service: name,
+                                })? + "\n";
                                 writer.write_all(req.as_bytes()).await?;
                                 writer.flush().await?;
                             }
                             KeyCode::Char('c') | KeyCode::Char('C') => {
                                 let name = self.focused_service_name().to_string();
-                                let req = serde_json::to_string(&DaemonRequest::ClearBuffer { service: name.clone() })? + "\n";
+                                let req = serde_json::to_string(&DaemonRequest::ClearBuffer {
+                                    service: name.clone(),
+                                })? + "\n";
                                 writer.write_all(req.as_bytes()).await?;
                                 writer.flush().await?;
                                 self.scroll_offsets.insert(name.clone(), 0);
@@ -926,7 +975,11 @@ impl AttachedSessionClient {
                                 let focused = self.focused_service_name().to_string();
                                 if let Some(ref sel) = self.selection {
                                     if sel.service == focused && sel.start != sel.end {
-                                        let text = self.extract_selected_text(&sel.service, sel.start, sel.end);
+                                        let text = self.extract_selected_text(
+                                            &sel.service,
+                                            sel.start,
+                                            sel.end,
+                                        );
                                         if !text.is_empty() {
                                             copy_to_clipboard(&text);
                                             self.copy_toast = Some((
@@ -954,10 +1007,11 @@ impl AttachedSessionClient {
                             KeyCode::Char('p') => {
                                 if let Some(clip_text) = get_from_clipboard() {
                                     let focused = self.focused_service_name().to_string();
-                                    let input_req = serde_json::to_string(&DaemonRequest::SendInput {
-                                        service: focused,
-                                        data: clip_text.into_bytes(),
-                                    })? + "\n";
+                                    let input_req =
+                                        serde_json::to_string(&DaemonRequest::SendInput {
+                                            service: focused,
+                                            data: clip_text.into_bytes(),
+                                        })? + "\n";
                                     writer.write_all(input_req.as_bytes()).await?;
                                     writer.flush().await?;
                                 }
@@ -983,8 +1037,6 @@ impl AttachedSessionClient {
                     _ => {}
                 }
             }
-
-
         }
     }
 
@@ -1003,7 +1055,8 @@ impl AttachedSessionClient {
                 let sub = (-delta) as usize;
                 self.scroll_offsets.insert(name, old.saturating_sub(sub));
             } else {
-                self.scroll_offsets.insert(name, old.saturating_add(delta as usize));
+                self.scroll_offsets
+                    .insert(name, old.saturating_add(delta as usize));
             }
         }
     }
@@ -1014,9 +1067,11 @@ impl AttachedSessionClient {
             let old = self.horizontal_offsets.get(&name).copied().unwrap_or(0);
             if delta < 0 {
                 let sub = (-delta) as usize;
-                self.horizontal_offsets.insert(name, old.saturating_sub(sub));
+                self.horizontal_offsets
+                    .insert(name, old.saturating_sub(sub));
             } else {
-                self.horizontal_offsets.insert(name, old.saturating_add(delta as usize).min(200));
+                self.horizontal_offsets
+                    .insert(name, old.saturating_add(delta as usize).min(200));
             }
         }
     }
@@ -1047,9 +1102,9 @@ impl AttachedSessionClient {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(3),                                  // Header
+                Constraint::Length(3),                                      // Header
                 Constraint::Length(terminal_size.height.saturating_sub(5)), // Main Panes
-                Constraint::Length(2),                                  // Footer Bar
+                Constraint::Length(2),                                      // Footer Bar
             ])
             .split(terminal_size);
 
@@ -1062,7 +1117,12 @@ impl AttachedSessionClient {
 
         let toast_span = if let Some((msg, created)) = &self.copy_toast {
             if created.elapsed() < Duration::from_secs(3) {
-                Span::styled(format!("  {} ", msg), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))
+                Span::styled(
+                    format!("  {} ", msg),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )
             } else {
                 Span::raw("")
             }
@@ -1073,11 +1133,17 @@ impl AttachedSessionClient {
         let mode_badge = match self.mode {
             UIMode::Visual => Span::styled(
                 " 👁 VISUAL ",
-                Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
             ),
             UIMode::Interactive => Span::styled(
                 " ⌨ INTERACTIVE ",
-                Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
             ),
             UIMode::Navigation => Span::raw(""),
         };
@@ -1085,12 +1151,16 @@ impl AttachedSessionClient {
         let title_line = Line::from(vec![
             Span::styled(
                 format!(" WORKSPACE: {} [ATTACHED] ", self.workspace_name),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ),
             mode_badge,
             Span::styled(
                 format!(" Focused: [{}]", self.focused_service_name().to_uppercase()),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(" ● {}/{} Running", running_count, total),
@@ -1131,8 +1201,20 @@ impl AttachedSessionClient {
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(chunks[1]);
-            self.render_client_pane(f, cols[0], &services[0].name, self.focused_index % 2 == 0, services);
-            self.render_client_pane(f, cols[1], &services[1].name, self.focused_index % 2 == 1, services);
+            self.render_client_pane(
+                f,
+                cols[0],
+                &services[0].name,
+                self.focused_index % 2 == 0,
+                services,
+            );
+            self.render_client_pane(
+                f,
+                cols[1],
+                &services[1].name,
+                self.focused_index % 2 == 1,
+                services,
+            );
         } else {
             let half = (count + 1) / 2;
             let cols = Layout::default()
@@ -1146,53 +1228,155 @@ impl AttachedSessionClient {
                 .split(cols[0]);
             let right_rows = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints(vec![Constraint::Ratio(1, (count - half) as u32); count - half])
+                .constraints(vec![
+                    Constraint::Ratio(1, (count - half) as u32);
+                    count - half
+                ])
                 .split(cols[1]);
 
             let focused_name = self.focused_service_name().to_string();
             for i in 0..half {
-                self.render_client_pane(f, left_rows[i], &services[i].name, services[i].name == focused_name, services);
+                self.render_client_pane(
+                    f,
+                    left_rows[i],
+                    &services[i].name,
+                    services[i].name == focused_name,
+                    services,
+                );
             }
             for i in half..count {
-                self.render_client_pane(f, right_rows[i - half], &services[i].name, services[i].name == focused_name, services);
+                self.render_client_pane(
+                    f,
+                    right_rows[i - half],
+                    &services[i].name,
+                    services[i].name == focused_name,
+                    services,
+                );
             }
         }
 
         // Footer Bar (Always clearly visible with distinct background)
         let footer_line = match self.mode {
             UIMode::Visual => Line::from(vec![
-                Span::styled(" 👁 VISUAL ", Style::default().fg(Color::Black).bg(Color::Magenta).add_modifier(Modifier::BOLD)),
-                Span::styled(" [h/j/k/l or ↑↓←→]", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    " 👁 VISUAL ",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " [h/j/k/l or ↑↓←→]",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" Move Cursor  •  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[y/Enter]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "[y/Enter]",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" Yank/Copy  •  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[Esc/v]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "[Esc/v]",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" Cancel  •  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[0/$]", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "[0/$]",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" Line Start/End", Style::default().fg(Color::DarkGray)),
             ]),
             UIMode::Interactive => Line::from(vec![
-                Span::styled(" ⌨ INTERACTIVE ", Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::styled(format!(" Forwarding input to {}  •  ", self.focused_service_name().to_uppercase()), Style::default().fg(Color::White)),
-                Span::styled("[Esc]", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Span::styled(" Exit Interactive  •  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[Ctrl+V]", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    " ⌨ INTERACTIVE ",
+                    Style::default()
+                        .fg(Color::Black)
+                        .bg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        " Forwarding input to {}  •  ",
+                        self.focused_service_name().to_uppercase()
+                    ),
+                    Style::default().fg(Color::White),
+                ),
+                Span::styled(
+                    "[Esc]",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " Exit Interactive  •  ",
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    "[Ctrl+V]",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" Paste", Style::default().fg(Color::DarkGray)),
             ]),
             UIMode::Navigation => Line::from(vec![
-                Span::styled(" [Tab/Click]", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    " [Tab/Click]",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" Focus  •  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[v]", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "[v]",
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" Visual Select  •  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[d]", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-                Span::styled(" Detach (Keep Running)  •  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[q/Ctrl+C]", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "[d]",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    " Detach (Keep Running)  •  ",
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    "[q/Ctrl+C]",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" Stop Session  •  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[i/Enter]", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "[i/Enter]",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" Interact  •  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[y/p]", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "[y/p]",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" Copy/Paste  •  ", Style::default().fg(Color::DarkGray)),
-                Span::styled("[↑↓/k j]", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "[↑↓/k j]",
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" Scroll", Style::default().fg(Color::DarkGray)),
             ]),
         };
@@ -1206,7 +1390,14 @@ impl AttachedSessionClient {
         f.render_widget(paragraph, chunks[2]);
     }
 
-    fn render_client_pane(&mut self, f: &mut Frame, area: Rect, name: &str, is_focused: bool, services: &[ServiceInfo]) {
+    fn render_client_pane(
+        &mut self,
+        f: &mut Frame,
+        area: Rect,
+        name: &str,
+        is_focused: bool,
+        services: &[ServiceInfo],
+    ) {
         self.pane_rects.insert(name.to_string(), area);
 
         let svc_info = services.iter().find(|s| s.name == name);
@@ -1224,7 +1415,12 @@ impl AttachedSessionClient {
 
         let port_str = if let Some(info) = svc_info {
             if info.ports.len() > 1 {
-                let formatted = info.ports.iter().map(|p| format!(":{}", p)).collect::<Vec<_>>().join(", ");
+                let formatted = info
+                    .ports
+                    .iter()
+                    .map(|p| format!(":{}", p))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!(" ports {} ", formatted)
             } else if info.port > 0 {
                 format!(" http://localhost:{} ", info.port)
@@ -1235,7 +1431,11 @@ impl AttachedSessionClient {
             String::new()
         };
 
-        let actual_offset = self.cached_panes.get(name).map(|p| p.actual_offset).unwrap_or(0);
+        let actual_offset = self
+            .cached_panes
+            .get(name)
+            .map(|p| p.actual_offset)
+            .unwrap_or(0);
         let horiz_offset = self.horizontal_offsets.get(name).copied().unwrap_or(0);
 
         let scroll_badge = if actual_offset > 0 {
@@ -1260,13 +1460,19 @@ impl AttachedSessionClient {
             Color::DarkGray
         };
 
-
         let title_line = Line::from(vec![
             Span::styled(
                 format!(" {} ", name.to_uppercase()),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(status_desc.0, Style::default().fg(status_desc.1).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                status_desc.0,
+                Style::default()
+                    .fg(status_desc.1)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(port_str, Style::default().fg(Color::Magenta)),
             Span::styled(horiz_badge, Style::default().fg(Color::Cyan)),
             Span::styled(scroll_badge, Style::default().fg(Color::Yellow)),
@@ -1309,14 +1515,20 @@ impl AttachedSessionClient {
         // 2. Render virtual cursor if this pane is focused and not in interactive mode
         if is_focused && self.mode != UIMode::Interactive {
             let cursor = self.get_cursor(name);
-            visible_lines = Self::apply_cursor_highlight(visible_lines, cursor.0, cursor.1, self.mode);
+            visible_lines =
+                Self::apply_cursor_highlight(visible_lines, cursor.0, cursor.1, self.mode);
         }
 
         let paragraph = Paragraph::new(visible_lines).block(block);
         f.render_widget(paragraph, area);
     }
 
-    pub fn extract_selected_text(&self, service: &str, start: (usize, usize), end: (usize, usize)) -> String {
+    pub fn extract_selected_text(
+        &self,
+        service: &str,
+        start: (usize, usize),
+        end: (usize, usize),
+    ) -> String {
         let mut visible_lines = Vec::new();
         if let Some(pane_resp) = self.cached_panes.get(service) {
             for row in &pane_resp.rows {
@@ -1409,7 +1621,6 @@ impl AttachedSessionClient {
             let span_end = span_start + span_len;
             cur_col += span_len;
 
-
             if !cursor_rendered && cursor_col >= span_start && cursor_col < span_end {
                 let offset = cursor_col - span_start;
                 // 1. Before cursor
@@ -1457,7 +1668,7 @@ impl AttachedSessionClient {
             .fg(Color::Rgb(255, 255, 255))
             .add_modifier(Modifier::BOLD);
 
-        for row_idx in 0..lines.len() {
+        for (row_idx, line) in lines.iter_mut().enumerate() {
             if row_idx < start_r || row_idx > end_r {
                 continue;
             }
@@ -1476,7 +1687,7 @@ impl AttachedSessionClient {
                 continue;
             }
 
-            let old_spans = std::mem::take(&mut lines[row_idx].spans);
+            let old_spans = std::mem::take(&mut line.spans);
             let mut new_spans = Vec::new();
             let mut cur_col = 0;
 
@@ -1496,21 +1707,28 @@ impl AttachedSessionClient {
                 } else {
                     // 1. Part before selection
                     if from_col > span_start {
-                        let before_str: String = span_chars[0..(from_col - span_start)].iter().collect();
+                        let before_str: String =
+                            span_chars[0..(from_col - span_start)].iter().collect();
                         new_spans.push(Span::styled(before_str, span.style));
                     }
 
                     // 2. Selected part
-                    let sel_start_idx = if from_col > span_start { from_col - span_start } else { 0 };
-                    let sel_end_idx = if to_col < span_end { to_col - span_start } else { span_len };
+                    let sel_start_idx = from_col.saturating_sub(span_start);
+                    let sel_end_idx = if to_col < span_end {
+                        to_col - span_start
+                    } else {
+                        span_len
+                    };
                     if sel_start_idx < sel_end_idx {
-                        let sel_str: String = span_chars[sel_start_idx..sel_end_idx].iter().collect();
+                        let sel_str: String =
+                            span_chars[sel_start_idx..sel_end_idx].iter().collect();
                         new_spans.push(Span::styled(sel_str, sel_style));
                     }
 
                     // 3. Part after selection
                     if to_col < span_end {
-                        let after_str: String = span_chars[(to_col - span_start)..span_len].iter().collect();
+                        let after_str: String =
+                            span_chars[(to_col - span_start)..span_len].iter().collect();
                         new_spans.push(Span::styled(after_str, span.style));
                     }
                 }
@@ -1521,12 +1739,11 @@ impl AttachedSessionClient {
                 new_spans.push(Span::styled(" ", sel_style));
             }
 
-            lines[row_idx].spans = new_spans;
+            line.spans = new_spans;
         }
 
         lines
     }
-
 }
 
 #[cfg(test)]
@@ -1544,7 +1761,8 @@ mod tests {
             Span::raw(" of Ratatui!"),
         ]);
 
-        let highlighted = AttachedSessionClient::apply_selection_highlight(vec![line], (6, 0), (11, 0));
+        let highlighted =
+            AttachedSessionClient::apply_selection_highlight(vec![line], (6, 0), (11, 0));
         assert_eq!(highlighted.len(), 1);
 
         // "World" (cols 6..11) should be styled with selection style
@@ -1569,11 +1787,17 @@ mod tests {
         // Line 0: cols 6.. should be selected
         assert_eq!(highlighted[0].spans[0].content, "First ");
         assert_eq!(highlighted[0].spans[1].content, "Line 12345");
-        assert_eq!(highlighted[0].spans[1].style.bg, Some(Color::Rgb(50, 95, 175)));
+        assert_eq!(
+            highlighted[0].spans[1].style.bg,
+            Some(Color::Rgb(50, 95, 175))
+        );
 
         // Line 1: cols 0..11 should be selected
         assert_eq!(highlighted[1].spans[0].content, "Second Line");
-        assert_eq!(highlighted[1].spans[0].style.bg, Some(Color::Rgb(50, 95, 175)));
+        assert_eq!(
+            highlighted[1].spans[0].style.bg,
+            Some(Color::Rgb(50, 95, 175))
+        );
         assert_eq!(highlighted[1].spans[1].content, " 67890");
 
         // Line 2: unselected
@@ -1584,7 +1808,8 @@ mod tests {
     #[test]
     fn test_apply_cursor_highlight_in_middle_of_line() {
         let line = Line::from("Hello World");
-        let highlighted = AttachedSessionClient::apply_cursor_highlight(vec![line], 6, 0, UIMode::Navigation);
+        let highlighted =
+            AttachedSessionClient::apply_cursor_highlight(vec![line], 6, 0, UIMode::Navigation);
         assert_eq!(highlighted.len(), 1);
         let spans = &highlighted[0].spans;
         assert_eq!(spans[0].content, "Hello ");
@@ -1596,7 +1821,8 @@ mod tests {
     #[test]
     fn test_apply_cursor_highlight_at_empty_line() {
         let line = Line::from("");
-        let highlighted = AttachedSessionClient::apply_cursor_highlight(vec![line], 0, 0, UIMode::Visual);
+        let highlighted =
+            AttachedSessionClient::apply_cursor_highlight(vec![line], 0, 0, UIMode::Visual);
         assert_eq!(highlighted.len(), 1);
         let spans = &highlighted[0].spans;
         assert_eq!(spans[0].content, " ");

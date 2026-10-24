@@ -1,12 +1,15 @@
 # 🌲 Worktree & Multi-Repository Git Management
 
-Managing feature branches, code synchronization, and read-only worktree protections across multiple Git repositories is seamless with `ws`.
+Managing feature branches, code synchronization, and read-only worktree
+protections across multiple Git repositories is seamless with `ws`.
 
 ---
 
 ## 🌿 Feature Branching in Polyrepos
 
-In multi-repository architectures, a single feature often requires synchronized changes across several repositories (e.g. backend API endpoints, mobile screens, shared TypeScript contracts).
+In multi-repository architectures, a single feature often requires synchronized
+changes across several repositories (e.g. backend API endpoints, mobile screens,
+shared TypeScript contracts).
 
 `ws` provides three flexible branching patterns during workspace creation:
 
@@ -38,21 +41,26 @@ ws create @feat-oauth %server:main:existing %mobile:feature/auth-screen:new
 ws create @prod-debug --all --existing
 ```
 
-- Checks out existing branches matching `@prod-debug` or default branches across every configured repository.
+- Checks out existing branches matching `@prod-debug` or default branches across
+  every configured repository.
 
 ---
 
 ## 🔒 Tracked File Locking (`ws repo lock` / `ws lock`)
 
-When working on a frontend or mobile feature, you may need a running backend server without wanting to accidentally edit backend code.
+When working on a frontend or mobile feature, you may need a running backend
+server without wanting to accidentally edit backend code.
 
 ### The Problem with Traditional Worktrees
 
-If you keep a backend repository in your editor workspace, accidental keystrokes or refactoring tools (e.g. IDE rename symbol) can modify backend files unintentionally.
+If you keep a backend repository in your editor workspace, accidental keystrokes
+or refactoring tools (e.g. IDE rename symbol) can modify backend files
+unintentionally.
 
 ### The `ws` Locking Solution
 
-`ws lock` sets write permissions on all **Git-tracked files** to read-only (`chmod a-w` via `git ls-files`):
+`ws lock` sets write permissions on all **Git-tracked files** to read-only
+(`chmod a-w` via `git ls-files`):
 
 ```bash
 ws repo lock @develop %server
@@ -62,10 +70,14 @@ ws lock @develop %server
 
 ### Why This Is Safe:
 
-- **Git-Tracked Files**: Set to read-only (`r--r--r--`). Your editor will prevent saving edits.
-- **Untracked & Build Files**: Directories such as `node_modules/`, `target/`, `dist/`, `.env`, and build caches **remain writable**.
-- **Services Continue Running**: Build tools and compilers continue generating artifacts without error.
-- **Git Operations Protected**: `ws push` automatically skips locked repositories so you never accidentally push unwanted changes.
+- **Git-Tracked Files**: Set to read-only (`r--r--r--`). Your editor will
+  prevent saving edits.
+- **Untracked & Build Files**: Directories such as `node_modules/`, `target/`,
+  `dist/`, `.env`, and build caches **remain writable**.
+- **Services Continue Running**: Build tools and compilers continue generating
+  artifacts without error.
+- **Git Operations Protected**: `ws push` automatically skips locked
+  repositories so you never accidentally push unwanted changes.
 
 ### Unlocking a Worktree
 
@@ -102,7 +114,8 @@ Output:
 
 ## ⬆️ Safe Multi-Repo Push (`ws push`)
 
-Push committed changes across workspace repositories to their respective remotes:
+Push committed changes across workspace repositories to their respective
+remotes:
 
 ```bash
 # Push all active repositories:
@@ -119,7 +132,8 @@ ws push @develop --remote upstream
 
 - **Never Auto-Commits**: `ws` never stages or commits uncommitted changes.
 - **Never Force Pushes**: Standard `git push` is executed safely.
-- **Skips Locked Repositories**: Any repository marked `LOCKED` is automatically skipped.
+- **Skips Locked Repositories**: Any repository marked `LOCKED` is automatically
+  skipped.
 
 ---
 
@@ -131,7 +145,9 @@ Pull upstream updates across all repositories in your workspace:
 ws pull @develop
 ```
 
-If a conflict, dirty worktree, or network error occurs in any repository, `ws` displays a structured diagnostic report showing the exact error and guidance for resolution.
+If a conflict, dirty worktree, or network error occurs in any repository, `ws`
+displays a structured diagnostic report showing the exact error and guidance for
+resolution.
 
 ---
 

@@ -4,11 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "_native"
-crate-type = ["cdylib", "rlib"]
+name = "ws_tui"
 
 [dependencies]
-pyo3 = { version = "0.23", features = ["extension-module", "abi3-py312"] }
 
 ratatui = "0.26"
 crossterm = { version = "0.27", features = ["event-stream"] }
@@ -25,3 +23,6 @@ arboard = { version = "3.4", default-features = false }
 base64 = "0.22"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+
+[lints]
+workspace = true

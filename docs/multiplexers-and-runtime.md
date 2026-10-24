@@ -1,6 +1,9 @@
 # 🖥️ Multiplexers, Presentation Engines & Runtime
 
-`ws` provides a versatile suite of presentation engines for running and monitoring multi-service workspaces. Whether you prefer an interactive native TUI, side-by-side Tmux vertical panes, Zellij, or detached background daemons, `ws` supports them all with **zero-downtime switching**.
+`ws` provides a versatile suite of presentation engines for running and
+monitoring multi-service workspaces. Whether you prefer an interactive native
+TUI, side-by-side Tmux vertical panes, Zellij, or detached background daemons,
+`ws` supports them all with **zero-downtime switching**.
 
 ---
 
@@ -19,7 +22,8 @@
 
 ## 1. Interactive Rust TUI
 
-The default presentation engine is a high-performance terminal UI built with Rust, `ratatui`, and `crossterm`.
+The default presentation engine is a high-performance terminal UI built with
+Rust, `ratatui`, and `crossterm`.
 
 ```bash
 ws start @develop
@@ -42,25 +46,31 @@ ws start @develop
 
 ## 2. Tmux Integration
 
-`ws` provides first-class support for `tmux` across two dimensions: **Workspace Window Management** and **Multi-Service Panes**.
+`ws` provides first-class support for `tmux` across two dimensions: **Workspace
+Window Management** and **Multi-Service Panes**.
 
 ### A. Workspace Window Management (`repositories.yml`)
 
-Configure `tmux:` in your `repositories.yml` to have `ws` manage a dedicated window for each workspace inside your project tmux session:
+Configure `tmux:` in your `repositories.yml` to have `ws` manage a dedicated
+window for each workspace inside your project tmux session:
 
 ```yaml
 tmux:
-  session: "Workspace"   # Project session name
-  command: "nvim"        # Optional startup command (default: user shell)
+  session: 'Workspace' # Project session name
+  command: 'nvim' # Optional startup command (default: user shell)
 ```
 
-- **`ws create @feature`**: Automatically adds a background window named `@feature` (working directory: workspace root) inside session `Workspace`.
-- **`ws focus @feature`** (or `ws switch @feature`): Switches your tmux client directly to the workspace window.
-- **`ws end @feature`**: Safely closes the workspace and removes the tmux window.
+- **`ws create @feature`**: Automatically adds a background window named
+  `@feature` (working directory: workspace root) inside session `Workspace`.
+- **`ws focus @feature`** (or `ws switch @feature`): Switches your tmux client
+  directly to the workspace window.
+- **`ws end @feature`**: Safely closes the workspace and removes the tmux
+  window.
 
 ### B. Vertical Side-by-Side Service Panes (`ws start --tmux`)
 
-For monitoring multi-service log output, `ws` launches services in side-by-side **vertical columns** (`tmux split-window -h`) with an `even-horizontal` layout:
+For monitoring multi-service log output, `ws` launches services in side-by-side
+**vertical columns** (`tmux split-window -h`) with an `even-horizontal` layout:
 
 ```bash
 ws start @develop --tmux
@@ -68,15 +78,19 @@ ws start @develop --tmux
 
 #### Features:
 
-- **Automatic Session & Window Naming**: Named `ws-<workspace_name>` (e.g. `ws-develop`).
-- **Vertical Columns**: Services sit side-by-side across your monitor, allowing easy horizontal comparison of frontend, backend, and database logs.
-- **Tmux Native Keybindings**: Use standard `Ctrl+B + [o / Arrow Keys]` to navigate between panes.
+- **Automatic Session & Window Naming**: Named `ws-<workspace_name>` (e.g.
+  `ws-develop`).
+- **Vertical Columns**: Services sit side-by-side across your monitor, allowing
+  easy horizontal comparison of frontend, backend, and database logs.
+- **Tmux Native Keybindings**: Use standard `Ctrl+B + [o / Arrow Keys]` to
+  navigate between panes.
 
 ---
 
 ## 3. Zellij Integration (Tiled Split Grid)
 
-For users of [Zellij](https://zellij.dev), `ws` automatically generates a tailored KDL layout file and launches a tiled session:
+For users of [Zellij](https://zellij.dev), `ws` automatically generates a
+tailored KDL layout file and launches a tiled session:
 
 ```bash
 ws start @develop --zellij
@@ -88,7 +102,8 @@ ws start @develop -z
 
 ## 4. Detached Daemon Mode (`-d`)
 
-Run services completely in the background without locking your current terminal shell:
+Run services completely in the background without locking your current terminal
+shell:
 
 ```bash
 ws start @develop -d
@@ -104,7 +119,8 @@ ws info @develop
 
 ## 5. Zero-Downtime Presentation Switching
 
-You can switch between any presentation engine on-the-fly without killing or restarting running services.
+You can switch between any presentation engine on-the-fly without killing or
+restarting running services.
 
 ### Recipe 1: Start Headless ➔ Attach in Tmux
 
@@ -134,7 +150,9 @@ ws attach @develop -z --switch
 
 ## 6. Direct Terminal Bridge (`ws bridge`)
 
-When you need to send interactive stdin (e.g. debugging prompts, inputting 2FA codes, or running interactive CLI commands) directly to a service running under the daemon:
+When you need to send interactive stdin (e.g. debugging prompts, inputting 2FA
+codes, or running interactive CLI commands) directly to a service running under
+the daemon:
 
 ```bash
 ws bridge @develop %mobile
