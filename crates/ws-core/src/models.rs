@@ -29,6 +29,7 @@ pub fn clean_env_val(val: &str) -> String {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct RepoConfig {
+    #[serde(default, skip_serializing)]
     pub name: String,
     pub bare: PathBuf,
     pub checkout: String,
@@ -44,9 +45,15 @@ pub struct RepoConfig {
     pub secret_env: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub private_env: HashMap<String, String>,
-    #[serde(default = "default_env_file")]
+    #[serde(
+        default = "default_env_file",
+        skip_serializing_if = "is_default_env_file"
+    )]
     pub env_file: String,
-    #[serde(default = "default_env_example")]
+    #[serde(
+        default = "default_env_example",
+        skip_serializing_if = "is_default_env_example"
+    )]
     pub env_example: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub setup: Vec<String>,
@@ -62,8 +69,16 @@ fn default_env_file() -> String {
     ".env".to_string()
 }
 
+fn is_default_env_file(s: &str) -> bool {
+    s == ".env"
+}
+
 fn default_env_example() -> String {
     ".env.example".to_string()
+}
+
+fn is_default_env_example(s: &str) -> bool {
+    s == ".env.example"
 }
 
 impl RepoConfig {
@@ -108,15 +123,18 @@ impl RepoConfig {
             .as_mapping()
             .ok_or_else(|| format!("Repo '{}' must be a mapping", name))?;
 
+        let clean_name = name.trim_start_matches(['%', '+', ':', '#', '$']);
+
         let bare_str = mapping
             .get(serde_yaml::Value::String("bare".to_string()))
             .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("Repository '{}' missing required 'bare'", name))?;
+            .ok_or_else(|| format!("Repository '{}' missing required 'bare'", clean_name))?;
 
         let checkout_str = mapping
             .get(serde_yaml::Value::String("checkout".to_string()))
             .and_then(|v| v.as_str())
-            .ok_or_else(|| format!("Repository '{}' missing required 'checkout'", name))?;
+            .ok_or_else(|| format!("Repository '{}' missing required 'checkout'", clean_name))?;
+        let clean_checkout = checkout_str.trim_start_matches(['%', '+', ':', '#', '$']);
 
         let url = mapping
             .get(serde_yaml::Value::String("url".to_string()))
@@ -268,9 +286,9 @@ impl RepoConfig {
         }
 
         Ok(Self {
-            name: name.to_string(),
+            name: clean_name.to_string(),
             bare: PathBuf::from(bare_str),
-            checkout: checkout_str.to_string(),
+            checkout: clean_checkout.to_string(),
             url,
             port: port_val,
             ports: ports_dict,

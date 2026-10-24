@@ -86,20 +86,29 @@ impl EnvEngine {
 
         // 1. Workspace variables
         result = result.replace("${WORKSPACE_NAME}", workspace_name);
+        result = result.replace("${WS_NAME}", workspace_name);
         result = result.replace("${REPO_NAME}", repo_name);
+        result = result.replace("${REPO}", repo_name);
         result = result.replace("${WORKSPACE_SLOT}", &slot.to_string());
+        result = result.replace("${WS_SLOT}", &slot.to_string());
 
         // 2. Path variables
         if let Some(pr) = project_root {
             result = result.replace("${PROJECT_DIR}", &pr.display().to_string());
             result = result.replace("${PROJECT_ROOT}", &pr.display().to_string());
+            result = result.replace("${ROOT_DIR}", &pr.display().to_string());
+            result = result.replace("${SCRIPTS_DIR}", &pr.join("scripts").display().to_string());
         }
         if let Some(wd) = workspaces_dir {
             result = result.replace("${WORKSPACES_DIR}", &wd.display().to_string());
-            result = result.replace(
-                "${WORKSPACE_DIR}",
-                &wd.join(workspace_name).display().to_string(),
-            );
+            let ws_path = wd.join(workspace_name);
+            result = result.replace("${WORKSPACE_DIR}", &ws_path.display().to_string());
+            result = result.replace("${WS_DIR}", &ws_path.display().to_string());
+            if !repo_name.is_empty() {
+                let wt_p = ws_path.join(repo_name);
+                result = result.replace("${WORKTREE_DIR}", &wt_p.display().to_string());
+                result = result.replace("${WT_DIR}", &wt_p.display().to_string());
+            }
         }
 
         // 3. Port expressions ${PORT:3000} -> base + slot * 10
@@ -879,5 +888,25 @@ mod tests {
             None,
         );
         assert_eq!(offset_res, "8015");
+
+        let pr = Path::new("/my/project");
+        let wd = Path::new("/my/project/workspaces");
+        let path_res = EnvEngine::resolve_template_string(
+            "${SCRIPTS_DIR}/init.sh on ${WORKSPACE_DIR} / ${PROJECT_ROOT} / ${WORKTREE_DIR}",
+            "develop",
+            "webapp",
+            1,
+            Some(pr),
+            Some(wd),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            path_res,
+            "/my/project/scripts/init.sh on /my/project/workspaces/develop / /my/project / /my/project/workspaces/develop/webapp"
+        );
     }
 }

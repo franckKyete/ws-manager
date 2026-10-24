@@ -26,9 +26,9 @@ impl TmuxLauncher {
             .is_ok_and(|o| o.status.success())
     }
 
-    pub fn is_window_active(session_name: &str, window_name: &str) -> bool {
+    pub fn find_window_name(session_name: &str, window_name: &str) -> Option<String> {
         if !Self::is_session_active(session_name) {
-            return false;
+            return None;
         }
         if let Ok(out) = Command::new("tmux")
             .args(["list-windows", "-t", session_name, "-F", "#{window_name}"])
@@ -36,10 +36,21 @@ impl TmuxLauncher {
         {
             if out.status.success() {
                 let stdout = String::from_utf8_lossy(&out.stdout);
-                return stdout.lines().any(|l| l.trim() == window_name);
+                let clean = window_name.trim_start_matches('@');
+                let with_at = format!("@{}", clean);
+                for line in stdout.lines() {
+                    let t = line.trim();
+                    if t == window_name || t == clean || t == with_at {
+                        return Some(t.to_string());
+                    }
+                }
             }
         }
-        false
+        None
+    }
+
+    pub fn is_window_active(session_name: &str, window_name: &str) -> bool {
+        Self::find_window_name(session_name, window_name).is_some()
     }
 
     pub fn is_window_running(project_name: &str, window_name: &str) -> bool {
@@ -124,11 +135,15 @@ impl TmuxLauncher {
         if !Self::is_available() {
             return false;
         }
-        let target = format!("{}:{}", session_name, window_name);
+        let target_win = match Self::find_window_name(session_name, window_name) {
+            Some(w) => w,
+            None => window_name.to_string(),
+        };
+        let target = format!("{}:{}", session_name, target_win);
+        let _ = Command::new("tmux")
+            .args(["select-window", "-t", &target])
+            .status();
         if std::env::var("TMUX").is_ok() {
-            let _ = Command::new("tmux")
-                .args(["select-window", "-t", &target])
-                .status();
             let _ = Command::new("tmux")
                 .args(["switch-client", "-t", &target])
                 .status();
@@ -145,7 +160,11 @@ impl TmuxLauncher {
         if !Self::is_session_active(session_name) {
             return false;
         }
-        let target = format!("{}:{}", session_name, window_name);
+        let target_win = match Self::find_window_name(session_name, window_name) {
+            Some(w) => w,
+            None => window_name.to_string(),
+        };
+        let target = format!("{}:{}", session_name, target_win);
         Command::new("tmux")
             .args(["kill-window", "-t", &target])
             .output()

@@ -13,9 +13,7 @@ pub fn execute_add(manager: &mut WorkspaceManager, repo_input: &str) -> Result<(
     manager
         .init_project(&[repo_input.to_string()])
         .map_err(|e| e.to_string())?;
-    OutputHandler::print_success(&format!(
-        "Added repository '{}' to repositories.yml",
-        repo_input
-    ));
+    let (name, _, _, _) = WorkspaceManager::parse_repo_url(repo_input);
+    OutputHandler::print_success(&format!("Added repository '{}' to repositories.yml", name));
     Ok(())
 }

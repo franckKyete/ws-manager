@@ -100,9 +100,11 @@ impl ConfigLoader {
                     if let Some(repos_map) = repos_val.as_mapping() {
                         for (k, v) in repos_map {
                             if let Some(r_name) = k.as_str() {
-                                let cfg = RepoConfig::from_yaml_value(r_name, v)
+                                let clean_r_name =
+                                    r_name.trim_start_matches(['%', '+', ':', '#', '$']);
+                                let cfg = RepoConfig::from_yaml_value(clean_r_name, v)
                                     .map_err(WSError::Config)?;
-                                repos.insert(r_name.to_string(), cfg);
+                                repos.insert(clean_r_name.to_string(), cfg);
                             }
                         }
                     }

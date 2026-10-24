@@ -220,6 +220,10 @@ placeholders inside commands, environment variable values, and setup scripts:
 | `${WORKSPACE_NAME}`        | Name of the active workspace                      | `feat-auth`                                     |
 | `${WORKSPACE_SLOT}`        | Deterministic integer slot index of the workspace | `0`, `1`, `2`                                   |
 | `${WORKSPACE_PATH}`        | Absolute path to the workspace root               | `/path/to/workspaces/@feat-auth`                |
+| `${WORKSPACE_DIR}`         | Absolute path to the workspace root directory     | `/path/to/workspaces/@feat-auth`                |
+| `${PROJECT_ROOT}`          | Absolute path to the project root directory       | `/path/to/project`                              |
+| `${PROJECT_DIR}`           | Alias for `${PROJECT_ROOT}`                       | `/path/to/project`                              |
+| `${SCRIPTS_DIR}`           | Path to project root automation scripts directory | `/path/to/project/scripts`                      |
 | `${REPO_NAME}`             | Alias of the target repository                    | `server`                                        |
 | `${REPO_PATH}`             | Absolute path to the repository worktree          | `/path/to/workspaces/@feat-auth/Renttik-server` |
 | `${LAN_IP}`                | Auto-detected host LAN Wi-Fi IP address           | `192.168.1.45`                                  |

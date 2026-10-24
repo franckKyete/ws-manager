@@ -168,10 +168,11 @@ impl WorkspaceManager {
     }
 
     pub fn validate_repository_config(&self, repo_name: &str) -> Result<RepoConfig, WSError> {
-        let repo_cfg = self.config.repositories.get(repo_name).ok_or_else(|| {
+        let clean_name = repo_name.trim_start_matches(['%', '+', ':', '#', '$']);
+        let repo_cfg = self.config.repositories.get(clean_name).ok_or_else(|| {
             WSError::RepositoryNotFound(format!(
                 "Repository '{}' is not defined in configuration. Configured repositories: {}",
-                repo_name,
+                clean_name,
                 self.config
                     .repositories
                     .keys()
@@ -185,7 +186,7 @@ impl WorkspaceManager {
         if !self.git.is_bare_repo(&bare_path) {
             return Err(WSError::RepositoryNotFound(format!(
                 "Bare Git repository for '{}' not found or invalid at: {}",
-                repo_name,
+                clean_name,
                 bare_path.display()
             )));
         }
@@ -1185,15 +1186,41 @@ impl WorkspaceManager {
             ));
         }
 
-        let sess_name = &tmux_cfg.session;
-        if !TmuxLauncher::is_window_active(sess_name, name) {
+        let clean_name = name.trim_start_matches('@');
+        let ws_dir = self.get_workspace_dir(clean_name);
+        if !self.has_workspace(clean_name) && !ws_dir.exists() {
             return Err(WSError::WorkspaceNotFound(format!(
-                "Tmux window '@{}' not found in session '{}'.",
-                name, sess_name
+                "Workspace '@{}' does not exist.",
+                clean_name
             )));
         }
 
-        Ok(TmuxLauncher::focus_workspace_window(sess_name, name))
+        let sess_name = &tmux_cfg.session;
+        let win_to_focus = match TmuxLauncher::find_window_name(sess_name, clean_name) {
+            Some(w) => w,
+            None => {
+                let win_cmd = tmux_cfg.command.as_deref();
+                OutputHandler::print_info(&format!(
+                    "Opening tmux window '@{}' in session '{}'...",
+                    clean_name, sess_name
+                ));
+                let created = TmuxLauncher::create_workspace_window(
+                    sess_name, clean_name, &ws_dir, win_cmd, false,
+                );
+                if !created {
+                    return Err(WSError::Workspace(format!(
+                        "Failed to create tmux window '@{}' in session '{}'.",
+                        clean_name, sess_name
+                    )));
+                }
+                clean_name.to_string()
+            }
+        };
+
+        Ok(TmuxLauncher::focus_workspace_window(
+            sess_name,
+            &win_to_focus,
+        ))
     }
 
     pub fn get_launch_session_name(&self) -> String {
@@ -1511,7 +1538,7 @@ impl WorkspaceManager {
 
     pub fn parse_repo_url(input_str: &str) -> (String, String, PathBuf, String) {
         let input_str = input_str.trim();
-        let (mut name, url) = if input_str.contains('=')
+        let (mut name, mut url) = if input_str.contains('=')
             && !input_str.starts_with("http://")
             && !input_str.starts_with("https://")
             && !input_str.starts_with("git@")
@@ -1522,25 +1549,33 @@ impl WorkspaceManager {
             (String::new(), input_str.to_string())
         };
 
+        name = name
+            .trim_start_matches(&['%', '+', ':', '#', '$'][..])
+            .to_string();
+        url = url
+            .trim_start_matches(&['%', '+', ':', '#', '$'][..])
+            .to_string();
+
         let clean_url = url.trim_end_matches('/');
         let base_url = clean_url.strip_suffix(".git").unwrap_or(clean_url);
-        let base_name = base_url
+        let raw_base_name = base_url
             .split('/')
             .next_back()
             .unwrap_or("")
             .split(':')
             .next_back()
             .unwrap_or("");
+        let clean_base_name = raw_base_name.trim_start_matches(&['%', '+', ':', '#', '$'][..]);
 
         if name.is_empty() {
-            name = base_name.to_lowercase();
+            name = clean_base_name.to_lowercase();
         }
 
-        let checkout = base_name.to_string();
-        let bare_name = if base_name.ends_with(".git") {
-            base_name.to_string()
+        let checkout = clean_base_name.to_string();
+        let bare_name = if clean_base_name.ends_with(".git") {
+            clean_base_name.to_string()
         } else {
-            format!("{}.git", base_name)
+            format!("{}.git", clean_base_name)
         };
         let bare_path = PathBuf::from("bares").join(bare_name);
 
@@ -2088,11 +2123,29 @@ impl WorkspaceManager {
                 let t0 = Instant::now();
                 let mut env_map = global_vars.clone();
                 env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
+                env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
                 env_map.insert(
                     "PROJECT_ROOT".to_string(),
                     self.config.project_root.display().to_string(),
                 );
+                env_map.insert(
+                    "PROJECT_DIR".to_string(),
+                    self.config.project_root.display().to_string(),
+                );
+                env_map.insert(
+                    "ROOT_DIR".to_string(),
+                    self.config.project_root.display().to_string(),
+                );
+                env_map.insert(
+                    "SCRIPTS_DIR".to_string(),
+                    self.config
+                        .project_root
+                        .join("scripts")
+                        .display()
+                        .to_string(),
+                );
                 env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
+                env_map.insert("WS_DIR".to_string(), ws_dir.display().to_string());
 
                 let ret = run_shell_command(&expanded, &ws_dir, Some(&env_map));
                 let elapsed = t0.elapsed().as_secs_f64();
@@ -2271,13 +2324,33 @@ impl WorkspaceManager {
                 let t0 = Instant::now();
                 let mut proc_env = env_vars.clone();
                 proc_env.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
+                proc_env.insert("WS_NAME".to_string(), workspace_name.to_string());
                 proc_env.insert("REPO_NAME".to_string(), r_name.clone());
+                proc_env.insert("REPO".to_string(), r_name.clone());
                 proc_env.insert(
                     "PROJECT_ROOT".to_string(),
                     self.config.project_root.display().to_string(),
                 );
+                proc_env.insert(
+                    "PROJECT_DIR".to_string(),
+                    self.config.project_root.display().to_string(),
+                );
+                proc_env.insert(
+                    "ROOT_DIR".to_string(),
+                    self.config.project_root.display().to_string(),
+                );
+                proc_env.insert(
+                    "SCRIPTS_DIR".to_string(),
+                    self.config
+                        .project_root
+                        .join("scripts")
+                        .display()
+                        .to_string(),
+                );
                 proc_env.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
+                proc_env.insert("WS_DIR".to_string(), ws_dir.display().to_string());
                 proc_env.insert("WORKTREE_DIR".to_string(), wt_path.display().to_string());
+                proc_env.insert("WT_DIR".to_string(), wt_path.display().to_string());
 
                 let ret = run_shell_command(&expanded, &wt_path, Some(&proc_env));
                 let elapsed = t0.elapsed().as_secs_f64();
@@ -3666,4 +3739,120 @@ fn rand_or_time_u16() -> u16 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
     (now.as_millis() & 0xFFFF) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn test_parse_repo_url_sigil_stripping() {
+        // Test % sigil with explicit name
+        let (name, url, bare, checkout) = WorkspaceManager::parse_repo_url(
+            "%mobile=git@github.com:Fantastik-sarl/stocktik-mobile.git",
+        );
+        assert_eq!(name, "mobile");
+        assert_eq!(url, "git@github.com:Fantastik-sarl/stocktik-mobile.git");
+        assert_eq!(bare, PathBuf::from("bares/stocktik-mobile.git"));
+        assert_eq!(checkout, "stocktik-mobile");
+
+        // Test + sigil
+        let (name, _, bare, checkout) = WorkspaceManager::parse_repo_url(
+            "+webapp=git@github.com:Fantastik-sarl/stocktik-web.git",
+        );
+        assert_eq!(name, "webapp");
+        assert_eq!(bare, PathBuf::from("bares/stocktik-web.git"));
+        assert_eq!(checkout, "stocktik-web");
+
+        // Test : sigil
+        let (name, _, _, checkout) = WorkspaceManager::parse_repo_url(
+            ":server=https://github.com/Fantastik-sarl/stocktik-server.git",
+        );
+        assert_eq!(name, "server");
+        assert_eq!(checkout, "stocktik-server");
+
+        // Test # sigil
+        let (name, _, _, _) = WorkspaceManager::parse_repo_url(
+            "#worker=git@github.com:Fantastik-sarl/stocktik-worker.git",
+        );
+        assert_eq!(name, "worker");
+
+        // Test $ sigil
+        let (name, _, _, _) =
+            WorkspaceManager::parse_repo_url("$api=git@github.com:Fantastik-sarl/stocktik-api.git");
+        assert_eq!(name, "api");
+
+        // Test % sigil without explicit name/url delimiter
+        let (name, url, bare, checkout) = WorkspaceManager::parse_repo_url("%mobile");
+        assert_eq!(name, "mobile");
+        assert_eq!(url, "mobile");
+        assert_eq!(bare, PathBuf::from("bares/mobile.git"));
+        assert_eq!(checkout, "mobile");
+
+        // Test standard un-prefixed repo
+        let (name, url, bare, checkout) =
+            WorkspaceManager::parse_repo_url("mobile=git@github.com:org/app.git");
+        assert_eq!(name, "mobile");
+        assert_eq!(url, "git@github.com:org/app.git");
+        assert_eq!(bare, PathBuf::from("bares/app.git"));
+        assert_eq!(checkout, "app");
+
+        // Test url only
+        let (name, url, bare, checkout) =
+            WorkspaceManager::parse_repo_url("git@github.com:org/stocktik-core.git");
+        assert_eq!(name, "stocktik-core");
+        assert_eq!(url, "git@github.com:org/stocktik-core.git");
+        assert_eq!(bare, PathBuf::from("bares/stocktik-core.git"));
+        assert_eq!(checkout, "stocktik-core");
+    }
+
+    #[test]
+    fn test_repo_config_serialization_omits_name_and_defaults() {
+        let repo = RepoConfig {
+            name: "mobile".to_string(),
+            bare: PathBuf::from("bares/stocktik-mobile.git"),
+            checkout: "stocktik-mobile".to_string(),
+            url: Some("git@github.com:Fantastik-sarl/stocktik-mobile.git".to_string()),
+            port: None,
+            ports: HashMap::new(),
+            env: HashMap::new(),
+            secret_env: HashMap::new(),
+            private_env: HashMap::new(),
+            env_file: ".env".to_string(),
+            env_example: ".env.example".to_string(),
+            setup: Vec::new(),
+            launch: None,
+            secrets: Vec::new(),
+            copy_files: Vec::new(),
+        };
+
+        let yaml = serde_yaml::to_string(&repo).unwrap();
+        assert!(
+            !yaml.contains("name:"),
+            "Serialized YAML should not contain 'name'"
+        );
+        assert!(
+            !yaml.contains("env_file:"),
+            "Serialized YAML should not contain default 'env_file'"
+        );
+        assert!(
+            !yaml.contains("env_example:"),
+            "Serialized YAML should not contain default 'env_example'"
+        );
+        assert!(yaml.contains("checkout: stocktik-mobile"));
+        assert!(yaml.contains("bare: bares/stocktik-mobile.git"));
+    }
+
+    #[test]
+    fn test_repo_config_from_yaml_strips_sigils() {
+        let yaml_str = r#"
+bare: bares/%mobile.git
+checkout: '%mobile'
+"#;
+        let val: serde_yaml::Value = serde_yaml::from_str(yaml_str).unwrap();
+        let cfg = RepoConfig::from_yaml_value("%mobile", &val).unwrap();
+        assert_eq!(cfg.name, "mobile");
+        assert_eq!(cfg.checkout, "mobile");
+    }
 }

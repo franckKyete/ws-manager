@@ -109,7 +109,9 @@ ws info @develop
 
 ### `ws focus` / `ws switch`
 
-Focuses or switches to the workspace's Tmux window. If run inside Tmux, selects
+Focuses or switches to the workspace's Tmux window. If the window is not yet
+open in the Tmux session, `ws focus` automatically spawns it in the workspace
+directory with the configured command (e.g. `nvim`). If run inside Tmux, selects
 and switches client to that window. If run outside Tmux, attaches to the project
 session focused on that window.
 
