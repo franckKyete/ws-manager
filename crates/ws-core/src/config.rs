@@ -73,6 +73,12 @@ impl ConfigLoader {
             std::env::current_dir()?
         };
 
+        if let Some(ref fp) = file_path {
+            if fp.file_name().and_then(|n| n.to_str()) == Some("repositories.yml") {
+                let _ = crate::registry::register_project(&project_root, None);
+            }
+        }
+
         let mut repos = HashMap::new();
         let mut global_env = HashMap::new();
         let mut global_secret_env = HashMap::new();

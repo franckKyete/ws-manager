@@ -154,12 +154,14 @@ impl ConfigFileWatcher {
                                                 .map(|a| a.notify)
                                                 .unwrap_or(true);
                                             if should_notify {
-                                                let (ns, p_n) =
-                                                    manager.get_project_namespace_and_name(None);
-                                                crate::notify::notify_blueprint_push_success(
-                                                    &format!("{}/{}", ns, p_n),
-                                                    Some(&version),
-                                                );
+                                                if let Ok((ns, p_n)) =
+                                                    manager.get_project_namespace_and_name(None)
+                                                {
+                                                    crate::notify::notify_blueprint_push_success(
+                                                        &format!("{}/{}", ns, p_n),
+                                                        Some(&version),
+                                                    );
+                                                }
                                             }
                                         }
                                         Err(e) => {
@@ -274,14 +276,16 @@ impl ConfigFileWatcher {
                                                             .map(|a| a.notify)
                                                             .unwrap_or(true);
                                                         if should_notify {
-                                                            let (ns, p_n) = manager
+                                                            if let Ok((ns, p_n)) = manager
                                                                 .get_project_namespace_and_name(
                                                                     None,
+                                                                )
+                                                            {
+                                                                crate::notify::notify_auto_save_success(
+                                                                    &ws_name,
+                                                                    Some(&format!("{}/{}", ns, p_n)),
                                                                 );
-                                                            crate::notify::notify_auto_save_success(
-                                                                &ws_name,
-                                                                Some(&format!("{}/{}", ns, p_n)),
-                                                            );
+                                                            }
                                                         }
                                                     }
                                                     Err(e) => {

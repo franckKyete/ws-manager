@@ -2724,12 +2724,12 @@ impl WorkspaceManager {
     pub fn get_project_namespace_and_name(
         &self,
         override_identifier: Option<&str>,
-    ) -> (String, String) {
+    ) -> Result<(String, String), WSError> {
         let client = HubClient::default();
         let target_id = override_identifier.or(self.config.hub_project.as_deref());
         if let Some(tid) = target_id {
             if let Ok(pair) = HubClient::parse_project_identifier(tid) {
-                return pair;
+                return Ok(pair);
             }
         }
 
@@ -2748,17 +2748,9 @@ impl WorkspaceManager {
             .replace("_workspaces", "")
             .to_lowercase();
 
-        let namespace = client
-            .whoami()
-            .ok()
-            .and_then(|u| {
-                u.get("username")
-                    .and_then(|un| un.as_str())
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_else(|| "personal".to_string());
+        let namespace = client.current_username()?;
 
-        (namespace, clean)
+        Ok((namespace, clean))
     }
 
     pub fn clone_from_hub(
@@ -2929,13 +2921,13 @@ impl WorkspaceManager {
     }
 
     pub fn hub_publish(
-        &mut self,
+        &self,
         project_identifier: Option<&str>,
         description: Option<&str>,
         silent: bool,
     ) -> Result<serde_json::Value, WSError> {
         let client = HubClient::default();
-        let (namespace, name) = self.get_project_namespace_and_name(project_identifier);
+        let (namespace, name) = self.get_project_namespace_and_name(project_identifier)?;
 
         let config_file = self
             .config
@@ -2951,7 +2943,6 @@ impl WorkspaceManager {
         let proj_ident = format!("{}/{}", namespace, name);
         if self.config.hub_project.as_deref() != Some(&proj_ident) {
             let _ = ConfigLoader::update_hub_config(&config_file, Some(&proj_ident), None, None);
-            self.config.hub_project = Some(proj_ident);
         }
 
         let (sanitized_yaml, extracted_secrets, files_to_upload, private_count) =
@@ -2964,7 +2955,13 @@ impl WorkspaceManager {
             ));
         }
 
-        let result = client.create_project(&namespace, &name, description, false)?;
+        let result = client.create_project(
+            &namespace,
+            &name,
+            description,
+            false,
+            Some(&sanitized_yaml),
+        )?;
 
         let _ = client.push_revision(
             &namespace,
@@ -3041,7 +3038,7 @@ impl WorkspaceManager {
         silent: bool,
     ) -> Result<serde_json::Value, WSError> {
         let client = HubClient::default();
-        let (namespace, name) = self.get_project_namespace_and_name(project_identifier);
+        let (namespace, name) = self.get_project_namespace_and_name(project_identifier)?;
 
         let config_file = self
             .config
@@ -3131,7 +3128,7 @@ impl WorkspaceManager {
         project_identifier: Option<&str>,
     ) -> Result<serde_json::Value, WSError> {
         let client = HubClient::default();
-        let (namespace, name) = self.get_project_namespace_and_name(project_identifier);
+        let (namespace, name) = self.get_project_namespace_and_name(project_identifier)?;
 
         let data = client.get_project(&namespace, &name)?;
         let blueprint_yaml = data
@@ -3191,7 +3188,7 @@ impl WorkspaceManager {
         is_auto: bool,
     ) -> Result<serde_json::Value, WSError> {
         let client = HubClient::default();
-        let (namespace, name) = self.get_project_namespace_and_name(project_identifier);
+        let (namespace, name) = self.get_project_namespace_and_name(project_identifier)?;
 
         let (meta, ws_dir) = self.get_workspace_info(workspace_name)?;
         let mut state_val = serde_json::to_value(&meta)?;
@@ -3247,7 +3244,29 @@ impl WorkspaceManager {
             }
         }
 
-        let result = client.save_workspace_state(&namespace, &name, &meta.name, &state_val)?;
+        let result = match client.save_workspace_state(&namespace, &name, &meta.name, &state_val) {
+            Ok(r) => r,
+            Err(e) => {
+                if e.to_string().contains("404")
+                    || e.to_string().to_lowercase().contains("not found")
+                {
+                    if !silent {
+                        OutputHandler::print_info(&format!(
+                            "Project '{}/{}' not found on wshub. Auto-publishing initial blueprint...",
+                            namespace, name
+                        ));
+                    }
+                    self.hub_publish(
+                        project_identifier,
+                        Some("Auto-published on workspace state save"),
+                        silent,
+                    )?;
+                    client.save_workspace_state(&namespace, &name, &meta.name, &state_val)?
+                } else {
+                    return Err(e);
+                }
+            }
+        };
 
         if !silent {
             let prefix = if is_auto { "Auto-saved" } else { "Saved" };
@@ -3368,7 +3387,19 @@ impl WorkspaceManager {
             .as_ref()
             .map(|a| a.notify)
             .unwrap_or(true);
-        let (namespace, p_name) = self.get_project_namespace_and_name(project_identifier);
+        let (namespace, p_name) = match self.get_project_namespace_and_name(project_identifier) {
+            Ok(pair) => pair,
+            Err(e) => {
+                if should_notify {
+                    crate::notify::notify_auto_save_failure(
+                        workspace_name,
+                        &e.to_string(),
+                        None,
+                    );
+                }
+                return Err(e);
+            }
+        };
 
         match self.hub_state_save(
             workspace_name,
@@ -3640,7 +3671,7 @@ impl WorkspaceManager {
         apply_wip: bool,
     ) -> Result<(), WSError> {
         let client = HubClient::default();
-        let (namespace, name) = self.get_project_namespace_and_name(project_identifier);
+        let (namespace, name) = self.get_project_namespace_and_name(project_identifier)?;
 
         let raw_val = client.get_workspace_state(&namespace, &name, workspace_name)?;
         let state_val = if let Some(s) = raw_val.get("stateJson").and_then(|v| v.as_str()) {
