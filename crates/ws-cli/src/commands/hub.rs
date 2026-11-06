@@ -235,7 +235,9 @@ pub fn execute_hub_pull(
 }
 
 pub fn execute_hub_status(manager: &WorkspaceManager) -> Result<(), String> {
-    let (ns, p_name) = manager.get_project_namespace_and_name(None);
+    let (ns, p_name) = manager
+        .get_project_namespace_and_name(None)
+        .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     println!(
         "{}",
@@ -340,7 +342,9 @@ pub fn execute_hub_secret_list(
     manager: &WorkspaceManager,
     project: Option<&str>,
 ) -> Result<(), String> {
-    let (ns, p_name) = manager.get_project_namespace_and_name(project);
+    let (ns, p_name) = manager
+        .get_project_namespace_and_name(project)
+        .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     let res = client
         .list_secrets(&ns, &p_name)
@@ -380,7 +384,9 @@ pub fn execute_hub_secret_set(
     repo: Option<&str>,
     project: Option<&str>,
 ) -> Result<(), String> {
-    let (ns, p_name) = manager.get_project_namespace_and_name(project);
+    let (ns, p_name) = manager
+        .get_project_namespace_and_name(project)
+        .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     client
         .set_secret(&ns, &p_name, key, value, repo)
@@ -395,7 +401,9 @@ pub fn execute_hub_secret_get(
     repo: Option<&str>,
     project: Option<&str>,
 ) -> Result<(), String> {
-    let (ns, p_name) = manager.get_project_namespace_and_name(project);
+    let (ns, p_name) = manager
+        .get_project_namespace_and_name(project)
+        .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     let res = client
         .get_secret(&ns, &p_name, key, repo)
@@ -410,7 +418,9 @@ pub fn execute_hub_secret_delete(
     repo: Option<&str>,
     project: Option<&str>,
 ) -> Result<(), String> {
-    let (ns, p_name) = manager.get_project_namespace_and_name(project);
+    let (ns, p_name) = manager
+        .get_project_namespace_and_name(project)
+        .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     client
         .delete_secret(&ns, &p_name, key, repo)
@@ -445,7 +455,9 @@ pub fn execute_hub_secret_upload(
     file_path: &str,
     project: Option<&str>,
 ) -> Result<(), String> {
-    let (ns, p_name) = manager.get_project_namespace_and_name(project);
+    let (ns, p_name) = manager
+        .get_project_namespace_and_name(project)
+        .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     let path = Path::new(file_path);
     if !path.exists() {
@@ -467,7 +479,9 @@ pub fn execute_hub_secret_pull(
     manager: &WorkspaceManager,
     project: Option<&str>,
 ) -> Result<(), String> {
-    let (ns, p_name) = manager.get_project_namespace_and_name(project);
+    let (ns, p_name) = manager
+        .get_project_namespace_and_name(project)
+        .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     let res = client.list_files(&ns, &p_name).map_err(|e| e.to_string())?;
     let files_dir = manager.config.project_root.join("files");
@@ -508,15 +522,121 @@ pub fn execute_hub_secret_pull(
 }
 
 pub fn execute_hub_auto_save_status(manager: &WorkspaceManager) -> Result<(), String> {
-    let (active, pid) = manager.is_auto_save_daemon_active();
-    if active {
-        OutputHandler::print_success(&format!(
-            "Auto-save background daemon is ACTIVE (PID {})",
-            pid.unwrap_or(0)
-        ));
+    use ws_core::daemon::is_standalone_daemon_running;
+    use ws_core::systemd::get_service_status;
+    use ws_core::utils::format_relative_time;
+
+    let status = manager.get_auto_save_status();
+    let enabled = status
+        .get("enabled")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let interval_sec = status
+        .get("interval")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(900);
+    let notify = status
+        .get("notify")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let (active_l, pid_l) = manager.is_auto_save_daemon_active();
+
+    let svc = get_service_status();
+    let (active_s, pid_s) = is_standalone_daemon_running();
+
+    let daemon_str = if svc.active {
+        "active (systemd: ws.service)".green().to_string()
+    } else if active_s {
+        format!("active (standalone PID {})", pid_s.unwrap_or(0))
+            .green()
+            .to_string()
+    } else if active_l {
+        format!("active (local PID {})", pid_l.unwrap_or(0))
+            .green()
+            .to_string()
     } else {
-        OutputHandler::print_info("Auto-save background daemon is INACTIVE.");
+        "inactive (run 'ws service start' or 'ws service install')"
+            .yellow()
+            .to_string()
+    };
+
+    let interval_str = if interval_sec % 60 == 0 {
+        format!("{}m", interval_sec / 60)
+    } else {
+        format!("{}s", interval_sec)
+    };
+    let enabled_str = if enabled {
+        "enabled".green().bold().to_string()
+    } else {
+        "disabled".yellow().to_string()
+    };
+    let notify_str = if notify {
+        "on".green().to_string()
+    } else {
+        "off".dimmed().to_string()
+    };
+
+    println!("{}", "wshub Auto-Save Status:".bold().cyan());
+    println!(
+        "  Project Config:  {} (Interval: {}, Notifications: {})",
+        enabled_str, interval_str, notify_str
+    );
+    println!("  Daemon Status:   {}", daemon_str);
+
+    if let Some(workspaces) = status.get("workspaces").and_then(|w| w.as_object()) {
+        if !workspaces.is_empty() {
+            let mut table = OutputHandler::create_table();
+            table.set_header(vec![
+                Cell::new("Workspace").fg(Color::Cyan),
+                Cell::new("Last Saved").fg(Color::White),
+                Cell::new("Uncommitted WIP").fg(Color::Magenta),
+                Cell::new("Session").fg(Color::DarkGrey),
+            ]);
+
+            for (w_name, info) in workspaces {
+                let last_saved_str = info
+                    .get("last_saved_at")
+                    .and_then(|v| v.as_str())
+                    .map(format_relative_time)
+                    .unwrap_or_else(|| "never".to_string());
+                let has_uncommitted = info
+                    .get("has_uncommitted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let active_session = info
+                    .get("active_session")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                let dirty_cell = if has_uncommitted {
+                    Cell::new("dirty (uncommitted)").fg(Color::Yellow)
+                } else {
+                    Cell::new("clean").fg(Color::Green)
+                };
+                let sess_cell = if active_session {
+                    Cell::new("active").fg(Color::Green)
+                } else {
+                    Cell::new("idle").fg(Color::DarkGrey)
+                };
+
+                let last_saved_cell = if last_saved_str == "never" {
+                    Cell::new(last_saved_str).fg(Color::DarkGrey)
+                } else {
+                    Cell::new(last_saved_str).fg(Color::White)
+                };
+
+                table.add_row(vec![
+                    Cell::new(format!("@{}", w_name)).fg(Color::Cyan),
+                    last_saved_cell,
+                    dirty_cell,
+                    sess_cell,
+                ]);
+            }
+            println!("\n{}", "Workspace Topology:".bold().cyan());
+            println!("{}", table);
+        }
     }
+
     Ok(())
 }
 
@@ -526,29 +646,117 @@ pub fn execute_hub_auto_save_start(
     project: Option<&str>,
     detached: bool,
 ) -> Result<(), String> {
-    let pid = manager
-        .start_auto_save_daemon(interval, project, detached)
-        .map_err(|e| e.to_string())?;
-    OutputHandler::print_success(&format!("Started wshub auto-save daemon (PID {})", pid));
+    use ws_core::daemon::{is_standalone_daemon_running, start_standalone_daemon};
+    use ws_core::systemd::{
+        control_service, get_service_status, install_service, is_systemctl_available,
+    };
+
+    if let Some(pi) = project {
+        let pid = manager
+            .start_auto_save_daemon(interval, Some(pi), detached)
+            .map_err(|e| e.to_string())?;
+        OutputHandler::print_success(&format!(
+            "Started isolated wshub auto-save daemon for project '{}' (PID {})",
+            pi, pid
+        ));
+        return Ok(());
+    }
+
+    // Global machine-wide auto-save daemon management
+    let svc = get_service_status();
+    if svc.active {
+        OutputHandler::print_success(
+            "Global auto-save daemon is already running (ws.service).\nAll registered projects with hub.auto_save.enabled: true are monitored.",
+        );
+        return Ok(());
+    }
+
+    let (active_s, pid_s) = is_standalone_daemon_running();
+    if active_s {
+        OutputHandler::print_success(&format!(
+            "Standalone global auto-save daemon is already running (PID {}).\nAll registered projects with hub.auto_save.enabled: true are monitored.",
+            pid_s.unwrap_or(0)
+        ));
+        return Ok(());
+    }
+
+    if is_systemctl_available() {
+        if !svc.installed {
+            let (ok, msg) = install_service(None).map_err(|e| e.to_string())?;
+            if ok {
+                OutputHandler::print_success(&format!(
+                    "Installed and started {}!",
+                    ws_core::systemd::SERVICE_NAME
+                ));
+            } else {
+                return Err(msg);
+            }
+        } else {
+            let (ok, msg) = control_service("start").map_err(|e| e.to_string())?;
+            if ok {
+                OutputHandler::print_success(&format!(
+                    "Started {}!",
+                    ws_core::systemd::SERVICE_NAME
+                ));
+            } else {
+                return Err(msg);
+            }
+        }
+        OutputHandler::print_info(
+            "The daemon will automatically monitor and save all workspaces across all registered projects.",
+        );
+    } else {
+        let pid = start_standalone_daemon(true).map_err(|e| e.to_string())?;
+        OutputHandler::print_success(&format!(
+            "Started standalone global auto-save daemon (PID {}). Monitoring all registered projects.",
+            pid
+        ));
+    }
+
+    // Check current project setting
+    let auto_cfg = manager.config.hub_auto_save.as_ref();
+    if !auto_cfg.map(|a| a.enabled).unwrap_or(false) {
+        OutputHandler::print_warning(
+            "Note: 'hub.auto_save.enabled' is currently false or missing in repositories.yml for this project.\nSet 'enabled: true' under 'hub.auto_save' in repositories.yml to include this project.",
+        );
+    }
+
     Ok(())
 }
 
 pub fn execute_hub_auto_save_stop(manager: &WorkspaceManager) -> Result<(), String> {
-    let (active, pid) = manager.is_auto_save_daemon_active();
-    if !active {
+    use ws_core::daemon::{is_standalone_daemon_running, stop_standalone_daemon};
+    use ws_core::systemd::{control_service, get_service_status};
+
+    let (active_l, pid_l) = manager.is_auto_save_daemon_active();
+    if active_l {
+        let _ = manager.stop_auto_save_daemon();
+        OutputHandler::print_success(&format!(
+            "Stopped local auto-save daemon (PID {})",
+            pid_l.unwrap_or(0)
+        ));
+    }
+
+    let svc = get_service_status();
+    if svc.active {
+        let (ok, msg) = control_service("stop").map_err(|e| e.to_string())?;
+        if ok {
+            OutputHandler::print_success("Stopped ws.service.");
+        } else {
+            OutputHandler::print_err(&msg);
+        }
+    }
+
+    let (active_s, _) = is_standalone_daemon_running();
+    if active_s {
+        let _ = stop_standalone_daemon();
+        OutputHandler::print_success("Stopped standalone global auto-save daemon.");
+    }
+
+    if !active_l && !svc.active && !active_s {
         OutputHandler::print_info("No active auto-save daemon found.");
-        return Ok(());
     }
-    match manager.stop_auto_save_daemon() {
-        Ok(true) => OutputHandler::print_success(&format!(
-            "Stopped auto-save daemon (PID {})",
-            pid.unwrap_or(0)
-        )),
-        _ => OutputHandler::print_err(&format!(
-            "Failed stopping auto-save daemon (PID {})",
-            pid.unwrap_or(0)
-        )),
-    }
+
     Ok(())
 }
 

@@ -40,6 +40,10 @@ pub fn find_ws_binary() -> String {
     }
 
     if let Some(home) = dirs::home_dir() {
+        let cargo_bin = home.join(".cargo").join("bin").join("ws");
+        if cargo_bin.exists() {
+            return cargo_bin.to_string_lossy().to_string();
+        }
         let fallback = home.join(".local").join("bin").join("ws");
         if fallback.exists() {
             return fallback.to_string_lossy().to_string();
