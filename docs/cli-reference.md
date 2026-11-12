@@ -49,7 +49,7 @@ ws create @<name> [%repo[:branch[:mode]] ...] [--all] [--existing] [-f <file.yml
 | `@<name>`                  | Positional | Target workspace name (required unless `-f` is used).                                         |
 | `%<repo>[:branch[:mode]]`  | Positional | Repository name with optional target branch and branch creation mode (`new` or `existing`).   |
 | `--all`                    | Flag       | Include all repositories defined in `repositories.yml`.                                       |
-| `--existing`               | Flag       | Default to checking out existing branches rather than creating new `feature/<name>` branches. |
+| `--existing`               | Flag       | Default to checking out existing branches rather than creating new `feature/<name>` branches. For `:existing`/`--existing`, `ws` fetches the branch from the primary remote (preferring `origin`) if needed and creates a local branch ref when the branch exists only remotely. |
 | `-f`, `--file <file.yml>`  | Option     | Path to a declarative workspace YAML configuration file.                                      |
 | `--setup`                  | Flag       | Automatically run setup scripts and environment sync immediately after workspace creation.    |
 | `--cmd`, `--command <cmd>` | Option     | Command to run inside the workspace Tmux window upon creation (overrides config default).     |

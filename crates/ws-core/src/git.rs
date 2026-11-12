@@ -140,6 +140,55 @@ impl GitService {
         }
     }
 
+    pub fn primary_remote(&self, bare_path: &Path) -> Option<String> {
+        let remotes = self.get_remotes(bare_path, None);
+        if remotes.iter().any(|r| r == "origin") {
+            Some("origin".to_string())
+        } else {
+            remotes.first().cloned()
+        }
+    }
+
+    pub fn remote_branch_ref(&self, remote: &str, branch: &str) -> String {
+        let clean_branch = branch
+            .trim_start_matches("refs/heads/")
+            .trim_start_matches("refs/remotes/")
+            .trim_start_matches(&format!("{}/", remote));
+        format!("refs/remotes/{}/{}", remote, clean_branch)
+    }
+
+    pub fn ensure_local_branch_from_remote(
+        &self,
+        bare_path: &Path,
+        branch: &str,
+        remote: &str,
+    ) -> Result<bool> {
+        let clean_branch = branch
+            .trim_start_matches("refs/heads/")
+            .trim_start_matches("refs/remotes/")
+            .trim_start_matches(&format!("{}/", remote));
+        let remote_ref = self.remote_branch_ref(remote, clean_branch);
+        if !self.ref_exists(bare_path, &remote_ref, None) {
+            return Ok(false);
+        }
+        if self.branch_exists(bare_path, clean_branch) {
+            return Ok(true);
+        }
+        let created = self.update_bare_branch(bare_path, clean_branch, &remote_ref)?;
+        if !created {
+            return Err(WSError::Git {
+                message: format!(
+                    "Failed to create local branch '{}' from '{}'",
+                    clean_branch, remote_ref
+                ),
+                command: Some(format!("git update-ref refs/heads/{} {}", clean_branch, remote_ref)),
+                returncode: None,
+                stderr: None,
+            });
+        }
+        Ok(true)
+    }
+
     pub fn get_default_branch_or_head(&self, bare_path: &Path) -> Option<String> {
         let bare_str = bare_path.to_string_lossy();
         if let Ok(out) = self.run_git(

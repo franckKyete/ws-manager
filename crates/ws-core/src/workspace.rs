@@ -208,23 +208,44 @@ impl WorkspaceManager {
 
         for spec in repo_specs {
             let repo_cfg = self.validate_repository_config(&spec.name)?;
-            let branch_exists = self.git.branch_exists(&repo_cfg.bare, &spec.branch);
+            let local_branch_exists = self.git.branch_exists(&repo_cfg.bare, &spec.branch);
 
-            if spec.create && branch_exists {
-                return Err(WSError::BranchAlreadyExists(format!(
-                    "Cannot create branch '{}' for repository '{}': branch already exists in bare repo {}",
-                    spec.branch,
-                    spec.name,
-                    repo_cfg.bare.display()
-                )));
+            if spec.create {
+                if local_branch_exists {
+                    return Err(WSError::BranchAlreadyExists(format!(
+                        "Cannot create branch '{}' for repository '{}': branch already exists in bare repo {}",
+                        spec.branch,
+                        spec.name,
+                        repo_cfg.bare.display()
+                    )));
+                }
+                continue;
             }
 
-            if !spec.create && !branch_exists {
+            if local_branch_exists {
+                continue;
+            }
+
+            let primary_remote = self.git.primary_remote(&repo_cfg.bare);
+            let mut remote_has_branch = false;
+            if let Some(remote) = &primary_remote {
+                self.git
+                    .fetch_remote_branch(&repo_cfg.bare, &spec.branch, remote, None);
+                let remote_ref = self.git.remote_branch_ref(remote, &spec.branch);
+                remote_has_branch = self.git.ref_exists(&repo_cfg.bare, &remote_ref, None);
+            }
+
+            if !remote_has_branch {
+                let remote_hint = primary_remote
+                    .as_ref()
+                    .map(|r| format!(" or on remote '{}'", r))
+                    .unwrap_or_else(|| " and no git remote is configured".to_string());
                 return Err(WSError::BranchNotFound(format!(
-                    "Branch '{}' does not exist in repository '{}' ({})",
+                    "Branch '{}' does not exist locally in repository '{}' ({}){}",
                     spec.branch,
                     spec.name,
-                    repo_cfg.bare.display()
+                    repo_cfg.bare.display(),
+                    remote_hint
                 )));
             }
         }
@@ -261,21 +282,38 @@ impl WorkspaceManager {
         if let Some(remote) = primary_remote {
             self.git
                 .fetch_remote_branch(bare_path, &resolved_target, &remote, None);
-            let remote_ref = format!("refs/remotes/{}/{}", remote, resolved_target);
+            let remote_ref = self.git.remote_branch_ref(&remote, &resolved_target);
             let has_remote = self.git.ref_exists(bare_path, &remote_ref, None);
-            let has_local = self.git.branch_exists(bare_path, &resolved_target);
+            let mut has_local = self.git.branch_exists(bare_path, &resolved_target);
 
             if !has_remote && !has_local {
                 if is_explicit {
                     return Err(WSError::Validation(format!(
-                        "Target branch '{}' does not exist in repository '{}'",
-                        resolved_target, repo_name
+                        "Target branch '{}' does not exist locally or on remote '{}' in repository '{}'",
+                        resolved_target, remote, repo_name
                     )));
                 }
                 return Ok(Some(self.git.get_default_branch(bare_path)));
             }
 
-            if has_remote {
+            if has_remote && !has_local {
+                let created =
+                    self.git
+                        .ensure_local_branch_from_remote(bare_path, &resolved_target, &remote)?;
+                if !created {
+                    return Err(WSError::Validation(format!(
+                        "Failed to create local branch '{}' from '{}/{}' in repository '{}'",
+                        resolved_target, remote, resolved_target, repo_name
+                    )));
+                }
+                OutputHandler::print_info(&format!(
+                    "Created local branch '{}' from '{}/{}' for repository '{}'",
+                    resolved_target, remote, resolved_target, repo_name
+                ));
+                has_local = true;
+            }
+
+            if has_remote && has_local {
                 let (ahead, behind) =
                     self.git
                         .get_branch_divergence(bare_path, &resolved_target, &remote, None);
@@ -318,7 +356,16 @@ impl WorkspaceManager {
                         }
                     }
                 }
+            } else if !has_local {
+                if is_explicit {
+                    return Err(WSError::Validation(format!(
+                        "Target branch '{}' does not exist locally or on remote '{}' in repository '{}'",
+                        resolved_target, remote, repo_name
+                    )));
+                }
+                return Ok(Some(self.git.get_default_branch(bare_path)));
             }
+
             Ok(Some(resolved_target))
         } else {
             if self.git.branch_exists(bare_path, &resolved_target) {
@@ -1701,19 +1748,52 @@ impl WorkspaceManager {
         }
 
         let repo_cfg = self.validate_repository_config(repo_name)?;
-        let branch_exists = self.git.branch_exists(&repo_cfg.bare, branch);
+        let local_branch_exists = self.git.branch_exists(&repo_cfg.bare, branch);
 
-        if create && branch_exists {
-            return Err(WSError::BranchAlreadyExists(format!(
-                "Cannot create branch '{}' for repository '{}': branch already exists",
-                branch, repo_name
-            )));
-        }
-        if !create && !branch_exists {
-            return Err(WSError::BranchNotFound(format!(
-                "Branch '{}' does not exist in repository '{}'",
-                branch, repo_name
-            )));
+        if create {
+            if local_branch_exists {
+                return Err(WSError::BranchAlreadyExists(format!(
+                    "Cannot create branch '{}' for repository '{}': branch already exists",
+                    branch, repo_name
+                )));
+            }
+        } else if !local_branch_exists {
+            let primary_remote = self.git.primary_remote(&repo_cfg.bare);
+            let mut remote_has_branch = false;
+            if let Some(remote) = &primary_remote {
+                self.git
+                    .fetch_remote_branch(&repo_cfg.bare, branch, remote, None);
+                let remote_ref = self.git.remote_branch_ref(remote, branch);
+                remote_has_branch = self.git.ref_exists(&repo_cfg.bare, &remote_ref, None);
+                if remote_has_branch {
+                    let created = self
+                        .git
+                        .ensure_local_branch_from_remote(&repo_cfg.bare, branch, remote)?;
+                    if !created {
+                        return Err(WSError::Validation(format!(
+                            "Failed to create local branch '{}' from '{}/{}' in repository '{}'",
+                            branch, remote, branch, repo_name
+                        )));
+                    }
+                    OutputHandler::print_info(&format!(
+                        "Created local branch '{}' from '{}/{}' for repository '{}'",
+                        branch, remote, branch, repo_name
+                    ));
+                }
+            }
+            if !remote_has_branch {
+                let remote_hint = primary_remote
+                    .as_ref()
+                    .map(|r| format!(" or on remote '{}'", r))
+                    .unwrap_or_else(|| " and no git remote is configured".to_string());
+                return Err(WSError::BranchNotFound(format!(
+                    "Branch '{}' does not exist locally in repository '{}' ({}){}",
+                    branch,
+                    repo_name,
+                    repo_cfg.bare.display(),
+                    remote_hint
+                )));
+            }
         }
 
         let worktree_path = ws_dir.join(&repo_cfg.checkout);

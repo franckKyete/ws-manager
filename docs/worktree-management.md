@@ -32,6 +32,7 @@ ws create @feat-oauth %server:main:existing %mobile:feature/auth-screen:new
 
 - `%server` checks out existing `main` without creating a new branch.
 - `%mobile` creates and checks out a new branch `feature/auth-screen`.
+- For existing checkouts, if the target branch is not present locally in the bare repo but exists on the remote, `ws` fetches it and materializes a local branch ref automatically.
 
 ---
 
