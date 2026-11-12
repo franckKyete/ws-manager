@@ -2955,13 +2955,8 @@ impl WorkspaceManager {
             ));
         }
 
-        let result = client.create_project(
-            &namespace,
-            &name,
-            description,
-            false,
-            Some(&sanitized_yaml),
-        )?;
+        let result =
+            client.create_project(&namespace, &name, description, false, Some(&sanitized_yaml))?;
 
         let _ = client.push_revision(
             &namespace,
@@ -3391,11 +3386,7 @@ impl WorkspaceManager {
             Ok(pair) => pair,
             Err(e) => {
                 if should_notify {
-                    crate::notify::notify_auto_save_failure(
-                        workspace_name,
-                        &e.to_string(),
-                        None,
-                    );
+                    crate::notify::notify_auto_save_failure(workspace_name, &e.to_string(), None);
                 }
                 return Err(e);
             }

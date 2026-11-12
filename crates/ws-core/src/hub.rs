@@ -297,7 +297,7 @@ impl HubClient {
                 } else if let Some(issues) = err_obj.get("issues").and_then(|i| i.as_array()) {
                     let formatted = issues
                         .iter()
-                        .filter_map(|issue| {
+                        .map(|issue| {
                             let path = issue
                                 .get("path")
                                 .and_then(|p| p.as_array())
@@ -313,9 +313,9 @@ impl HubClient {
                                 .and_then(|m| m.as_str())
                                 .unwrap_or("Invalid value");
                             if path.is_empty() {
-                                Some(msg.to_string())
+                                msg.to_string()
                             } else {
-                                Some(format!("{}: {}", path, msg))
+                                format!("{}: {}", path, msg)
                             }
                         })
                         .collect::<Vec<_>>()

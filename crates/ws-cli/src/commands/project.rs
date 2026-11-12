@@ -10,7 +10,9 @@ use ws_core::utils::format_relative_time;
 pub fn print_registered_projects_table(title: &str) {
     let projects = list_registered_projects(None, true);
     if projects.is_empty() {
-        OutputHandler::print_info("No projects registered in global registry (~/.config/ws/projects.json).");
+        OutputHandler::print_info(
+            "No projects registered in global registry (~/.config/ws/projects.json).",
+        );
         return;
     }
 

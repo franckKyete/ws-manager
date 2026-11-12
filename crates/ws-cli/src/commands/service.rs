@@ -71,7 +71,9 @@ pub fn execute_service_status() -> Result<(), String> {
         println!("  Details:   {}", status.details);
     }
     println!();
-    crate::commands::project::print_registered_projects_table("Registered Projects Monitored by Daemon");
+    crate::commands::project::print_registered_projects_table(
+        "Registered Projects Monitored by Daemon",
+    );
     Ok(())
 }
 
