@@ -70,6 +70,10 @@ pub fn execute_service_status() -> Result<(), String> {
     if !status.details.is_empty() {
         println!("  Details:   {}", status.details);
     }
+    println!();
+    crate::commands::project::print_registered_projects_table(
+        "Registered Projects Monitored by Daemon",
+    );
     Ok(())
 }
 

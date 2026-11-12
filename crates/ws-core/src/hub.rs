@@ -55,8 +55,9 @@ impl HubClient {
             .or(saved_token);
 
         let client = Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(3))
+            .connect_timeout(std::time::Duration::from_secs(15))
             .timeout(std::time::Duration::from_secs(60))
+            .local_address(Some(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)))
             .build()
             .unwrap_or_default();
 
@@ -288,12 +289,48 @@ impl HubClient {
             serde_json::from_slice(&resp_bytes).unwrap_or(serde_json::Value::Null);
 
         if !status.is_success() {
-            let err_msg = parsed_json
-                .get("message")
-                .or_else(|| parsed_json.get("error"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("Unknown server error")
-                .to_string();
+            let err_msg = if let Some(m) = parsed_json.get("message").and_then(|v| v.as_str()) {
+                m.to_string()
+            } else if let Some(err_obj) = parsed_json.get("error") {
+                if let Some(err_str) = err_obj.as_str() {
+                    err_str.to_string()
+                } else if let Some(issues) = err_obj.get("issues").and_then(|i| i.as_array()) {
+                    let formatted = issues
+                        .iter()
+                        .map(|issue| {
+                            let path = issue
+                                .get("path")
+                                .and_then(|p| p.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join(".")
+                                })
+                                .unwrap_or_default();
+                            let msg = issue
+                                .get("message")
+                                .and_then(|m| m.as_str())
+                                .unwrap_or("Invalid value");
+                            if path.is_empty() {
+                                msg.to_string()
+                            } else {
+                                format!("{}: {}", path, msg)
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    if formatted.is_empty() {
+                        "Validation error".to_string()
+                    } else {
+                        formatted
+                    }
+                } else {
+                    err_obj.to_string()
+                }
+            } else {
+                "Unknown server error".to_string()
+            };
 
             return Err(WSError::Hub {
                 message: err_msg,
@@ -370,6 +407,33 @@ impl HubClient {
         }
     }
 
+    pub fn current_username(&self) -> Result<String> {
+        if let Some(ref u) = self.username {
+            let trimmed = u.trim();
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
+        }
+
+        let res = self.whoami()?;
+        let user_obj = res
+            .get("user")
+            .or_else(|| res.get("data").and_then(|d| d.get("user")))
+            .unwrap_or(&res);
+
+        let username = user_obj
+            .get("username")
+            .and_then(|v| v.as_str())
+            .or_else(|| res.get("username").and_then(|v| v.as_str()))
+            .ok_or_else(|| WSError::Hub {
+                message: "Could not find username in wshub session. Please check your login session with 'ws hub whoami'.".to_string(),
+                status_code: 401,
+                details: Some(res.clone()),
+            })?;
+
+        Ok(username.to_string())
+    }
+
     pub fn create_pat(&self, name: &str) -> Result<serde_json::Value> {
         let body = serde_json::json!({ "name": name });
         self.request(reqwest::Method::POST, "auth/pat", Some(&body), None, None)
@@ -408,13 +472,17 @@ impl HubClient {
         name: &str,
         description: Option<&str>,
         is_private: bool,
+        blueprint_yaml: Option<&str>,
     ) -> Result<serde_json::Value> {
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "namespace": namespace,
             "name": name,
             "description": description.unwrap_or(""),
             "isPrivate": is_private,
         });
+        if let Some(bp) = blueprint_yaml {
+            body["blueprintYaml"] = serde_json::Value::String(bp.to_string());
+        }
         self.request(reqwest::Method::POST, "projects", Some(&body), None, None)
     }
 
