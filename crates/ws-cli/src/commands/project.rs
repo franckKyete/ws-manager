@@ -118,3 +118,77 @@ pub fn execute_project_unregister(path: Option<&Path>) -> Result<(), String> {
     }
     Ok(())
 }
+
+pub fn execute_project_migrate_lifecycle(
+    project_root: &Path,
+    dry_run: bool,
+    _yes: bool,
+    backup: bool,
+    stage_name: &str,
+    source: &str,
+    no_state: bool,
+    reset_state: bool,
+) -> Result<(), String> {
+    use ws_core::migration::{self, MigrationOptions, MigrationSourceKind};
+
+    let config_path = project_root.join("repositories.yml");
+    if !config_path.exists() {
+        return Err(format!(
+            "Configuration file not found: {}",
+            config_path.display()
+        ));
+    }
+
+    let source_kind = match source {
+        "auto" => MigrationSourceKind::Auto,
+        "legacy" => MigrationSourceKind::Legacy,
+        "v1" => MigrationSourceKind::V1,
+        other => {
+            return Err(format!(
+                "Invalid migration source '{}'. Expected auto|legacy|v1",
+                other
+            ))
+        }
+    };
+
+    let opts = MigrationOptions {
+        dry_run,
+        backup,
+        stage_name: if stage_name.trim().is_empty() {
+            "install".to_string()
+        } else {
+            stage_name.trim().to_string()
+        },
+        source: source_kind,
+        no_state,
+        reset_state,
+    };
+
+    let workspaces_dir = project_root.join("workspaces");
+    let report = migration::migrate_project_config(&config_path, Some(&workspaces_dir), &opts)
+        .map_err(|e| e.to_string())?;
+
+    if dry_run {
+        OutputHandler::print_info(&format!(
+            "[DRY-RUN] Migration plan for {} (detected: {:?}, changed: {})",
+            config_path.display(),
+            report.source,
+            report.changed
+        ));
+    } else if report.changed {
+        if let Some(bak) = report.backup_path {
+            OutputHandler::print_info(&format!("Backup written: {}", bak.display()));
+        }
+        OutputHandler::print_success(&format!(
+            "Migrated {} to lifecycle schema v3",
+            config_path.display()
+        ));
+    } else {
+        OutputHandler::print_info(&format!(
+            "No lifecycle migration changes needed for {}",
+            config_path.display()
+        ));
+    }
+
+    Ok(())
+}

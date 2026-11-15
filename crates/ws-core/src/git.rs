@@ -181,7 +181,10 @@ impl GitService {
                     "Failed to create local branch '{}' from '{}'",
                     clean_branch, remote_ref
                 ),
-                command: Some(format!("git update-ref refs/heads/{} {}", clean_branch, remote_ref)),
+                command: Some(format!(
+                    "git update-ref refs/heads/{} {}",
+                    clean_branch, remote_ref
+                )),
                 returncode: None,
                 stderr: None,
             });

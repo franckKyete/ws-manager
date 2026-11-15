@@ -69,7 +69,7 @@ or relies on Git submodules. Both approaches suffer from substantial downsides:
    - Each repository is cloned once with `--bare`.
    - The bare repository holds the complete Git object database and commit
      graph.
-2. **Instant Worktree Creation (`workspaces/@<name>/<checkout>`)**:
+2. **Instant Worktree Creation (`workspaces/<name>/<checkout>`)**:
    - Creating a workspace executes `git worktree add -b <branch> <path>`.
    - Worktree checkouts take **under 100 milliseconds** and consume zero
      duplicate object storage.

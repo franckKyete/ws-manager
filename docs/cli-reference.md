@@ -1,6 +1,6 @@
 # 💻 CLI Reference Manual
 
-`ws` provides a clean, intentional command hierarchy organized across 5 core
+`ws` provides a clean, intentional command hierarchy organized across these
 domains:
 
 1. [**Workspace Lifecycle**](#1-workspace-lifecycle) (`create`, `list`, `info`,
@@ -13,7 +13,9 @@ domains:
    (`shell`, `env`, `setup`)
 5. [**Project Store Management**](#5-project-store-management) (`project init`,
    `project add`, `project fetch`, `project sync`, `doctor`, `antigravity`)
-6. [**Universal Inverted Syntax**](#6-universal-inverted-syntax)
+6. [**wshub Cloud Collaboration & Replication**](#6-wshub-cloud-collaboration--replication)
+   (`hub`, `clone`, `service`, `daemon`)
+7. [**Universal Inverted Syntax**](#7-universal-inverted-syntax)
    (`ws @<name> <command>`)
 
 ---
@@ -27,8 +29,10 @@ To ensure absolute clarity in command arguments:
 - **Repositories & Services** use the **`%`** prefix: `%server`, `%mobile`,
   `%frontend`.
 
-_(Note: The CLI is forgiving and also accepts un-prefixed names or `+repo`,
-`:repo`)_
+The prefixes are mandatory for both positional arguments and flag values.
+Bare names are rejected with a hint, and legacy repository prefixes (`+`, `:`,
+`#`, `$`) are no longer accepted by the CLI. Internal workspace directories and
+`workspace.yml` names remain bare (for example `workspaces/feat-auth`).
 
 ---
 
@@ -51,7 +55,7 @@ ws create @<name> [%repo[:branch[:mode]] ...] [--all] [--existing] [-f <file.yml
 | `--all`                    | Flag       | Include all repositories defined in `repositories.yml`.                                       |
 | `--existing`               | Flag       | Default to checking out existing branches rather than creating new `feature/<name>` branches. For `:existing`/`--existing`, `ws` fetches the branch from the primary remote (preferring `origin`) if needed and creates a local branch ref when the branch exists only remotely. |
 | `-f`, `--file <file.yml>`  | Option     | Path to a declarative workspace YAML configuration file.                                      |
-| `--setup`                  | Flag       | Automatically run setup scripts and environment sync immediately after workspace creation.    |
+| `--setup`                  | Flag       | Run the default lifecycle flow after creation (`configure` + all setup stages).                |
 | `--cmd`, `--command <cmd>` | Option     | Command to run inside the workspace Tmux window upon creation (overrides config default).     |
 | `--no-tmux`                | Flag       | Skip opening a dedicated Tmux window for this workspace.                                      |
 
@@ -204,21 +208,23 @@ ws status @develop
 ### `ws exec`
 
 Executes an arbitrary shell command across all or a subset of repository
-worktrees inside the workspace.
+worktrees inside the workspace. The command must be separated from `ws`
+arguments with `--`.
 
 ```bash
-ws exec [@<name>] [%repos...] [--all] [--repos r1,r2] [--] <command...>
+ws exec [@<name>] [%repos...] [--all] -- <command...>
 ```
 
 #### Options
 
-| Argument / Flag  | Default | Description                                             |
-| :--------------- | :------ | :------------------------------------------------------ |
-| `@<name>`        | Current | Workspace name (defaults to active detected workspace). |
-| `%repos...`      | All     | Specific repositories to execute in (`%hub %web`).      |
-| `--all`          | All     | Explicitly target all repositories in the workspace.    |
-| `--repos <list>` | All     | Comma-separated list of repository names.               |
-| `--`             | -       | Delimiter separating `ws` arguments from child command. |
+| Argument / Flag | Default | Description                                             |
+| :-------------- | :------ | :------------------------------------------------------ |
+| `@<name>`       | Current | Workspace name (defaults to active detected workspace). |
+| `%repos...`     | All     | Specific repositories to execute in (`%hub %web`).      |
+| `--all`         | All     | Explicitly target all repositories in the workspace.    |
+| `--`            | -       | Required delimiter separating `ws` arguments from the child command. |
+
+`--all` cannot be combined with explicit `%repo` targets.
 
 #### Examples
 
@@ -244,15 +250,16 @@ Pushes committed changes across workspace repositories to their upstream Git
 remotes. Skips locked/frozen repositories automatically.
 
 ```bash
-ws push @<name> [%repos...] [--repos r1,r2] [--remote <name>]
+ws push @<name> [%repos...] [--repos %r1,%r2] [--remote <name>]
 ```
 
 #### Options
 
-| Argument / Flag   | Default  | Description                    |
-| :---------------- | :------- | :----------------------------- |
-| `%repos...`       | All      | Specific repositories to push. |
-| `--remote <name>` | `origin` | Target Git remote name.        |
+| Argument / Flag   | Default  | Description                                              |
+| :---------------- | :------- | :------------------------------------------------------- |
+| `%repos...`       | All      | Specific repositories to push.                           |
+| `--repos <list>`  | -        | Comma-separated repositories; each value requires `%`.   |
+| `--remote <name>` | `origin` | Target Git remote name.                                  |
 
 #### Example
 
@@ -269,7 +276,7 @@ conflicts, dirty worktree states, and network errors in formatted diagnostic
 tables.
 
 ```bash
-ws pull @<name> [%repos...] [--repos r1,r2] [--remote <name>]
+ws pull @<name> [%repos...] [--repos %r1,%r2] [--remote <name>]
 ```
 
 #### Example
@@ -372,7 +379,7 @@ Starts workspace services concurrently under a persistent background supervisor
 daemon and displays the requested presentation interface.
 
 ```bash
-ws start @<name> [%repos...] [--all] [--tmux] [-z|--zellij] [-t|--terminal] [--stream] [-d|--daemon] [--attach %repo] [--switch] [--mode <mode>] [--interface <iface>] [--ip <ip>]
+ws start @<name> [%repos...] [--all] [--repos %r1,%r2] [--tmux] [-z|--zellij] [-t|--terminal] [--stream] [-d|--daemon] [--attach %repo] [--switch] [--mode <mode>] [--interface <iface>] [--ip <ip>]
 ```
 
 #### Options
@@ -380,6 +387,8 @@ ws start @<name> [%repos...] [--all] [--tmux] [-z|--zellij] [-t|--terminal] [--s
 | Flag                                        | Description                                                                                                                   |
 | :------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------- |
 | `%repos...`                                 | Specific services to start (starts all configured services if omitted or `--all` is passed).                                  |
+| `--all`                                     | Explicitly target every repository. Conflicts with explicit `%repo` / `--repos` targets.                                      |
+| `--repos %r1,%r2`                           | Comma-separated services to start; each value requires `%`.                                                                   |
 | `--tmux`                                    | Launch services in a Tmux session with side-by-side vertical panes.                                                           |
 | `-z`, `--zellij`                            | Launch services in a Zellij tiled split grid session.                                                                         |
 | `-t`, `--terminal`                          | Launch each service in a separate native OS terminal window.                                                                  |
@@ -576,36 +585,102 @@ ws env @develop --sync
 
 ### `ws setup`
 
-Runs dependency installation and configuration scripts defined in
-`repositories.yml`.
+Runs the workspace lifecycle default flow (configure + all setup stages) as
+defined in `repositories.yml` (schema v3).
 
 ```bash
 ws setup @<name> [%repos...] [--all] [--dry-run] [--skip-scripts] [--interface <iface>] [--ip <ip>]
 ```
 
-#### Options
-
-| Flag                                        | Description                                                                                                                   |
-| :------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------- |
-| `--all`                                     | Run setup for all repositories in workspace.                                                                                  |
-| `--dry-run`                                 | Print commands that would be executed without running them.                                                                   |
-| `--skip-scripts`                            | Only sync environment variables and file copies without executing scripts.                                                    |
-| `--interface`, `--iface`, `--lan-interface` | Select network interface (`wlan0`, `eno1`) or type (`wifi`, `ethernet`) to resolve `${LAN_IP}`. Prioritizes Wi-Fi by default. |
-| `--ip`, `--lan-ip`                          | Explicit host LAN IP address override (e.g. `192.168.24.178`).                                                                |
+- Repositories are selected positionally as `%repo`; `--all` is the only
+  repo-selection flag and conflicts with explicit `%repo` targets.
+- `--all` (or default full-workspace setup) runs the default lifecycle flow:
+  `configure` then all setup stages in order (including repo-only stages).
+- `configure` is the built-in stage that copies files and syncs env/templates;
+  named setup stages (e.g. `install`, `build`, `migrate`, `verify`) run
+  project-defined hooks in order.
+- `--skip-scripts` skips hook execution but still performs built-in
+  configure/sync behavior where applicable.
+- `--dry-run` prints planned actions/commands without executing hooks.
 
 #### Examples
 
 ```bash
-# Setup all repositories (prioritizes Wi-Fi adapter for mobile discovery):
+# Run default lifecycle flow for every repository (configure + all setup stages):
 ws setup @develop --all
 
-# Setup with explicit network interface:
-ws setup @develop --all --interface wlan0
+# Run setup for selected repositories only:
+ws setup @develop %server %mobile
+
+# Dry-run setup flow:
+ws setup @develop --all --dry-run
+```
+
+### `ws lifecycle`
+
+Inspect or run lifecycle stages for a workspace.
+
+```bash
+ws lifecycle [@<name>] [%repo ...] run [--all] [+stage ...] [--force] [--dry-run] [--skip-configure] [--interface <iface>] [--ip <ip>]
+ws lifecycle [@<name>] [%repo ...] status [+stage ...]
+```
+
+The arguments are positional and must appear in this order: optional
+workspace (`@name`), zero or more repositories (`%repo`), the required action
+(`run` or `status`), then zero or more stages (`+stage`). Stage names require
+the `+` prefix; omitting it is a usage error.
+
+- **Workspace inference:** when `@<name>` is omitted, the workspace is detected
+  from the current directory. If no workspace can be detected, pass
+  `@<workspace>`.
+- **Repository inference:** when `@<name>`, `%repo`, and `--all` are all
+  omitted, the repository is inferred from the current directory and restricts
+  the run to that repository. Workspace-scope hooks still run.
+- `--all` targets every repository, suppresses repository inference, and
+  conflicts with explicit `%repo` arguments.
+- **Stages:** `+configure` is the built-in configure stage. `+<name>` maps to a
+  defined setup stage (for example `+install` or `+build`). Event stages use
+  their lifecycle names: `+pre_launch`, `+post_launch`, `+pre_stop`,
+  `+post_stop`, `+pre_end`, `+post_end`, `+repo_add`, `+repo_remove`. Unknown
+  stage names are hard errors that list the known stages.
+- **No stages:** `run` executes `configure` followed by every setup stage in
+  root order and then repo-only setup stages.
+- **Configure auto-run:** explicit setup stages automatically run `configure`
+  first unless `--skip-configure` is passed. An explicit `+configure` always
+  runs, even with `--skip-configure`. Repeated `+stage` tokens run each time
+  they appear.
+- `status` accepts only `%repo` and `+stage` filters; run-only flags and
+  `--all` are rejected.
+- `ws start` fails if required setup stages are incomplete (stages whose hooks
+  are all `always` do not block), with a hint to run `ws lifecycle @<name> run`.
+
+#### Examples
+
+```bash
+ws lifecycle @develop status
+ws lifecycle @develop status +install
+ws lifecycle @develop run
+ws lifecycle @develop run +install
+ws lifecycle @develop %server run +configure +build
+ws lifecycle @develop %server %mobile status
+ws lifecycle @develop run +install --skip-configure
+ws lifecycle %api run +post_launch   # workspace and repo inferred from cwd
 ```
 
 ---
 
 ## 5. Project Store Management
+
+> **Lifecycle schema v3:** Legacy or v1 lifecycle configurations must be
+> migrated before normal use.
+>
+> ```bash
+> ws project migrate lifecycle --yes
+> ```
+>
+> Migration is comment-preserving and supports `--dry-run`, `--no-backup`,
+> `--stage-name <name>`, `--source auto|legacy|v1`, `--no-state`, and
+> `--reset-state`.
 
 ### `ws project init` / `ws init`
 
@@ -663,6 +738,29 @@ references.
 ```bash
 ws project sync
 ```
+
+---
+
+### `ws project migrate lifecycle`
+
+Migrates legacy or v1 lifecycle configuration to schema v3 (`schema_version: 3`)
+with a comment-preserving YAML rewrite.
+
+```bash
+ws project migrate lifecycle [--dry-run] [--yes] [--no-backup] [--stage-name <name>] [--source auto|legacy|v1] [--no-state] [--reset-state]
+```
+
+#### Options
+
+| Flag                 | Description                                                                        |
+| :------------------- | :--------------------------------------------------------------------------------- |
+| `--dry-run`          | Preview migration changes without writing files.                                   |
+| `--yes`              | Apply migration without prompting.                                                 |
+| `--no-backup`        | Do not write a `.bak` backup before applying migration.                            |
+| `--stage-name <name>`| Stage name for migrated setup scripts (default: `install`).                        |
+| `--source <mode>`    | Migration source preference: `auto`, `legacy`, or `v1`.                            |
+| `--no-state`         | Migrate config only; skip workspace lifecycle state migration.                     |
+| `--reset-state`      | Reset workspace lifecycle state instead of migrating it.                           |
 
 ---
 
@@ -856,10 +954,10 @@ certificates) in the wshub AES-256-GCM vault.
 ws hub secret list
 
 # Set a secret key
-ws hub secret set <KEY> <VALUE> [--repo <repo_name>]
+ws hub secret set <KEY> <VALUE> [--repo %<repo>]
 
 # Get a secret value
-ws hub secret get <KEY> [--repo <repo_name>]
+ws hub secret get <KEY> [--repo %<repo>]
 
 # Upload a sensitive file
 ws hub secret upload <file_path>
@@ -873,7 +971,7 @@ ws hub secret pull
 ## 7. Universal Inverted Syntax
 
 All workspace-scoped commands support the intuitive **`ws @<name> <verb>`**
-inverted syntax:
+inverted syntax. The `@` and `%` prefixes remain mandatory:
 
 ```bash
 ws @develop start --tmux

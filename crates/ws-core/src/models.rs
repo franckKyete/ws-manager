@@ -63,6 +63,8 @@ pub struct RepoConfig {
     pub secrets: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub copy_files: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<serde_json::Value>,
 }
 
 fn default_env_file() -> String {
@@ -103,6 +105,7 @@ impl RepoConfig {
             launch: None,
             secrets: Vec::new(),
             copy_files: Vec::new(),
+            lifecycle: None,
         }
     }
 
@@ -285,6 +288,10 @@ impl RepoConfig {
             }
         }
 
+        let lifecycle = mapping
+            .get(serde_yaml::Value::String("lifecycle".to_string()))
+            .and_then(|v| serde_json::to_value(v).ok());
+
         Ok(Self {
             name: clean_name.to_string(),
             bare: PathBuf::from(bare_str),
@@ -301,6 +308,7 @@ impl RepoConfig {
             launch,
             secrets: Vec::new(),
             copy_files,
+            lifecycle,
         })
     }
 }
@@ -622,6 +630,8 @@ pub struct AppConfig {
     pub hub_auto_save: Option<HubAutoSaveConfig>,
     pub hub_project: Option<String>,
     pub hub: serde_json::Value,
+    pub lifecycle: Option<serde_json::Value>,
+    pub schema_version: Option<u32>,
 }
 
 impl AppConfig {

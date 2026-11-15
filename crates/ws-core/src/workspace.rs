@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
 
 use base64::Engine;
 use sha2::{Digest, Sha256};
@@ -12,6 +11,7 @@ use crate::env::EnvEngine;
 use crate::errors::WSError;
 use crate::git::GitService;
 use crate::hub::HubClient;
+use crate::lifecycle::{self, LifecycleState, StageContext, StageRunOptions};
 use crate::models::{
     AppConfig, HubAutoSaveConfig, RepoConfig, RepoSpec, TmuxConfig, WorkspaceMetadata,
     WorkspacesSelector,
@@ -297,9 +297,11 @@ impl WorkspaceManager {
             }
 
             if has_remote && !has_local {
-                let created =
-                    self.git
-                        .ensure_local_branch_from_remote(bare_path, &resolved_target, &remote)?;
+                let created = self.git.ensure_local_branch_from_remote(
+                    bare_path,
+                    &resolved_target,
+                    &remote,
+                )?;
                 if !created {
                     return Err(WSError::Validation(format!(
                         "Failed to create local branch '{}' from '{}/{}' in repository '{}'",
@@ -1672,6 +1674,7 @@ impl WorkspaceManager {
                     launch: None,
                     secrets: Vec::new(),
                     copy_files: Vec::new(),
+                    lifecycle: None,
                 },
             );
         }
@@ -1766,9 +1769,9 @@ impl WorkspaceManager {
                 let remote_ref = self.git.remote_branch_ref(remote, branch);
                 remote_has_branch = self.git.ref_exists(&repo_cfg.bare, &remote_ref, None);
                 if remote_has_branch {
-                    let created = self
-                        .git
-                        .ensure_local_branch_from_remote(&repo_cfg.bare, branch, remote)?;
+                    let created =
+                        self.git
+                            .ensure_local_branch_from_remote(&repo_cfg.bare, branch, remote)?;
                     if !created {
                         return Err(WSError::Validation(format!(
                             "Failed to create local branch '{}' from '{}/{}' in repository '{}'",
@@ -2099,27 +2102,216 @@ impl WorkspaceManager {
         interface: Option<&str>,
         lan_ip: Option<&str>,
     ) -> Result<HashMap<String, serde_json::Value>, WSError> {
-        self.validate_environment()?;
-        let (meta, ws_dir) = self.get_workspace_info(workspace_name)?;
+        self.setup_workspace_with_force(
+            workspace_name,
+            repos,
+            dry_run,
+            skip_scripts,
+            verbose,
+            interface,
+            lan_ip,
+            false,
+        )
+    }
 
-        let target_repos: Vec<String> = if let Some(r_list) = repos {
-            let mut tr = Vec::new();
-            for r in r_list {
-                let (r_name, _, _) = self.resolve_repo_spec(workspace_name, r)?;
-                if !tr.contains(&r_name) {
-                    tr.push(r_name);
+    pub fn setup_workspace_with_force(
+        &mut self,
+        workspace_name: &str,
+        repos: Option<&[String]>,
+        dry_run: bool,
+        skip_scripts: bool,
+        verbose: bool,
+        interface: Option<&str>,
+        lan_ip: Option<&str>,
+        force: bool,
+    ) -> Result<HashMap<String, serde_json::Value>, WSError> {
+        // Default lifecycle flow: configure + all setup stages (workspace order + repo-only stages)
+        let mut results = HashMap::new();
+        self.run_configure_stage(
+            workspace_name,
+            repos,
+            dry_run,
+            skip_scripts,
+            verbose,
+            interface,
+            lan_ip,
+            force,
+            &mut results,
+        )?;
+        let (meta, _) = self.get_workspace_info(workspace_name)?;
+        let target_repos: Vec<String> = match repos {
+            Some(r) => r.to_vec(),
+            None => meta.repositories.keys().cloned().collect(),
+        };
+        let mut stage_names: Vec<String> = lifecycle::setup_stage_names(&self.config, None);
+        for r in &target_repos {
+            for s in lifecycle::setup_stage_names(&self.config, Some(r)) {
+                if !stage_names.iter().any(|x| x == &s) {
+                    stage_names.push(s);
                 }
             }
-            tr
-        } else {
-            meta.repositories.keys().cloned().collect()
+        }
+        for stage in stage_names {
+            let stage_key = format!("setup:{}", stage);
+            self.run_setup_stage(
+                workspace_name,
+                &stage_key,
+                repos,
+                dry_run,
+                skip_scripts,
+                verbose,
+                interface,
+                lan_ip,
+                force,
+                &mut results,
+            )?;
+        }
+        Ok(results)
+    }
+
+    pub fn setup_workspace_stage(
+        &mut self,
+        workspace_name: &str,
+        repos: Option<&[String]>,
+        dry_run: bool,
+        skip_scripts: bool,
+        verbose: bool,
+        interface: Option<&str>,
+        lan_ip: Option<&str>,
+        stage: &str,
+    ) -> Result<HashMap<String, serde_json::Value>, WSError> {
+        self.setup_workspace_stage_with_force(
+            workspace_name,
+            repos,
+            dry_run,
+            skip_scripts,
+            verbose,
+            interface,
+            lan_ip,
+            stage,
+            false,
+        )
+    }
+
+    pub fn setup_workspace_stage_with_force(
+        &mut self,
+        workspace_name: &str,
+        repos: Option<&[String]>,
+        dry_run: bool,
+        skip_scripts: bool,
+        verbose: bool,
+        interface: Option<&str>,
+        lan_ip: Option<&str>,
+        stage: &str,
+        force: bool,
+    ) -> Result<HashMap<String, serde_json::Value>, WSError> {
+        let mut results = HashMap::new();
+        match stage {
+            "configure" => self.run_configure_stage(
+                workspace_name,
+                repos,
+                dry_run,
+                skip_scripts,
+                verbose,
+                interface,
+                lan_ip,
+                force,
+                &mut results,
+            )?,
+            "all" => {
+                return self.setup_workspace_with_force(
+                    workspace_name,
+                    repos,
+                    dry_run,
+                    skip_scripts,
+                    verbose,
+                    interface,
+                    lan_ip,
+                    force,
+                )
+            }
+            s if s.starts_with("setup:") => self.run_setup_stage(
+                workspace_name,
+                s,
+                repos,
+                dry_run,
+                skip_scripts,
+                verbose,
+                interface,
+                lan_ip,
+                force,
+                &mut results,
+            )?,
+            s if lifecycle::is_event_stage(s) => self.run_setup_stage(
+                workspace_name,
+                s,
+                repos,
+                dry_run,
+                skip_scripts,
+                verbose,
+                interface,
+                lan_ip,
+                force,
+                &mut results,
+            )?,
+            s => {
+                let key = if s == "env" || s == "bootstrap" || s == "ready" {
+                    return Err(WSError::Validation(format!(
+                        "Legacy stage '{}' is not supported. Run migration and use v3 lifecycle stages.",
+                        s
+                    )));
+                } else {
+                    format!("setup:{}", s)
+                };
+                self.run_setup_stage(
+                    workspace_name,
+                    &key,
+                    repos,
+                    dry_run,
+                    skip_scripts,
+                    verbose,
+                    interface,
+                    lan_ip,
+                    force,
+                    &mut results,
+                )?;
+            }
+        }
+        Ok(results)
+    }
+
+    fn run_configure_stage(
+        &mut self,
+        workspace_name: &str,
+        repos: Option<&[String]>,
+        dry_run: bool,
+        skip_scripts: bool,
+        verbose: bool,
+        interface: Option<&str>,
+        lan_ip: Option<&str>,
+        force: bool,
+        results: &mut HashMap<String, serde_json::Value>,
+    ) -> Result<(), WSError> {
+        self.validate_environment()?;
+        let (meta, ws_dir) = self.get_workspace_info(workspace_name)?;
+        let target_repos: Vec<String> = match repos {
+            Some(r_list) => {
+                let mut tr = Vec::new();
+                for r in r_list {
+                    let (r_name, _, _) = self.resolve_repo_spec(workspace_name, r)?;
+                    if !tr.contains(&r_name) {
+                        tr.push(r_name);
+                    }
+                }
+                tr
+            }
+            None => meta.repositories.keys().cloned().collect(),
         };
 
         let slot = EnvEngine::get_workspace_slot(&self.config.workspaces_dir, workspace_name);
         let resolved_lan_ip = lan_ip
             .map(|s| s.to_string())
             .unwrap_or_else(|| get_lan_ip(interface));
-
         let public_host = self
             .config
             .global_env
@@ -2128,7 +2320,6 @@ impl WorkspaceManager {
             .or_else(|| std::env::var("WS_PUBLIC_HOST").ok())
             .or_else(|| std::env::var("PUBLIC_HOST").ok())
             .unwrap_or_else(|| resolved_lan_ip.clone());
-
         let (service_ports, _) = allocate_workspace_ports(&self.config.repositories, slot, None);
         let _ = EnvEngine::write_service_discovery_files(
             &ws_dir,
@@ -2151,118 +2342,34 @@ impl WorkspaceManager {
             let _ = self.get_or_create_launch_session();
         }
 
-        let mut results = HashMap::new();
+        let mut lifecycle_state = LifecycleState::load(&ws_dir);
+        let lifecycle_opts = StageRunOptions {
+            dry_run,
+            force,
+            verbose,
+            interface: interface.map(|s| s.to_string()),
+            lan_ip: Some(resolved_lan_ip.clone()),
+        };
 
-        // Top level infrastructure setup
-        if repos.is_none() && !self.config.setup.is_empty() && !skip_scripts {
-            OutputHandler::print_setup_repo_start("WORKSPACE INFRASTRUCTURE", &ws_dir);
-            let global_vars = EnvEngine::resolve_repo_env(
-                &self.config,
-                workspace_name,
-                "",
-                slot,
-                Some(&service_ports),
-                Some(&resolved_lan_ip),
-                Some(&public_host),
-                interface,
-            );
-
-            if verbose {
-                OutputHandler::print_env_resolution_details(
-                    &global_vars,
-                    Some(&self.config.secrets),
-                );
-            }
-
-            for g_cmd in &self.config.setup {
-                let expanded = EnvEngine::expand_command(
-                    g_cmd,
-                    &global_vars,
-                    workspace_name,
-                    "",
-                    slot,
-                    Some(&self.config.project_root),
-                    Some(&self.config.workspaces_dir),
-                    Some(&service_ports),
-                    Some(&resolved_lan_ip),
-                    Some(&public_host),
-                    interface,
-                );
-
-                if dry_run {
-                    OutputHandler::print_setup_step(
-                        0,
-                        &format!("[DRY-RUN] {}", expanded),
-                        "skipped execution",
-                        "info",
-                    );
-                    continue;
-                }
-
-                OutputHandler::print_command_start(&expanded);
-                let t0 = Instant::now();
-                let mut env_map = global_vars.clone();
-                env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
-                env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
-                env_map.insert(
-                    "PROJECT_ROOT".to_string(),
-                    self.config.project_root.display().to_string(),
-                );
-                env_map.insert(
-                    "PROJECT_DIR".to_string(),
-                    self.config.project_root.display().to_string(),
-                );
-                env_map.insert(
-                    "ROOT_DIR".to_string(),
-                    self.config.project_root.display().to_string(),
-                );
-                env_map.insert(
-                    "SCRIPTS_DIR".to_string(),
-                    self.config
-                        .project_root
-                        .join("scripts")
-                        .display()
-                        .to_string(),
-                );
-                env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
-                env_map.insert("WS_DIR".to_string(), ws_dir.display().to_string());
-
-                let ret = run_shell_command(&expanded, &ws_dir, Some(&env_map));
-                let elapsed = t0.elapsed().as_secs_f64();
-                OutputHandler::print_command_done(&expanded, elapsed, ret == 0, ret);
-            }
-        }
-
-        for r_name in target_repos {
-            let spec = &meta.repositories[&r_name];
-            let wt_path = ws_dir.join(&spec.path);
-            let repo_cfg = self.config.repositories.get(&r_name);
-
-            OutputHandler::print_setup_repo_start(&r_name, &wt_path);
-
-            let repo_cfg = match repo_cfg {
-                Some(rc) => rc,
-                None => {
-                    OutputHandler::print_setup_step(
-                        1,
-                        "Config Validation",
-                        "Repository missing from project configuration",
-                        "error",
-                    );
-                    let mut obj = serde_json::Map::new();
-                    obj.insert(
-                        "status".to_string(),
-                        serde_json::Value::String("failed".to_string()),
-                    );
-                    obj.insert(
-                        "reason".to_string(),
-                        serde_json::Value::String("missing from config".to_string()),
-                    );
-                    results.insert(r_name, serde_json::Value::Object(obj));
-                    continue;
-                }
+        // Built-in configure: copy files + env/template sync for each repo.
+        for r_name in &target_repos {
+            let Some(spec) = meta.repositories.get(r_name) else {
+                continue;
             };
-
+            let wt_path = ws_dir.join(&spec.path);
+            let Some(repo_cfg) = self.config.repositories.get(r_name) else {
+                OutputHandler::print_setup_step(
+                    1,
+                    "Config Validation",
+                    "Repository missing from project configuration",
+                    "error",
+                );
+                results.insert(
+                    r_name.clone(),
+                    serde_json::json!({"status":"failed","reason":"missing from config"}),
+                );
+                continue;
+            };
             if !wt_path.exists() {
                 OutputHandler::print_setup_step(
                     1,
@@ -2270,20 +2377,14 @@ impl WorkspaceManager {
                     "Worktree directory does not exist",
                     "warning",
                 );
-                let mut obj = serde_json::Map::new();
-                obj.insert(
-                    "status".to_string(),
-                    serde_json::Value::String("skipped".to_string()),
+                results.insert(
+                    r_name.clone(),
+                    serde_json::json!({"status":"skipped","reason":"missing worktree"}),
                 );
-                obj.insert(
-                    "reason".to_string(),
-                    serde_json::Value::String("missing worktree".to_string()),
-                );
-                results.insert(r_name, serde_json::Value::Object(obj));
                 continue;
             }
+            OutputHandler::print_setup_repo_start(r_name, &wt_path);
 
-            // Step 1: Copy files
             let mut all_copy = self.config.copy_files.clone();
             all_copy.extend(repo_cfg.copy_files.clone());
             if !all_copy.is_empty() {
@@ -2295,26 +2396,26 @@ impl WorkspaceManager {
                     &f_msg,
                     if f_ok { "success" } else { "warning" },
                 );
+            } else {
+                OutputHandler::print_setup_step(1, "File Copy", "No files to copy", "info");
             }
 
             let env_vars = EnvEngine::resolve_repo_env(
                 &self.config,
                 workspace_name,
-                &r_name,
+                r_name,
                 slot,
                 Some(&service_ports),
                 Some(&resolved_lan_ip),
                 Some(&public_host),
                 interface,
             );
-
             let (env_ok, env_msg) = EnvEngine::prepare_and_sync_env_file(
                 &wt_path,
                 &env_vars,
                 &repo_cfg.env_file,
                 &repo_cfg.env_example,
             )?;
-
             if !env_ok {
                 OutputHandler::print_setup_step(
                     1,
@@ -2322,16 +2423,12 @@ impl WorkspaceManager {
                     &format!("Failed: {}", env_msg),
                     "error",
                 );
-                let mut obj = serde_json::Map::new();
-                obj.insert(
-                    "status".to_string(),
-                    serde_json::Value::String("failed".to_string()),
+                results.insert(
+                    r_name.clone(),
+                    serde_json::json!({"status":"failed","reason":env_msg}),
                 );
-                obj.insert("reason".to_string(), serde_json::Value::String(env_msg));
-                results.insert(r_name, serde_json::Value::Object(obj));
                 continue;
             }
-
             OutputHandler::print_setup_step(
                 1,
                 "Template Setup",
@@ -2342,135 +2439,274 @@ impl WorkspaceManager {
                 "success",
             );
             OutputHandler::print_setup_step(2, "Env Resolution", &env_msg, "success");
-
             if verbose {
                 let mut all_sec = self.config.secrets.clone();
                 all_sec.extend(repo_cfg.secrets.clone());
                 OutputHandler::print_env_resolution_details(&env_vars, Some(&all_sec));
             }
+            results.insert(r_name.clone(), serde_json::json!({"status":"completed","reason":"configure completed (files synced, env resolved)","env_status":env_msg}));
+        }
 
-            // Step 3: Run setup commands
-            if skip_scripts || repo_cfg.setup.is_empty() {
-                OutputHandler::print_setup_step(
-                    3,
-                    "Setup Scripts",
-                    "No setup scripts configured (skipped)",
-                    "info",
-                );
-                let mut obj = serde_json::Map::new();
-                obj.insert(
-                    "status".to_string(),
-                    serde_json::Value::String("completed".to_string()),
-                );
-                obj.insert(
-                    "reason".to_string(),
-                    serde_json::Value::String("environment synced (no setup commands)".to_string()),
-                );
-                obj.insert("env_status".to_string(), serde_json::Value::String(env_msg));
-                results.insert(r_name, serde_json::Value::Object(obj));
-                continue;
-            }
-
-            let mut script_failures = Vec::new();
-            let mut executed_cmds = Vec::new();
-
-            for cmd in &repo_cfg.setup {
-                let expanded = EnvEngine::expand_command(
-                    cmd,
-                    &env_vars,
+        // Run configure hooks (workspace + repos) if not skipping scripts.
+        if !skip_scripts {
+            let ws_hooks = lifecycle::workspace_stage_hooks(&self.config, "configure");
+            if !ws_hooks.is_empty() {
+                let global_vars = EnvEngine::resolve_repo_env(
+                    &self.config,
                     workspace_name,
-                    &r_name,
+                    "",
                     slot,
-                    Some(&self.config.project_root),
-                    Some(&self.config.workspaces_dir),
                     Some(&service_ports),
                     Some(&resolved_lan_ip),
                     Some(&public_host),
                     interface,
                 );
-                executed_cmds.push(expanded.clone());
-
-                if dry_run {
-                    OutputHandler::print_setup_step(
-                        3,
-                        &format!("[DRY-RUN] {}", expanded),
-                        "skipped execution",
-                        "info",
-                    );
-                    continue;
-                }
-
-                OutputHandler::print_command_start(&expanded);
-                let t0 = Instant::now();
-                let mut proc_env = env_vars.clone();
-                proc_env.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
-                proc_env.insert("WS_NAME".to_string(), workspace_name.to_string());
-                proc_env.insert("REPO_NAME".to_string(), r_name.clone());
-                proc_env.insert("REPO".to_string(), r_name.clone());
-                proc_env.insert(
+                let mut env_map = global_vars;
+                env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
+                env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
+                env_map.insert(
                     "PROJECT_ROOT".to_string(),
                     self.config.project_root.display().to_string(),
                 );
-                proc_env.insert(
+                env_map.insert(
                     "PROJECT_DIR".to_string(),
                     self.config.project_root.display().to_string(),
                 );
-                proc_env.insert(
-                    "ROOT_DIR".to_string(),
+                env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
+                env_map.insert("WS_DIR".to_string(), ws_dir.display().to_string());
+                let ctx = StageContext {
+                    config: &self.config,
+                    workspace_name,
+                    ws_dir: &ws_dir,
+                    repo_name: None,
+                    work_dir: &ws_dir,
+                    env_vars: &env_map,
+                };
+                OutputHandler::print_info("== Stage: configure (hooks) ==");
+                lifecycle::run_hooks(
+                    "configure",
+                    &ws_hooks,
+                    &mut lifecycle_state,
+                    &ws_dir,
+                    &ctx,
+                    &lifecycle_opts,
+                )?;
+            }
+            for r_name in &target_repos {
+                let hooks =
+                    lifecycle::stage_hooks_for_repo(&self.config, Some(r_name), "configure");
+                if hooks.is_empty() {
+                    continue;
+                }
+                let Some(spec) = meta.repositories.get(r_name) else {
+                    continue;
+                };
+                let wt_path = ws_dir.join(&spec.path);
+                if !wt_path.exists() {
+                    continue;
+                }
+                let mut env_map = EnvEngine::resolve_repo_env(
+                    &self.config,
+                    workspace_name,
+                    r_name,
+                    slot,
+                    Some(&service_ports),
+                    Some(&resolved_lan_ip),
+                    Some(&public_host),
+                    interface,
+                );
+                env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
+                env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
+                env_map.insert("REPO_NAME".to_string(), r_name.clone());
+                env_map.insert("REPO".to_string(), r_name.clone());
+                env_map.insert(
+                    "PROJECT_ROOT".to_string(),
                     self.config.project_root.display().to_string(),
                 );
-                proc_env.insert(
-                    "SCRIPTS_DIR".to_string(),
-                    self.config
-                        .project_root
-                        .join("scripts")
-                        .display()
-                        .to_string(),
+                env_map.insert(
+                    "PROJECT_DIR".to_string(),
+                    self.config.project_root.display().to_string(),
                 );
-                proc_env.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
-                proc_env.insert("WS_DIR".to_string(), ws_dir.display().to_string());
-                proc_env.insert("WORKTREE_DIR".to_string(), wt_path.display().to_string());
-                proc_env.insert("WT_DIR".to_string(), wt_path.display().to_string());
+                env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
+                env_map.insert("WS_DIR".to_string(), ws_dir.display().to_string());
+                env_map.insert("WORKTREE_DIR".to_string(), wt_path.display().to_string());
+                env_map.insert("WT_DIR".to_string(), wt_path.display().to_string());
+                let ctx = StageContext {
+                    config: &self.config,
+                    workspace_name,
+                    ws_dir: &ws_dir,
+                    repo_name: Some(r_name),
+                    work_dir: &wt_path,
+                    env_vars: &env_map,
+                };
+                OutputHandler::print_setup_repo_start(r_name, &wt_path);
+                lifecycle::run_hooks(
+                    "configure",
+                    &hooks,
+                    &mut lifecycle_state,
+                    &ws_dir,
+                    &ctx,
+                    &lifecycle_opts,
+                )?;
+            }
+        }
+        Ok(())
+    }
 
-                let ret = run_shell_command(&expanded, &wt_path, Some(&proc_env));
-                let elapsed = t0.elapsed().as_secs_f64();
-                OutputHandler::print_command_done(&expanded, elapsed, ret == 0, ret);
-
-                if ret != 0 {
-                    script_failures.push(format!("'{}' failed: exit code {}", expanded, ret));
-                    break;
+    fn run_setup_stage(
+        &mut self,
+        workspace_name: &str,
+        stage_key: &str,
+        repos: Option<&[String]>,
+        dry_run: bool,
+        skip_scripts: bool,
+        verbose: bool,
+        interface: Option<&str>,
+        lan_ip: Option<&str>,
+        force: bool,
+        _results: &mut HashMap<String, serde_json::Value>,
+    ) -> Result<(), WSError> {
+        if skip_scripts {
+            return Ok(());
+        }
+        self.validate_environment()?;
+        let (meta, ws_dir) = self.get_workspace_info(workspace_name)?;
+        let target_repos: Vec<String> = match repos {
+            Some(r_list) => {
+                let mut tr = Vec::new();
+                for r in r_list {
+                    let (r_name, _, _) = self.resolve_repo_spec(workspace_name, r)?;
+                    if !tr.contains(&r_name) {
+                        tr.push(r_name);
+                    }
                 }
+                tr
             }
+            None => meta.repositories.keys().cloned().collect(),
+        };
+        let slot = EnvEngine::get_workspace_slot(&self.config.workspaces_dir, workspace_name);
+        let resolved_lan_ip = lan_ip
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| get_lan_ip(interface));
+        let public_host = self
+            .config
+            .global_env
+            .get("PUBLIC_HOST")
+            .cloned()
+            .or_else(|| std::env::var("WS_PUBLIC_HOST").ok())
+            .or_else(|| std::env::var("PUBLIC_HOST").ok())
+            .unwrap_or_else(|| resolved_lan_ip.clone());
+        let (service_ports, _) = allocate_workspace_ports(&self.config.repositories, slot, None);
+        let mut lifecycle_state = LifecycleState::load(&ws_dir);
+        let lifecycle_opts = StageRunOptions {
+            dry_run,
+            force,
+            verbose,
+            interface: interface.map(|s| s.to_string()),
+            lan_ip: Some(resolved_lan_ip.clone()),
+        };
 
-            let mut obj = serde_json::Map::new();
-            if script_failures.is_empty() {
-                obj.insert(
-                    "status".to_string(),
-                    serde_json::Value::String("completed".to_string()),
-                );
-                obj.insert(
-                    "reason".to_string(),
-                    serde_json::Value::String(format!(
-                        "ran {} setup command(s)",
-                        executed_cmds.len()
-                    )),
-                );
-            } else {
-                obj.insert(
-                    "status".to_string(),
-                    serde_json::Value::String("failed".to_string()),
-                );
-                obj.insert(
-                    "reason".to_string(),
-                    serde_json::Value::String(script_failures.join("; ")),
-                );
-            }
-            obj.insert("env_status".to_string(), serde_json::Value::String(env_msg));
-            obj.insert("commands_run".to_string(), serde_json::json!(executed_cmds));
-            results.insert(r_name, serde_json::Value::Object(obj));
+        OutputHandler::print_info(&format!("== Stage: {} ==", stage_key));
+
+        let ws_hooks = lifecycle::workspace_stage_hooks(&self.config, stage_key);
+        if !ws_hooks.is_empty() {
+            let mut env_map = EnvEngine::resolve_repo_env(
+                &self.config,
+                workspace_name,
+                "",
+                slot,
+                Some(&service_ports),
+                Some(&resolved_lan_ip),
+                Some(&public_host),
+                interface,
+            );
+            env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
+            env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
+            env_map.insert(
+                "PROJECT_ROOT".to_string(),
+                self.config.project_root.display().to_string(),
+            );
+            env_map.insert(
+                "PROJECT_DIR".to_string(),
+                self.config.project_root.display().to_string(),
+            );
+            env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
+            env_map.insert("WS_DIR".to_string(), ws_dir.display().to_string());
+            let ctx = StageContext {
+                config: &self.config,
+                workspace_name,
+                ws_dir: &ws_dir,
+                repo_name: None,
+                work_dir: &ws_dir,
+                env_vars: &env_map,
+            };
+            lifecycle::run_hooks(
+                stage_key,
+                &ws_hooks,
+                &mut lifecycle_state,
+                &ws_dir,
+                &ctx,
+                &lifecycle_opts,
+            )?;
         }
 
-        Ok(results)
+        for r_name in &target_repos {
+            let hooks = lifecycle::stage_hooks_for_repo(&self.config, Some(r_name), stage_key);
+            if hooks.is_empty() {
+                continue;
+            }
+            let Some(spec) = meta.repositories.get(r_name) else {
+                continue;
+            };
+            let wt_path = ws_dir.join(&spec.path);
+            if !wt_path.exists() {
+                continue;
+            }
+            let mut env_map = EnvEngine::resolve_repo_env(
+                &self.config,
+                workspace_name,
+                r_name,
+                slot,
+                Some(&service_ports),
+                Some(&resolved_lan_ip),
+                Some(&public_host),
+                interface,
+            );
+            env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
+            env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
+            env_map.insert("REPO_NAME".to_string(), r_name.clone());
+            env_map.insert("REPO".to_string(), r_name.clone());
+            env_map.insert(
+                "PROJECT_ROOT".to_string(),
+                self.config.project_root.display().to_string(),
+            );
+            env_map.insert(
+                "PROJECT_DIR".to_string(),
+                self.config.project_root.display().to_string(),
+            );
+            env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
+            env_map.insert("WS_DIR".to_string(), ws_dir.display().to_string());
+            env_map.insert("WORKTREE_DIR".to_string(), wt_path.display().to_string());
+            env_map.insert("WT_DIR".to_string(), wt_path.display().to_string());
+            let ctx = StageContext {
+                config: &self.config,
+                workspace_name,
+                ws_dir: &ws_dir,
+                repo_name: Some(r_name),
+                work_dir: &wt_path,
+                env_vars: &env_map,
+            };
+            OutputHandler::print_setup_repo_start(r_name, &wt_path);
+            lifecycle::run_hooks(
+                stage_key,
+                &hooks,
+                &mut lifecycle_state,
+                &ws_dir,
+                &ctx,
+                &lifecycle_opts,
+            )?;
+        }
+        Ok(())
     }
 
     pub fn sync_env(
@@ -2480,7 +2716,20 @@ impl WorkspaceManager {
         interface: Option<&str>,
         lan_ip: Option<&str>,
     ) -> Result<HashMap<String, serde_json::Value>, WSError> {
-        self.setup_workspace(workspace_name, repos, false, true, false, interface, lan_ip)
+        // V3: env sync is part of configure.
+        let mut results = HashMap::new();
+        self.run_configure_stage(
+            workspace_name,
+            repos,
+            false,
+            true,
+            false,
+            interface,
+            lan_ip,
+            false,
+            &mut results,
+        )?;
+        Ok(results)
     }
 
     pub fn get_env_vars(
@@ -2515,6 +2764,16 @@ impl WorkspaceManager {
         lan_ip: Option<&str>,
     ) -> Result<Vec<(String, String, String, HashMap<String, String>)>, WSError> {
         let (meta, ws_dir) = self.get_workspace_info(workspace_name)?;
+
+        // Fail start/launch if setup stages are incomplete (except non-blocking always-only stages).
+        let repo_names: Vec<String> = meta.repositories.keys().cloned().collect();
+        let pending = lifecycle::pending_setup_stages(&self.config, &ws_dir, &repo_names);
+        if !pending.is_empty() {
+            return Err(WSError::Validation(lifecycle::format_pending_setup_error(
+                workspace_name,
+                &pending,
+            )));
+        }
         let target_repos: Vec<String> = repos
             .map(|r| r.to_vec())
             .unwrap_or_else(|| meta.repositories.keys().cloned().collect());
@@ -3927,6 +4186,7 @@ mod tests {
             launch: None,
             secrets: Vec::new(),
             copy_files: Vec::new(),
+            lifecycle: None,
         };
 
         let yaml = serde_yaml::to_string(&repo).unwrap();

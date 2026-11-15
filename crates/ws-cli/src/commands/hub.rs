@@ -1,4 +1,4 @@
-use crate::helpers::resolve_ws_and_repo_args;
+use crate::helpers::{parse_repo_token, resolve_ws_and_repo_args};
 use colored::Colorize;
 use comfy_table::{Cell, Color};
 use std::fs;
@@ -384,12 +384,16 @@ pub fn execute_hub_secret_set(
     repo: Option<&str>,
     project: Option<&str>,
 ) -> Result<(), String> {
+    let repo = match repo {
+        Some(repo) => Some(parse_repo_token(manager, repo)?),
+        None => None,
+    };
     let (ns, p_name) = manager
         .get_project_namespace_and_name(project)
         .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     client
-        .set_secret(&ns, &p_name, key, value, repo)
+        .set_secret(&ns, &p_name, key, value, repo.as_deref())
         .map_err(|e| e.to_string())?;
     OutputHandler::print_success(&format!("Secret '{}' set in wshub", key));
     Ok(())
@@ -401,12 +405,16 @@ pub fn execute_hub_secret_get(
     repo: Option<&str>,
     project: Option<&str>,
 ) -> Result<(), String> {
+    let repo = match repo {
+        Some(repo) => Some(parse_repo_token(manager, repo)?),
+        None => None,
+    };
     let (ns, p_name) = manager
         .get_project_namespace_and_name(project)
         .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     let res = client
-        .get_secret(&ns, &p_name, key, repo)
+        .get_secret(&ns, &p_name, key, repo.as_deref())
         .map_err(|e| e.to_string())?;
     println!("{}", res);
     Ok(())
@@ -418,12 +426,16 @@ pub fn execute_hub_secret_delete(
     repo: Option<&str>,
     project: Option<&str>,
 ) -> Result<(), String> {
+    let repo = match repo {
+        Some(repo) => Some(parse_repo_token(manager, repo)?),
+        None => None,
+    };
     let (ns, p_name) = manager
         .get_project_namespace_and_name(project)
         .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     client
-        .delete_secret(&ns, &p_name, key, repo)
+        .delete_secret(&ns, &p_name, key, repo.as_deref())
         .map_err(|e| e.to_string())?;
     OutputHandler::print_success(&format!("Secret '{}' deleted from wshub", key));
     Ok(())

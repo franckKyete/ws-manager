@@ -90,7 +90,7 @@ ws start @develop
 
 ```bash
 # Set a secret key
-ws hub secret set PAWAPAY_JWT_TOKEN "eyJraWQiOiIx..." --repo server
+ws hub secret set PAWAPAY_JWT_TOKEN "eyJraWQiOiIx..." --repo %server
 
 # Upload a sensitive file (e.g. RSA private key or service account JSON)
 ws hub secret upload files/pawapay-private.pem

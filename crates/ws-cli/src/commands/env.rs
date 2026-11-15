@@ -11,7 +11,7 @@ pub fn execute_env(
     lan_ip: Option<&str>,
 ) -> Result<(), String> {
     let (ws_name, repo_name, _) = resolve_ws_and_repo_args(manager, name, repo, None, true, false)?;
-    let target_repo = repo.or(repo_name.as_deref());
+    let target_repo = repo_name.as_deref();
 
     if sync {
         let repos = target_repo.map(|r| vec![r.to_string()]);

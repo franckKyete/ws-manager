@@ -38,12 +38,10 @@ The shell strips `#server` before passing arguments to the CLI.
 
 #### Resolution:
 
-Use the **`%`** sigil for repositories (or use plain names):
+Use the **`%`** sigil for repositories:
 
 ```bash
 ws lock @develop %server
-# or
-ws lock @develop server
 ```
 
 ---
@@ -65,7 +63,7 @@ is already active, but no processes are running.
    ```
 3. Or manually delete the socket file:
    ```bash
-   rm workspaces/@<name>/.ws/session.sock
+   rm workspaces/<name>/.ws/session.sock
    ```
 
 ---

@@ -20,7 +20,7 @@ ws create @feat-oauth %server %mobile
 ```
 
 - Creates `feature/feat-oauth` in `%server` and `%mobile`.
-- Both worktrees are checked out under `workspaces/@feat-oauth/`.
+- Both worktrees are checked out under `workspaces/feat-oauth/`.
 
 ---
 

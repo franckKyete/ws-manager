@@ -22,6 +22,7 @@ use commands::hub::*;
 use commands::info::*;
 use commands::init::*;
 use commands::launch::*;
+use commands::lifecycle::*;
 use commands::list::*;
 use commands::open::*;
 use commands::project::*;
@@ -79,7 +80,48 @@ fn main() {
         _ => {}
     }
 
-    // 2. Determine whether empty config is permitted
+    // 2. Handle migration without requiring an already-migrated (v3) config.
+    if let Commands::Project(ProjectCommandArgs {
+        action:
+            Some(ProjectAction::Migrate {
+                action:
+                    ProjectMigrateAction::Lifecycle {
+                        dry_run,
+                        yes,
+                        no_backup,
+                        stage_name,
+                        source,
+                        no_state,
+                        reset_state,
+                    },
+            }),
+    }) = &command
+    {
+        let project_root = if let Some(cfg) = cli.config.as_deref() {
+            cfg.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            })
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        };
+        let result = commands::project::execute_project_migrate_lifecycle(
+            &project_root,
+            *dry_run,
+            *yes,
+            !*no_backup,
+            stage_name,
+            source,
+            *no_state,
+            *reset_state,
+        );
+        if let Err(e) = result {
+            OutputHandler::print_err(&e);
+            process::exit(1);
+        }
+        return;
+    }
+
+    // 3. Determine whether empty config is permitted
     let allow_empty_config = matches!(
         &command,
         Commands::Init { .. }
@@ -135,9 +177,9 @@ fn main() {
         Commands::Exec(args) => execute_exec(
             &manager,
             args.name.as_deref(),
-            &args.command,
+            &args.repos,
             args.all,
-            args.repos_flag.as_deref(),
+            &args.command,
         ),
         Commands::Push(args) => execute_push(
             &manager,
@@ -261,15 +303,15 @@ fn main() {
         Commands::Setup(args) => execute_setup(
             &mut manager,
             args.name.as_deref(),
-            Some(&args.repos),
+            &args.repos,
             args.all,
-            args.repos_flag.as_deref(),
             args.dry_run,
             args.skip_scripts,
             cli.verbose,
             args.interface.as_deref(),
             args.lan_ip.as_deref(),
         ),
+        Commands::Lifecycle(args) => execute_lifecycle(&mut manager, &args),
         Commands::Project(args) => match args.action {
             Some(ProjectAction::Init { urls }) => execute_init(&mut manager, &urls),
             Some(ProjectAction::Add { url }) => execute_add(&mut manager, &url),
@@ -278,9 +320,13 @@ fn main() {
             Some(ProjectAction::List) => execute_project_list(),
             Some(ProjectAction::Register { path }) => execute_project_register(path.as_deref()),
             Some(ProjectAction::Unregister { path }) => execute_project_unregister(path.as_deref()),
+            Some(ProjectAction::Migrate { .. }) => {
+                // Handled above before config load/enforcement.
+                Ok(())
+            }
             None => {
                 OutputHandler::print_err(
-                    "Please specify a project action: init, add, fetch, sync, list, register, unregister",
+                    "Please specify a project action: init, add, fetch, sync, list, register, unregister, migrate",
                 );
                 process::exit(1);
             }

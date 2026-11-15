@@ -1,4 +1,4 @@
-use crate::helpers::resolve_ws_and_repo_args;
+use crate::helpers::{parse_repo_list, parse_repo_token, resolve_ws_and_repo_args};
 use std::fs;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -18,24 +18,44 @@ pub fn execute_start(
     interface: Option<&str>,
     lan_ip: Option<&str>,
 ) -> Result<(), String> {
+    // `--all` must suppress repository inference from the current directory.
+    let detected_name: Option<String> = if all && name.is_none() {
+        manager.detect_context(None).0.map(|ws| format!("@{}", ws))
+    } else {
+        None
+    };
+    let name_arg = name.or(detected_name.as_deref());
+
     let (ws_name, _, resolved_repos) =
-        resolve_ws_and_repo_args(manager, name, None, repos, true, false)?;
-    let mut target_repos = if !resolved_repos.is_empty() {
+        resolve_ws_and_repo_args(manager, name_arg, None, repos, true, false)?;
+
+    let mut explicit_repos = !resolved_repos.is_empty();
+    let mut target_repos = if explicit_repos {
         Some(resolved_repos)
     } else {
         None
     };
 
     if let Some(rf) = repos_flag {
-        let set: Vec<String> = rf
-            .split(',')
-            .filter(|r| !r.trim().is_empty())
-            .map(|r| crate::helpers::clean_repo(Some(r.trim())).unwrap())
-            .collect();
-        target_repos = Some(set);
+        let set = parse_repo_list(manager, rf)?;
+        if !set.is_empty() {
+            explicit_repos = true;
+            target_repos = Some(set);
+        }
     }
 
+    let attach = match attach_repo {
+        Some(repo) => Some(parse_repo_token(manager, repo)?),
+        None => None,
+    };
+
     if all {
+        if explicit_repos {
+            return Err(
+                "'--all' cannot be combined with explicit repository targets. Remove the '%repo' arguments or drop '--all'."
+                    .to_string(),
+            );
+        }
         target_repos = None;
     }
 
@@ -46,7 +66,7 @@ pub fn execute_start(
             &ws_name,
             target_repos.as_deref(),
             launch_mode,
-            attach_repo,
+            attach.as_deref(),
             daemon,
             switch,
             interface,
@@ -82,7 +102,7 @@ pub fn execute_attach(
     switch: bool,
 ) -> Result<(), String> {
     let (ws_name, repo_name, _) = resolve_ws_and_repo_args(manager, name, repo, None, true, false)?;
-    let target_repo = repo.or(repo_name.as_deref());
+    let target_repo = repo_name.as_deref();
     manager
         .attach_workspace(&ws_name, target_repo, all_panes, mode, switch)
         .map_err(|e| e.to_string())
@@ -103,9 +123,10 @@ pub fn execute_restart(
             "No running session for workspace '@{}'. Starting...",
             ws_name
         ));
+        let start_name = format!("@{}", ws_name);
         return execute_start(
             manager,
-            Some(&ws_name),
+            Some(&start_name),
             repos,
             false,
             None,
@@ -171,7 +192,7 @@ pub fn execute_logs(
         return Ok(());
     }
 
-    let target_repo = repo.or(repo_name.as_deref());
+    let target_repo = repo_name.as_deref();
     let mut log_files = Vec::new();
 
     if let Some(r) = target_repo {
@@ -245,7 +266,7 @@ pub fn execute_bridge(
     repo: Option<&str>,
 ) -> Result<(), String> {
     let (ws_name, repo_name, _) = resolve_ws_and_repo_args(manager, name, repo, None, true, false)?;
-    let target_repo = repo.or(repo_name.as_deref());
+    let target_repo = repo_name.as_deref();
     manager
         .run_raw_bridge(&ws_name, target_repo)
         .map_err(|e| e.to_string())

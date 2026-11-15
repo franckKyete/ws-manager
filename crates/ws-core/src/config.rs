@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::errors::{Result, WSError};
+use crate::lifecycle::LIFECYCLE_SCHEMA_VERSION;
 use crate::models::{
     clean_env_val, is_private_val, is_secret_val, AppConfig, HubAutoSaveConfig, RepoConfig,
     TmuxConfig,
@@ -66,6 +67,23 @@ impl ConfigLoader {
         workspaces_dir: Option<&Path>,
         allow_empty: bool,
     ) -> Result<AppConfig> {
+        Self::load_config_with_options(config_path, workspaces_dir, allow_empty, true)
+    }
+
+    pub fn load_config_for_migration(
+        config_path: Option<&Path>,
+        workspaces_dir: Option<&Path>,
+        allow_empty: bool,
+    ) -> Result<AppConfig> {
+        Self::load_config_with_options(config_path, workspaces_dir, allow_empty, false)
+    }
+
+    fn load_config_with_options(
+        config_path: Option<&Path>,
+        workspaces_dir: Option<&Path>,
+        allow_empty: bool,
+        enforce_lifecycle_schema: bool,
+    ) -> Result<AppConfig> {
         let file_path = Self::find_config_file(config_path)?;
         let project_root = if let Some(ref fp) = file_path {
             fp.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
@@ -91,6 +109,8 @@ impl ConfigLoader {
         let mut hub_auto_save = None;
         let mut hub_project = None;
         let mut hub_val = serde_json::Value::Object(serde_json::Map::new());
+        let mut lifecycle_val = None;
+        let mut schema_version = None;
 
         if let Some(ref fp) = file_path {
             let content = fs::read_to_string(fp)?;
@@ -261,6 +281,14 @@ impl ConfigLoader {
                         }
                     }
                 }
+
+                // 11. Lifecycle
+                if let Some(lv) = map.get(serde_yaml::Value::String("lifecycle".to_string())) {
+                    lifecycle_val = serde_json::to_value(lv).ok();
+                }
+                if let Some(sv) = map.get(serde_yaml::Value::String("schema_version".to_string())) {
+                    schema_version = sv.as_u64().map(|n| n as u32);
+                }
             }
         } else {
             // Auto-detect bare repos in bares/ or project_root
@@ -299,6 +327,29 @@ impl ConfigLoader {
             }
         }
 
+        if !repos.is_empty() && enforce_lifecycle_schema {
+            if schema_version != Some(LIFECYCLE_SCHEMA_VERSION) {
+                return Err(WSError::Config(format!(
+                    "Project configuration '{}' uses unsupported lifecycle schema (found: {}, expected: {}).\\nRun 'ws project migrate lifecycle --yes' before using this project.",
+                    file_path
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| project_root.join("repositories.yml").display().to_string()),
+                    schema_version.unwrap_or(0),
+                    LIFECYCLE_SCHEMA_VERSION
+                )));
+            }
+            if let Some(lv) = lifecycle_val.as_ref().and_then(|v| v.as_object()) {
+                if lv.contains_key("bootstrap")
+                    || lv.contains_key("env")
+                    || lv.contains_key("ready")
+                {
+                    return Err(WSError::Config(
+                        "Legacy lifecycle stages (bootstrap/env/ready) detected. Run 'ws project migrate lifecycle --yes' before using this project.".to_string(),
+                    ));
+                }
+            }
+        }
+
         if repos.is_empty() && !allow_empty {
             return Err(WSError::Config(
                 "No repositories configured. Run 'ws init <git-url...>' to clone repositories or create 'repositories.yml'.".to_string(),
@@ -331,6 +382,8 @@ impl ConfigLoader {
             hub_auto_save,
             hub_project,
             hub: hub_val,
+            lifecycle: lifecycle_val,
+            schema_version,
         })
     }
 
@@ -529,7 +582,22 @@ impl ConfigLoader {
             .map(|p| p.to_path_buf())
             .unwrap_or_else(|| PathBuf::from("repositories.yml"));
 
-        let mut data = serde_yaml::Mapping::new();
+        let mut data: serde_yaml::Mapping = if path.is_file() {
+            let content = fs::read_to_string(&path).unwrap_or_default();
+            match serde_yaml::from_str::<serde_yaml::Value>(&content) {
+                Ok(serde_yaml::Value::Mapping(m)) => m,
+                _ => serde_yaml::Mapping::new(),
+            }
+        } else {
+            serde_yaml::Mapping::new()
+        };
+
+        // Always emit v3 schema for saved configs.
+        data.insert(
+            serde_yaml::Value::String("schema_version".to_string()),
+            serde_yaml::Value::Number(3.into()),
+        );
+
         let repos_yaml = serde_yaml::to_value(repositories)?;
         data.insert(
             serde_yaml::Value::String("repositories".to_string()),
@@ -542,7 +610,12 @@ impl ConfigLoader {
         }
 
         if hub_project.is_some() || hub_auto_save.is_some() {
-            let mut hub_map = serde_yaml::Mapping::new();
+            let hub_key = serde_yaml::Value::String("hub".to_string());
+            let mut hub_map = data
+                .get(&hub_key)
+                .and_then(|v| v.as_mapping())
+                .cloned()
+                .unwrap_or_default();
             if let Some(p) = hub_project {
                 hub_map.insert(
                     serde_yaml::Value::String("project".to_string()),
@@ -554,11 +627,11 @@ impl ConfigLoader {
                 let yaml_val = serde_yaml::to_value(json_map)?;
                 hub_map.insert(serde_yaml::Value::String("auto_save".to_string()), yaml_val);
             }
-            data.insert(
-                serde_yaml::Value::String("hub".to_string()),
-                serde_yaml::Value::Mapping(hub_map),
-            );
+            data.insert(hub_key, serde_yaml::Value::Mapping(hub_map));
         }
+
+        // Remove legacy top-level setup if present in preserved content is not safe to guess,
+        // but v3 configs must not rely on it; leave lifecycle/global keys as-is.
 
         let content = serde_yaml::to_string(&serde_yaml::Value::Mapping(data))?;
         if let Some(parent) = path.parent() {

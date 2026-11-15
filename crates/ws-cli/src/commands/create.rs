@@ -4,6 +4,42 @@ use std::path::Path;
 use ws_core::models::{RepoConfig, RepoSpec};
 use ws_core::WorkspaceManager;
 
+fn repo_sigil_error(repositories: &HashMap<String, RepoConfig>, token: &str) -> String {
+    let bare = token.trim_start_matches(&['@', '%', '+', ':', '#', '$'][..]);
+    if repositories.contains_key(bare) {
+        format!(
+            "Repository names must start with '%': use '%{}' instead of '{}'.",
+            bare, token
+        )
+    } else {
+        format!(
+            "Repository arguments must start with '%' (e.g. '%{}').",
+            bare
+        )
+    }
+}
+
+fn parse_repo_selection(
+    repositories: &HashMap<String, RepoConfig>,
+    value: &str,
+) -> Result<HashSet<String>, String> {
+    let mut set = HashSet::new();
+    for item in value.split(',') {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let bare = item
+            .strip_prefix('%')
+            .ok_or_else(|| repo_sigil_error(repositories, item))?;
+        if bare.is_empty() {
+            return Err("Repository name after '%' is empty.".to_string());
+        }
+        set.insert(bare.to_string());
+    }
+    Ok(set)
+}
+
 pub fn parse_create_workspace_args(
     workspace_name: &str,
     raw_args: &[String],
@@ -34,22 +70,12 @@ pub fn parse_create_workspace_args(
                 ));
             }
             let repos_str = &raw_args[idx + 1];
-            let set: HashSet<String> = repos_str
-                .split(',')
-                .filter(|r| !r.trim().is_empty())
-                .map(|r| clean_repo(Some(r.trim())).unwrap())
-                .collect();
-            selected_repos = Some(set);
+            selected_repos = Some(parse_repo_selection(repositories, repos_str)?);
             idx += 2;
             continue;
         } else if arg.starts_with("--repos=") || arg.starts_with("--only=") {
             let repos_str = arg.split_once('=').unwrap().1;
-            let set: HashSet<String> = repos_str
-                .split(',')
-                .filter(|r| !r.trim().is_empty())
-                .map(|r| clean_repo(Some(r.trim())).unwrap())
-                .collect();
-            selected_repos = Some(set);
+            selected_repos = Some(parse_repo_selection(repositories, repos_str)?);
             idx += 1;
             continue;
         } else if arg == "--existing" {
@@ -89,6 +115,10 @@ pub fn parse_create_workspace_args(
         } else if arg.starts_with("--cmd=") || arg.starts_with("--command=") {
             idx += 1;
             continue;
+        }
+
+        if !arg.starts_with('-') && !arg.starts_with('%') {
+            return Err(repo_sigil_error(repositories, arg));
         }
 
         let clean_arg = clean_repo(Some(arg)).unwrap();
@@ -350,14 +380,28 @@ pub fn execute_create(
             .create_workspace_from_config(cfg_file, tmux_cmd, no_tmux)
             .map_err(|e| e.to_string())?;
         if setup {
-            let _ = manager.setup_workspace(&meta.name, None, false, false, false, None, None);
+            manager
+                .setup_workspace(&meta.name, None, false, false, false, None, None)
+                .map_err(|e| e.to_string())?;
         }
         return Ok(());
     }
 
     let ws_name =
         match name {
-            Some(n) => clean_workspace(Some(n)).unwrap(),
+            Some(n) => {
+                let n = n.trim();
+                match n.strip_prefix('@') {
+                    Some(rest) if !rest.trim().is_empty() => rest.to_string(),
+                    _ => {
+                        return Err(format!(
+                            "Workspace names must start with '@': use '@{}' instead of '{}'.",
+                            n.trim_start_matches('@').trim_start_matches('%'),
+                            n
+                        ))
+                    }
+                }
+            }
             None => return Err(
                 "Workspace name (@<name>) is required for 'ws create' unless '-f/--file' is used."
                     .to_string(),
@@ -376,7 +420,9 @@ pub fn execute_create(
         .map_err(|e| e.to_string())?;
 
     if setup {
-        let _ = manager.setup_workspace(&ws_name, None, false, false, false, None, None);
+        manager
+            .setup_workspace(&ws_name, None, false, false, false, None, None)
+            .map_err(|e| e.to_string())?;
     }
 
     Ok(())
@@ -449,7 +495,7 @@ mod tests {
         let repos = sample_repos();
         let specs = parse_create_workspace_args(
             "feat",
-            &["--repos=backend".to_string()],
+            &["--repos=%backend".to_string()],
             &repos,
             Some("develop"),
         )
@@ -458,5 +504,13 @@ mod tests {
         assert_eq!(specs[0].name, "backend");
         assert_eq!(specs[0].branch, "feature/feat");
         assert_eq!(specs[0].base_branch, Some("develop".to_string()));
+    }
+
+    #[test]
+    fn test_parse_create_rejects_bare_repo_token() {
+        let repos = sample_repos();
+        let err = parse_create_workspace_args("feat", &["backend".to_string()], &repos, None)
+            .unwrap_err();
+        assert!(err.contains("%backend"));
     }
 }

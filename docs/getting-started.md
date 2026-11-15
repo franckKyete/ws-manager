@@ -185,14 +185,17 @@ my-polyrepo-project/
 
 ---
 
-### Step 3: Run Setup Scripts & Environment Sync
+### Step 3: Run Configure & Setup Stages
 
-Sync `.env` files and run setup scripts (e.g. `npm install`) inside all
-repositories:
+Run the default lifecycle flow for all repositories (`configure` for file
+copy/env sync, then ordered setup stages such as `install`/`build`/`verify`):
 
 ```bash
 ws setup @feat-auth --all
 ```
+
+> If the project config is not yet on lifecycle schema v3, migrate first with
+> `ws project migrate lifecycle --yes`.
 
 ---
 

@@ -3,7 +3,7 @@
 `ws` is configured declaratively using YAML. This document details the schema
 and behavior of the project configuration file (`repositories.yml`), declarative
 workspace templates (`workspace.yml`), environment variable scoping, and
-automated setup scripts.
+lifecycle/setup configuration.
 
 ---
 
@@ -13,20 +13,29 @@ The `repositories.yml` file resides in the root of your project directory and
 defines the bare repository store, services, ports, environment variables, and
 setup pipelines.
 
-### Full Annotated Example
+### Full Annotated Example (Lifecycle schema v3)
 
 ```yaml
+schema_version: 3
+
 # Global environment variables accessible across all workspaces and services
 env:
   NODE_ENV: development
   LOG_LEVEL: debug
   GLOBAL_API_URL: http://localhost:8080
 
-# Global workspace setup scripts (executed in workspace root)
-setup:
-  scripts:
-    - name: 'Global Pre-flight Check'
-      command: "echo 'Preparing workspace: ${WORKSPACE_NAME}'"
+# Lifecycle (v3): built-in configure stage + ordered setup stages
+lifecycle:
+  configure:
+    - run: "echo 'Preparing workspace: ${WORKSPACE_NAME}'"
+      when: once
+  setup:
+    - name: install
+      hooks:
+        - run: "echo 'global install hooks (optional)'"
+    - name: verify
+      hooks:
+        - run: "echo 'workspace verification'"
 
 # Repositories & Services Definition
 repositories:
@@ -36,24 +45,27 @@ repositories:
     command: npm run dev
     port: 8080
     depends_on: []
-    setup:
-      # Copy files from files/ directory or template examples into worktree
-      copy_files:
-        - from: files/.env.server
-          to: .env
-        - from: .env.example
-          to: .env.local
-      # Static & scoped environment variables
-      env:
-        PORT: '8080'
-        DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/db_${WORKSPACE_NAME}'
-        SECRET_KEY: '${ENV:DEV_SECRET_KEY:-default_secret}'
-      # Repository-specific setup scripts executed inside worktree
-      scripts:
-        - name: 'Install Server Dependencies'
-          command: 'npm install'
-        - name: 'Run Database Migrations'
-          command: 'npm run db:migrate'
+    # File/env sync is handled by the built-in configure stage.
+    copy_files:
+      - from: files/.env.server
+        to: .env
+      - from: .env.example
+        to: .env.local
+    env:
+      PORT: '8080'
+      DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/db_${WORKSPACE_NAME}'
+      SECRET_KEY: '${ENV:DEV_SECRET_KEY:-default_secret}'
+    lifecycle:
+      setup:
+        - name: install
+          hooks:
+            - run: npm install
+        - name: migrate
+          hooks:
+            - run: npm run db:migrate
+        - name: verify
+          hooks:
+            - run: npm run check
 
   mobile:
     bare: bares/Renttik-mobile.git
@@ -62,17 +74,25 @@ repositories:
     port: 8081
     depends_on:
       - server
-    setup:
-      copy_files:
-        - from: files/.env.mobile
-          to: .env
-      env:
-        EXPO_PUBLIC_API_URL: 'http://localhost:8080'
-        EXPO_PORT: '8081'
-      scripts:
-        - name: 'Install Mobile Dependencies'
-          command: 'npm install'
+    copy_files:
+      - from: files/.env.mobile
+        to: .env
+    env:
+      EXPO_PUBLIC_API_URL: 'http://localhost:8080'
+      EXPO_PORT: '8081'
+    lifecycle:
+      setup:
+        - name: install
+          hooks:
+            - run: npm install
 ```
+
+> **Migration required:** legacy configs and v1 lifecycle configs must be
+> migrated before use:
+>
+> ```bash
+> ws project migrate lifecycle --yes
+> ```
 
 ---
 
@@ -80,15 +100,16 @@ repositories:
 
 ### Top-Level Fields
 
-| Field           | Type                    | Description                                                                                |
-| :-------------- | :---------------------- | :----------------------------------------------------------------------------------------- |
-| `env`           | `dict[str, str]`        | Global public environment variables synchronized in blueprint revisions.                   |
-| `secret`        | `dict[str, str]`        | Global sensitive secrets encrypted with AES-256-GCM in wshub Vault.                        |
-| `private`       | `dict[str, str]`        | Global host-specific variables that **never leave the local machine**.                     |
-| `setup.scripts` | `list[ScriptSpec]`      | Global setup scripts executed in the workspace root directory.                             |
-| `tmux`          | `dict` or `str`         | Project Tmux session configuration for workspace windows (`session`, `command`, `switch`). |
-| `hub`           | `dict`                  | wshub settings: default project identifier and background `auto_save` configuration.       |
-| `repositories`  | `dict[str, RepoConfig]` | Map of repository definitions keyed by repository alias (`server`, `mobile`, etc.).        |
+| Field            | Type                    | Description                                                                                |
+| :--------------- | :---------------------- | :----------------------------------------------------------------------------------------- |
+| `schema_version` | `integer`               | Lifecycle/config schema version (v3).                                                      |
+| `env`            | `dict[str, str]`        | Global public environment variables synchronized in blueprint revisions.                   |
+| `secret`         | `dict[str, str]`        | Global sensitive secrets encrypted with AES-256-GCM in wshub Vault.                        |
+| `private`        | `dict[str, str]`        | Global host-specific variables that **never leave the local machine**.                     |
+| `lifecycle`      | `object`                | v3 lifecycle definition (`configure` hooks and ordered `setup` stages).                     |
+| `tmux`           | `dict` or `str`         | Project Tmux session configuration for workspace windows (`session`, `command`, `switch`). |
+| `hub`            | `dict`                  | wshub settings: default project identifier and background `auto_save` configuration.       |
+| `repositories`   | `dict[str, RepoConfig]` | Map of repository definitions keyed by repository alias (`server`, `mobile`, etc.).        |
 
 ---
 
@@ -194,24 +215,28 @@ hub:
 
 ### `RepoConfig` Fields
 
-| Field              | Type                            | Required | Description                                                                                        |
-| :----------------- | :------------------------------ | :------- | :------------------------------------------------------------------------------------------------- |
-| `bare`             | `string`                        | **Yes**  | Relative or absolute path to the bare Git repository (e.g. `bares/server.git`).                    |
-| `checkout`         | `string`                        | **Yes**  | Subdirectory name where the worktree is checked out inside each workspace (e.g. `Renttik-server`). |
-| `command`          | `string`                        | No       | Service launch command (e.g. `npm run dev`, `cargo run`).                                          |
-| `port`             | `integer`                       | No       | Primary base network port the service listens on (used as default port in discovery and status).   |
-| `ports`            | `list[int]` or `dict[str, int]` | No       | Multiple base network ports (e.g. `[8080, 8081]` or `{http: 8080, ws: 8081, metrics: 9090}`).      |
-| `depends_on`       | `list[str]`                     | No       | List of service aliases that must start before this service.                                       |
-| `setup.copy_files` | `list[FileCopySpec]`            | No       | File copy specifications to execute during `ws setup` or workspace creation.                       |
-| `setup.env`        | `dict[str, str]`                | No       | Environment variables specific to this repository worktree.                                        |
-| `setup.scripts`    | `list[ScriptSpec]`              | No       | Setup commands executed sequentially inside the repository worktree directory.                     |
+| Field        | Type                            | Required | Description                                                                                         |
+| :----------- | :------------------------------ | :------- | :-------------------------------------------------------------------------------------------------- |
+| `bare`       | `string`                        | **Yes**  | Relative or absolute path to the bare Git repository (e.g. `bares/server.git`).                     |
+| `checkout`   | `string`                        | **Yes**  | Subdirectory name where the worktree is checked out inside each workspace (e.g. `Renttik-server`).  |
+| `command`    | `string`                        | No       | Service launch command (e.g. `npm run dev`, `cargo run`).                                           |
+| `port`       | `integer`                       | No       | Primary base network port the service listens on (used as default port in discovery and status).    |
+| `ports`      | `list[int]` or `dict[str, int]` | No       | Multiple base network ports (e.g. `[8080, 8081]` or `{http: 8080, ws: 8081, metrics: 9090}`).       |
+| `depends_on` | `list[str]`                     | No       | List of service aliases that must start before this service.                                        |
+| `copy_files` | `list[FileCopySpec]`            | No       | File copy specifications applied during the built-in `configure` stage.                             |
+| `env`        | `dict[str, str]`                | No       | Environment variables specific to this repository worktree (resolved/synced during `configure`).    |
+| `lifecycle`  | `object`                        | No       | Repository lifecycle definition (e.g. ordered `setup` stages/hooks) for v3 lifecycle execution.      |
+
+> Legacy `setup.scripts`/`setup.env`/bootstrap/env/ready lifecycle forms are
+> not used at runtime in schema v3; migrate with `ws project migrate lifecycle --yes`.
 
 ---
 
 ## 🔄 Dynamic Variable Interpolation & Service Discovery
 
 `ws` provides dynamic template variables and cross-service discovery
-placeholders inside commands, environment variable values, and setup scripts:
+placeholders inside commands, environment variable values, and lifecycle hook
+scripts:
 
 ### Standard Template Variables
 
@@ -219,13 +244,13 @@ placeholders inside commands, environment variable values, and setup scripts:
 | :------------------------- | :------------------------------------------------ | :---------------------------------------------- |
 | `${WORKSPACE_NAME}`        | Name of the active workspace                      | `feat-auth`                                     |
 | `${WORKSPACE_SLOT}`        | Deterministic integer slot index of the workspace | `0`, `1`, `2`                                   |
-| `${WORKSPACE_PATH}`        | Absolute path to the workspace root               | `/path/to/workspaces/@feat-auth`                |
-| `${WORKSPACE_DIR}`         | Absolute path to the workspace root directory     | `/path/to/workspaces/@feat-auth`                |
+| `${WORKSPACE_PATH}`        | Absolute path to the workspace root               | `/path/to/workspaces/feat-auth`                |
+| `${WORKSPACE_DIR}`         | Absolute path to the workspace root directory     | `/path/to/workspaces/feat-auth`                |
 | `${PROJECT_ROOT}`          | Absolute path to the project root directory       | `/path/to/project`                              |
 | `${PROJECT_DIR}`           | Alias for `${PROJECT_ROOT}`                       | `/path/to/project`                              |
 | `${SCRIPTS_DIR}`           | Path to project root automation scripts directory | `/path/to/project/scripts`                      |
 | `${REPO_NAME}`             | Alias of the target repository                    | `server`                                        |
-| `${REPO_PATH}`             | Absolute path to the repository worktree          | `/path/to/workspaces/@feat-auth/Renttik-server` |
+| `${REPO_PATH}`             | Absolute path to the repository worktree          | `/path/to/workspaces/feat-auth/Renttik-server` |
 | `${LAN_IP}`                | Auto-detected host LAN Wi-Fi IP address           | `192.168.1.45`                                  |
 | `${PUBLIC_HOST}`           | Configured public or tunnel hostname              | `myproject.loca.lt`                             |
 | `${ENV:VAR_NAME:-default}` | Host environment variable with optional fallback  | `${ENV:API_KEY:-dev_key}`                       |
@@ -338,7 +363,7 @@ Native on Android & iOS) can reliably connect to local API backend services,
 ### 📄 Live Service Registry File (`.ws/services.json`)
 
 On startup, `ws` writes a machine-readable discovery descriptor to
-`workspaces/@<name>/.ws/services.json`:
+`workspaces/<name>/.ws/services.json`:
 
 ```json
 {

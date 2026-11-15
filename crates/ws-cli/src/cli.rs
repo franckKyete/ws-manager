@@ -145,6 +145,9 @@ pub enum Commands {
     #[command(about = "Run setup scripts and environment variable sync for a workspace")]
     Setup(SetupArgs),
 
+    #[command(about = "Run or inspect workspace lifecycle stages")]
+    Lifecycle(LifecycleCommandArgs),
+
     // ==================== 6. Project & Bare Repositories ====================
     #[command(about = "Manage project-wide bare repositories")]
     Project(ProjectCommandArgs),
@@ -305,13 +308,17 @@ pub struct ExecArgs {
     #[arg(help = "Workspace name (@<name>)")]
     pub name: Option<String>,
 
+    #[arg(help = "Repository names (%<repo>)")]
+    pub repos: Vec<String>,
+
     #[arg(long = "all", help = "Execute across all worktrees in workspace")]
     pub all: bool,
 
-    #[arg(long = "repos", help = "Comma-separated list of repository names")]
-    pub repos_flag: Option<String>,
-
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(
+        last = true,
+        allow_hyphen_values = true,
+        help = "Command to execute (after --)"
+    )]
     pub command: Vec<String>,
 }
 
@@ -343,15 +350,20 @@ pub enum RepoAction {
         about = "Add a repository worktree to an existing workspace"
     )]
     Add {
+        #[arg(help = "Workspace name (@<name>)")]
         name: Option<String>,
+        #[arg(help = "Repository specification (%<repo>[:branch])")]
         repo: Option<String>,
+        #[arg(help = "Target branch name")]
         branch: Option<String>,
         #[arg(long = "existing")]
         existing: bool,
     },
     #[command(aliases = ["rm", "remove-repo"], about = "Remove a repository worktree from a workspace")]
     Remove {
+        #[arg(help = "Workspace name (@<name>)")]
         name: Option<String>,
+        #[arg(help = "Repository name (%<repo>)")]
         repo: Option<String>,
         #[arg(long = "delete-branch")]
         delete_branch: bool,
@@ -361,7 +373,9 @@ pub enum RepoAction {
         about = "Lock repository worktree (mark files read-only)"
     )]
     Lock {
+        #[arg(help = "Workspace name (@<name>)")]
         name: Option<String>,
+        #[arg(help = "Repository name (%<repo>)")]
         repo: Option<String>,
     },
     #[command(
@@ -369,7 +383,9 @@ pub enum RepoAction {
         about = "Unlock repository worktree (restore write permissions)"
     )]
     Unlock {
+        #[arg(help = "Workspace name (@<name>)")]
         name: Option<String>,
+        #[arg(help = "Repository name (%<repo>)")]
         repo: Option<String>,
     },
 }
@@ -530,13 +546,6 @@ pub struct SetupArgs {
     #[arg(long = "all", help = "Setup all repositories in the workspace")]
     pub all: bool,
 
-    #[arg(
-        long = "repos",
-        visible_alias = "only",
-        help = "Comma-separated list of repository names to setup"
-    )]
-    pub repos_flag: Option<String>,
-
     #[arg(long = "dry-run", help = "Print setup commands without executing them")]
     pub dry_run: bool,
 
@@ -579,6 +588,91 @@ pub enum ProjectAction {
     Register { path: Option<PathBuf> },
     #[command(about = "Unregister a project from the global registry")]
     Unregister { path: Option<PathBuf> },
+    #[command(about = "Migrate project configuration/state")]
+    Migrate {
+        #[command(subcommand)]
+        action: ProjectMigrateAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProjectMigrateAction {
+    #[command(about = "Migrate repositories.yml and workspace state to lifecycle schema v3")]
+    Lifecycle {
+        #[arg(long = "dry-run", help = "Show migration plan without writing changes")]
+        dry_run: bool,
+        #[arg(long = "yes", help = "Apply migration without confirmation prompt")]
+        yes: bool,
+        #[arg(
+            long = "no-backup",
+            help = "Do not create a backup of repositories.yml"
+        )]
+        no_backup: bool,
+        #[arg(
+            long = "stage-name",
+            default_value = "install",
+            help = "Setup stage name for migrated legacy/setup commands"
+        )]
+        stage_name: String,
+        #[arg(
+            long = "source",
+            default_value = "auto",
+            help = "Migration source: auto|legacy|v1"
+        )]
+        source: String,
+        #[arg(long = "no-state", help = "Do not migrate workspace lifecycle state")]
+        no_state: bool,
+        #[arg(long = "reset-state", help = "Reset lifecycle state before migration")]
+        reset_state: bool,
+    },
+}
+
+#[derive(Args, Debug)]
+#[command(
+    about = "Run or inspect workspace lifecycle stages",
+    long_about = "Run or inspect workspace lifecycle stages.\n\n\
+The workspace is inferred from the current directory when @workspace is omitted.\n\
+When @workspace, %repo and --all are all omitted, the repository is inferred from\n\
+the current directory. Stage names must be prefixed with '+' (for example\n\
+'+configure', '+install', '+pre_launch'). With no stages, 'run' executes\n\
+configure followed by every setup stage in order.",
+    override_usage = "ws lifecycle [@workspace] [%repo ...] run [--all] [+stage ...] [flags]\n       ws lifecycle [@workspace] [%repo ...] status [+stage ...]"
+)]
+pub struct LifecycleCommandArgs {
+    #[arg(
+        value_name = "ARGS",
+        num_args = 0..,
+        help = "Positional arguments: [@workspace] [%repo ...] run|status [+stage ...]"
+    )]
+    pub raw: Vec<String>,
+
+    #[arg(long = "all", help = "Run for all repositories in the workspace")]
+    pub all: bool,
+
+    #[arg(
+        long = "force",
+        help = "Force re-run even if stage is marked completed"
+    )]
+    pub force: bool,
+
+    #[arg(long = "dry-run", help = "Show commands without executing them")]
+    pub dry_run: bool,
+
+    #[arg(
+        long = "skip-configure",
+        help = "Skip automatic configure stage before setup stages"
+    )]
+    pub skip_configure: bool,
+
+    #[arg(long = "interface", visible_aliases = ["iface", "lan-interface"], help = "Network interface name or type")]
+    pub interface: Option<String>,
+
+    #[arg(
+        long = "ip",
+        visible_alias = "lan-ip",
+        help = "Explicit host LAN IP override"
+    )]
+    pub lan_ip: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -664,6 +758,7 @@ pub enum HubAction {
     },
     #[command(about = "Restore workspace state from wshub on this machine")]
     Resume {
+        #[arg(help = "Workspace name (@<name>)")]
         workspace: String,
         #[arg(long = "project")]
         project: Option<String>,
@@ -689,6 +784,7 @@ pub enum HubAction {
 pub enum HubStateAction {
     #[command(about = "Save workspace state to wshub")]
     Save {
+        #[arg(help = "Workspace name (@<name>)")]
         workspace: String,
         #[arg(long = "project")]
         project: Option<String>,
@@ -699,6 +795,7 @@ pub enum HubStateAction {
     },
     #[command(about = "Restore workspace state from wshub")]
     Restore {
+        #[arg(help = "Workspace name (@<name>)")]
         workspace: String,
         #[arg(long = "project")]
         project: Option<String>,
@@ -759,7 +856,7 @@ pub enum HubSecretAction {
     Set {
         key: String,
         value: String,
-        #[arg(long = "repo")]
+        #[arg(long = "repo", help = "Repository name (%<repo>)")]
         repo: Option<String>,
         #[arg(long = "project")]
         project: Option<String>,
@@ -767,7 +864,7 @@ pub enum HubSecretAction {
     #[command(about = "Get a secret value from wshub vault")]
     Get {
         key: String,
-        #[arg(long = "repo")]
+        #[arg(long = "repo", help = "Repository name (%<repo>)")]
         repo: Option<String>,
         #[arg(long = "project")]
         project: Option<String>,
@@ -775,7 +872,7 @@ pub enum HubSecretAction {
     #[command(about = "Delete a secret from wshub vault")]
     Delete {
         key: String,
-        #[arg(long = "repo")]
+        #[arg(long = "repo", help = "Repository name (%<repo>)")]
         repo: Option<String>,
         #[arg(long = "project")]
         project: Option<String>,

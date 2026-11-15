@@ -1,141 +1,69 @@
-use crate::helpers::{clean_repo, clean_workspace};
-use std::path::Path;
+use crate::helpers::{parse_repo_token, sigil_hint};
 use ws_core::output::OutputHandler;
 use ws_core::WorkspaceManager;
 
 pub fn execute_exec(
     manager: &WorkspaceManager,
     name: Option<&str>,
-    command: &[String],
+    repos: &[String],
     all: bool,
-    repos_flag: Option<&str>,
+    command: &[String],
 ) -> Result<(), String> {
     let (detected_ws, _) = manager.detect_context(None);
-    let mut tokens: Vec<String> = Vec::new();
-    if let Some(n) = name {
-        tokens.push(n.to_string());
-    }
-    tokens.extend_from_slice(command);
 
     let mut ws_name: Option<String> = None;
     let mut target_repos: Vec<String> = Vec::new();
-    let mut exec_cmd: Vec<String> = Vec::new();
-    let mut all_flag = all;
 
-    if let Some(rf) = repos_flag {
-        for r in rf.split(',') {
-            if let Some(r_clean) = clean_repo(Some(r.trim())) {
-                if !r_clean.is_empty() {
-                    target_repos.push(r_clean);
-                }
+    if let Some(token) = name {
+        let token = token.trim();
+        if let Some(rest) = token.strip_prefix('@') {
+            if rest.is_empty() {
+                return Err("Workspace name after '@' is empty.".to_string());
             }
-        }
-    }
-
-    let mut idx = 0;
-    // 1. Parse optional workspace name (@name or registered workspace name before command)
-    if idx < tokens.len() {
-        let t = &tokens[idx];
-        if t.starts_with('@') {
-            ws_name = clean_workspace(Some(t));
-            idx += 1;
-        } else if t == "--" {
-            idx += 1;
-            exec_cmd.extend_from_slice(&tokens[idx..]);
-            idx = tokens.len();
-        } else if !t.starts_with(&['%', '+', ':', '#', '$', '-'][..]) {
-            if let Some(c_ws) = clean_workspace(Some(t)) {
-                if manager.has_workspace(&c_ws) {
-                    ws_name = Some(c_ws);
-                    idx += 1;
-                }
-            }
-        }
-    }
-
-    if ws_name.is_none() {
-        ws_name = detected_ws;
-    }
-
-    // 2. Parse optional repository filters (%repo) before delimiter '--' or command
-    while idx < tokens.len() {
-        let t = &tokens[idx];
-        if t == "--" {
-            idx += 1;
-            break;
-        } else if t == "--all" || t == "-a" {
-            all_flag = true;
-            target_repos.clear();
-            idx += 1;
-        } else if t.starts_with(&['%', '+', ':', '#', '$'][..]) {
-            for sub_t in t.split(',') {
-                if let Some(sub_clean) = clean_repo(Some(sub_t.trim())) {
-                    if !sub_clean.is_empty() {
-                        target_repos.push(sub_clean);
-                    }
-                }
-            }
-            idx += 1;
-        } else if let Some(ref current_ws) = ws_name {
-            let clean_t = clean_repo(Some(t)).unwrap_or_else(|| t.to_string());
-            let mut is_repo = false;
-            if manager.config.repositories.contains_key(&clean_t)
-                || manager
-                    .config
-                    .repositories
-                    .values()
-                    .any(|r| r.checkout == clean_t)
-            {
-                is_repo = true;
-            } else if let Ok((meta, _)) = manager.get_workspace_info(current_ws) {
-                if meta.repositories.contains_key(&clean_t)
-                    || meta.repositories.values().any(|s| {
-                        s.path == clean_t
-                            || Path::new(&s.path)
-                                .file_name()
-                                .map(|f| f.to_str().unwrap() == clean_t)
-                                .unwrap_or(false)
-                    })
-                {
-                    is_repo = true;
-                }
-            }
-
-            if is_repo {
-                target_repos.push(clean_t);
-                idx += 1;
-            } else {
-                break;
-            }
+            ws_name = Some(rest.to_string());
+        } else if token.starts_with('%') {
+            target_repos.push(parse_repo_token(manager, token)?);
         } else {
-            break;
+            return Err(sigil_hint(manager, token));
         }
     }
 
-    // 3. Remaining tokens form the command
-    if idx < tokens.len() {
-        exec_cmd.extend_from_slice(&tokens[idx..]);
+    for token in repos {
+        let repo = parse_repo_token(manager, token)?;
+        if !repo.is_empty() && !target_repos.contains(&repo) {
+            target_repos.push(repo);
+        }
     }
 
-    if !exec_cmd.is_empty() && exec_cmd[0] == "--" {
-        exec_cmd.remove(0);
+    if all && !target_repos.is_empty() {
+        return Err(
+            "'--all' cannot be combined with explicit repository targets. Remove the '%repo' arguments or drop '--all'."
+                .to_string(),
+        );
     }
 
-    let ws = match ws_name {
+    let ws = match ws_name.or(detected_ws) {
         Some(w) => w,
-        None => return Err("Workspace name (@<name>) required for 'ws exec'. Specify a workspace or run this command from inside a workspace directory.".to_string()),
+        None => {
+            return Err(
+                "Workspace name (@<name>) required for 'ws exec'. Pass '@<workspace>' or run this command from inside a workspace directory."
+                    .to_string(),
+            )
+        }
     };
 
+    let mut exec_cmd: Vec<String> = command.to_vec();
+    if exec_cmd.first().map(|s| s.as_str()) == Some("--") {
+        exec_cmd.remove(0);
+    }
     if exec_cmd.is_empty() {
-        return Err("Command required for 'ws exec'.".to_string());
+        return Err("Command required for 'ws exec'. Pass it after '--'.".to_string());
     }
 
-    let filter = if all_flag || target_repos.iter().any(|r| r == "all" || r == "*") {
+    let filter = if all || target_repos.is_empty() {
         None
-    } else if !target_repos.is_empty() {
-        Some(target_repos)
     } else {
-        None
+        Some(target_repos)
     };
 
     let results = manager

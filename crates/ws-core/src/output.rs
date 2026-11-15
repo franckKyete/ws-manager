@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn test_wrap_text() {
-        let msg = "Explicit repository selection required for setup in workspace '@full-rust-migration'. Specify '--all' to setup all repositories, or specify repositories using '%repo1 %repo2' or '--repos r1,r2'.";
+        let msg = "Explicit repository selection required for setup in workspace '@full-rust-migration'. Specify '--all' to setup all repositories, or specify repositories using '%repo1 %repo2'.";
         let wrapped = OutputHandler::wrap_text(msg, 60);
         assert!(wrapped.len() > 1);
         for line in &wrapped {

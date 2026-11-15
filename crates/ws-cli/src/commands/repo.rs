@@ -10,7 +10,7 @@ pub fn execute_repo_add(
 ) -> Result<(), String> {
     let (ws_name, _, _) = resolve_ws_and_repo_args(manager, name, repo_input, None, true, false)?;
     let raw_input = repo_input
-        .or(name)
+        .or_else(|| name.filter(|n| n.starts_with('%')))
         .ok_or_else(|| "Repository specification (%<repo>[:branch]) required.".to_string())?;
     let clean_input = clean_repo(Some(raw_input)).unwrap();
     let mut create_mode = !existing;
