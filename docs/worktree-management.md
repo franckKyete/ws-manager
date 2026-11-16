@@ -47,6 +47,40 @@ ws create @prod-debug --all --existing
 
 ---
 
+## 🌱 Choosing the Base Branch
+
+New branches start from each repository's `base_branch` in `repositories.yml`.
+If it is missing, `ws create` prompts once per repository with the detected
+default (or accepts it with `--yes`) and saves it.
+
+```yaml
+repositories:
+  server:
+    bare: bares/server.git
+    checkout: server
+    base_branch: develop
+```
+
+Resolution order when the field is unset: a prompt when interactive, otherwise
+the detected default. Detection tries `origin/HEAD`, the bare repository's
+`HEAD`, then `main` → `develop` → `master`; no branch is invented.
+
+Override the configured base for one command without editing the file:
+
+```bash
+# New branches start from release/2.0 just this time:
+ws create @hotfix %server %mobile --base release/2.0
+```
+
+`--base`, `--target`, and `--from` are aliases and are never persisted. Existing
+branch checkouts (`:existing` or `create: false`) ignore the base entirely.
+
+Declarative workspace files are strict: `ws create --file` requires a base
+(`base`, `target`, `from`, or `base_branch`) for every `create: true` entry and
+fails before touching Git otherwise.
+
+---
+
 ## 🔒 Tracked File Locking (`ws repo lock` / `ws lock`)
 
 When working on a frontend or mobile feature, you may need a running backend
@@ -164,6 +198,9 @@ ws repo add @develop %web:feature/auth-page
 
 # Add a repository on an existing branch:
 ws repo add @develop %web:main --existing
+
+# Create the new branch from a different base just this once:
+ws repo add @develop %web:feature/auth-page --base develop
 ```
 
 ### Removing a Repository:

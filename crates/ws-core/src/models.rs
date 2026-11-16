@@ -35,6 +35,8 @@ pub struct RepoConfig {
     pub checkout: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<u16>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
@@ -94,6 +96,7 @@ impl RepoConfig {
             bare: bare.into(),
             checkout: checkout.into(),
             url: None,
+            base_branch: None,
             port: None,
             ports: HashMap::new(),
             env: HashMap::new(),
@@ -143,6 +146,25 @@ impl RepoConfig {
             .get(serde_yaml::Value::String("url".to_string()))
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+
+        let base_branch = match mapping.get(serde_yaml::Value::String("base_branch".to_string())) {
+            Some(v) if v.is_null() => None,
+            Some(v) => {
+                let raw = v.as_str().ok_or_else(|| {
+                    format!(
+                        "Repository '{}' field 'base_branch' must be a string",
+                        clean_name
+                    )
+                })?;
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            }
+            None => None,
+        };
 
         let mut public_env = HashMap::new();
         let mut secret_env = HashMap::new();
@@ -313,6 +335,7 @@ impl RepoConfig {
             bare: PathBuf::from(bare_str),
             checkout: clean_checkout.to_string(),
             url,
+            base_branch,
             port: port_val,
             ports: ports_dict,
             env: public_env,

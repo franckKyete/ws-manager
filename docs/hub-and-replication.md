@@ -65,6 +65,10 @@ classification:
 4. **Sensitive files** (`files/` directory or `copy_files:`) are **encrypted and
    uploaded** to the wshub encrypted blob store.
 
+Repository `base_branch` values are included in the published blueprint. When
+pulling a revised blueprint, a `base_branch` present remotely wins; local values
+are preserved for repositories the remote revision omits it for.
+
 ```bash
 cd my-project-workspaces
 ws hub publish kyete/renttik -d "Production polyrepo ecosystem"

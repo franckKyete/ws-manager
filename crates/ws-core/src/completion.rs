@@ -221,6 +221,7 @@ _ws() {
                         '--no-tmux[Skip creating a tmux window for this workspace]' \
                         '--all[Include all repositories]' \
                         '--existing[Checkout existing branches]' \
+                        '--yes[Non-interactive: accept detected default base branches]' \
                         '*:repository specification:_ws_repositories'
                     ;;
                 focus|switch)
@@ -334,8 +335,22 @@ _ws() {
                         '1:action:(add remove lock unlock)' \
                         '2:workspace:_ws_workspaces' \
                         '3:repository:_ws_repositories' \
+                        '--base[Base branch for a newly created branch]:branch:' \
+                        '--target[Base branch for a newly created branch]:branch:' \
+                        '--from[Base branch for a newly created branch]:branch:' \
                         '--existing[Checkout existing branch]' \
+                        '--yes[Non-interactive: accept detected default base branches]' \
                         '--delete-branch[Also delete branch from bare store]'
+                    ;;
+                init)
+                    _arguments \
+                        '--yes[Non-interactive: accept detected default base branches]' \
+                        '*:repository URL:_files -/'
+                    ;;
+                add)
+                    _arguments \
+                        '--yes[Non-interactive: accept detected default base branches]' \
+                        '1:repository URL or name=URL:_files -/'
                     ;;
                 project)
                     local proj_cmd="${words[2]}"
@@ -355,7 +370,10 @@ _ws() {
                                 '--reset-state[Reset workspace lifecycle state instead of migrating it]'
                         fi
                     else
-                        _arguments '1:action:(init add fetch sync list register unregister migrate)' '*:args:_files'
+                        _arguments \
+                            '1:action:(init add fetch sync list register unregister migrate)' \
+                            '*:args:_files' \
+                            '--yes[Non-interactive: accept detected default base branches]'
                     fi
                     ;;
                 daemon)
@@ -457,7 +475,7 @@ _ws_completion() {
     case "$subcmd" in
         create|new)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=( $(compgen -W "--file -f --setup --cmd --command --no-tmux --all --existing" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--file -f --setup --cmd --command --no-tmux --all --existing --yes" -- "$cur") )
             elif [[ $cword -eq 2 ]]; then
                 local workspaces=$(ws _complete workspaces_all 2>/dev/null | cut -d: -f1)
                 COMPREPLY=( $(compgen -W "${workspaces}" -- "$cur") )
@@ -546,7 +564,9 @@ _ws_completion() {
             fi
             ;;
         repo|workspace)
-            if [[ $cword -eq 2 ]]; then
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--base --target --from --existing --yes --delete-branch" -- "$cur") )
+            elif [[ $cword -eq 2 ]]; then
                 COMPREPLY=( $(compgen -W "add remove lock unlock" -- "$cur") )
             elif [[ $cword -eq 3 ]]; then
                 local workspaces=$(ws _complete workspaces_all 2>/dev/null | cut -d: -f1)
@@ -554,6 +574,13 @@ _ws_completion() {
             else
                 local repos=$(ws _complete repos_all "${words[3]}" 2>/dev/null | cut -d: -f1)
                 COMPREPLY=( $(compgen -W "${repos}" -- "$cur") )
+            fi
+            ;;
+        init|add)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--yes" -- "$cur") )
+            else
+                COMPREPLY=( $(compgen -f -- "$cur") )
             fi
             ;;
         project)
@@ -746,6 +773,11 @@ complete -c ws -n "__fish_seen_subcommand_from daemon" -l tick -d "Worker loop t
 complete -c ws -n "__fish_seen_subcommand_from service" -s f -l follow -d "Follow live logs"
 complete -c ws -n "__fish_seen_subcommand_from service" -s n -l lines -d "Number of lines to display"
 complete -c ws -n "__fish_seen_subcommand_from completion" -a "zsh bash fish install"
+complete -c ws -n "__fish_seen_subcommand_from create init add" -l yes -d "Non-interactive: accept detected default base branches"
+complete -c ws -n "__fish_seen_subcommand_from repo" -l base -d "Base branch for a newly created branch"
+complete -c ws -n "__fish_seen_subcommand_from repo" -l target -d "Base branch for a newly created branch"
+complete -c ws -n "__fish_seen_subcommand_from repo" -l from -d "Base branch for a newly created branch"
+complete -c ws -n "__fish_seen_subcommand_from repo" -l yes -d "Non-interactive: accept detected default base branches"
 "#;
 
 pub fn generate_completion_script(shell: &str) -> Result<String, String> {

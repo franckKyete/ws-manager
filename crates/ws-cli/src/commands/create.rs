@@ -1,6 +1,8 @@
 use crate::helpers::{clean_repo, clean_workspace};
+use crate::prompts::{interactive_tty, DialoguerBaseBranchResolver};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use ws_core::base_branch::BaseBranchOptions;
 use ws_core::models::{RepoConfig, RepoSpec};
 use ws_core::WorkspaceManager;
 
@@ -374,6 +376,7 @@ pub fn execute_create(
     no_tmux: bool,
     raw_args: &[String],
     target_branch: Option<&str>,
+    yes: bool,
 ) -> Result<(), String> {
     if let Some(cfg_file) = file {
         let meta = manager
@@ -415,8 +418,14 @@ pub fn execute_create(
         target_branch,
     )?;
 
+    let mut resolver = DialoguerBaseBranchResolver;
+    let mut base_options = if !yes && interactive_tty() {
+        BaseBranchOptions::interactive(&mut resolver)
+    } else {
+        BaseBranchOptions::non_interactive()
+    };
     manager
-        .create_workspace(&ws_name, &repo_specs, tmux_cmd, no_tmux)
+        .create_workspace_with_options(&ws_name, &repo_specs, tmux_cmd, no_tmux, &mut base_options)
         .map_err(|e| e.to_string())?;
 
     if setup {

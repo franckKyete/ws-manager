@@ -827,6 +827,126 @@ impl GitService {
         self.get_default_branch(bare_path)
     }
 
+    /// Detect the repository's default base branch without inventing a branch
+    /// that does not exist.
+    ///
+    /// Preference order:
+    /// 1. `origin/HEAD` (the remote's advertised default)
+    /// 2. the bare repository's `HEAD`
+    /// 3. `main`, `develop`, `master` (local or `origin`)
+    pub fn detect_default_base(&self, bare_path: &Path) -> Option<String> {
+        let bare_str = bare_path.to_string_lossy();
+
+        if let Ok(out) = self.run_git(
+            &[
+                "--git-dir",
+                &bare_str,
+                "symbolic-ref",
+                "--short",
+                "refs/remotes/origin/HEAD",
+            ],
+            None,
+            false,
+        ) {
+            if out.status.success() {
+                let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if let Some(branch) = raw.strip_prefix("origin/") {
+                    if !branch.is_empty()
+                        && self.ref_exists(
+                            bare_path,
+                            &format!("refs/remotes/origin/{}", branch),
+                            None,
+                        )
+                    {
+                        return Some(branch.to_string());
+                    }
+                }
+            }
+        }
+
+        if let Ok(out) = self.run_git(
+            &["--git-dir", &bare_str, "symbolic-ref", "--short", "HEAD"],
+            None,
+            false,
+        ) {
+            if out.status.success() {
+                let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !branch.is_empty() && self.branch_exists(bare_path, &branch) {
+                    return Some(branch);
+                }
+            }
+        }
+
+        for candidate in ["main", "develop", "master"] {
+            if self.branch_exists(bare_path, candidate)
+                || self.ref_exists(
+                    bare_path,
+                    &format!("refs/remotes/origin/{}", candidate),
+                    None,
+                )
+            {
+                return Some(candidate.to_string());
+            }
+        }
+
+        None
+    }
+
+    /// Normalize user input such as `origin/main`, `refs/heads/main`, or
+    /// `refs/remotes/origin/main` into a plain branch name.
+    pub fn normalize_base_branch(&self, bare_path: &Path, input: &str) -> Option<String> {
+        let mut value = input.trim();
+        if value.is_empty() {
+            return None;
+        }
+
+        if let Some(rest) = value.strip_prefix("refs/heads/") {
+            value = rest;
+        } else if let Some(rest) = value.strip_prefix("refs/remotes/") {
+            value = rest.split_once('/').map(|(_, b)| b).unwrap_or(rest);
+        } else {
+            let remotes = self.get_remotes(bare_path, None);
+            for remote in remotes {
+                let prefix = format!("{}/", remote);
+                if let Some(rest) = value.strip_prefix(&prefix) {
+                    value = rest;
+                    break;
+                }
+            }
+        }
+
+        let value = value.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    }
+
+    /// Whether a plain branch name exists locally or on the primary remote.
+    ///
+    /// On a miss we fetch just that branch once, so a branch pushed after the
+    /// bare clone is still accepted.
+    pub fn base_branch_exists(&self, bare_path: &Path, branch: &str, fetch_on_miss: bool) -> bool {
+        if self.branch_exists(bare_path, branch) {
+            return true;
+        }
+
+        let Some(remote) = self.primary_remote(bare_path) else {
+            return false;
+        };
+        let remote_ref = self.remote_branch_ref(&remote, branch);
+        if self.ref_exists(bare_path, &remote_ref, None) {
+            return true;
+        }
+        if fetch_on_miss {
+            self.fetch_remote_branch(bare_path, branch, &remote, None);
+            return self.ref_exists(bare_path, &remote_ref, None)
+                || self.branch_exists(bare_path, branch);
+        }
+        false
+    }
+
     pub fn update_bare_branch(
         &self,
         bare_path: &Path,

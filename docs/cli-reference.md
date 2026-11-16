@@ -43,7 +43,7 @@ Bare names are rejected with a hint, and legacy repository prefixes (`+`, `:`,
 Creates a new workspace containing Git worktrees for specified repositories.
 
 ```bash
-ws create @<name> [%repo[:branch[:mode]] ...] [--all] [--existing] [-f <file.yml>] [--setup] [--cmd <command>] [--no-tmux]
+ws create @<name> [%repo[:branch[:mode]] ...] [--all] [--existing] [-f <file.yml>] [--setup] [--cmd <command>] [--no-tmux] [--base <branch>] [--yes]
 ```
 
 #### Arguments & Options
@@ -54,10 +54,12 @@ ws create @<name> [%repo[:branch[:mode]] ...] [--all] [--existing] [-f <file.yml
 | `%<repo>[:branch[:mode]]`  | Positional | Repository name with optional target branch and branch creation mode (`new` or `existing`).   |
 | `--all`                    | Flag       | Include all repositories defined in `repositories.yml`.                                       |
 | `--existing`               | Flag       | Default to checking out existing branches rather than creating new `feature/<name>` branches. For `:existing`/`--existing`, `ws` fetches the branch from the primary remote (preferring `origin`) if needed and creates a local branch ref when the branch exists only remotely. |
-| `-f`, `--file <file.yml>`  | Option     | Path to a declarative workspace YAML configuration file.                                      |
+| `--base <branch>`          | Option     | One-shot base branch for newly created branches (`--target` / `--from` are aliases). Overrides `base_branch` from `repositories.yml` for this command only; not persisted. |
+| `-f`, `--file <file.yml>`  | Option     | Path to a declarative workspace YAML configuration file. Every `create: true` entry must include a base (`base`/`target`/`from`/`base_branch`); no prompt or fallback is used. |
 | `--setup`                  | Flag       | Run the default lifecycle flow after creation (`configure` + all setup stages).                |
 | `--cmd`, `--command <cmd>` | Option     | Command to run inside the workspace Tmux window upon creation (overrides config default).     |
 | `--no-tmux`                | Flag       | Skip opening a dedicated Tmux window for this workspace.                                      |
+| `--yes`                    | Flag       | Non-interactive: accept each repository's detected default base branch and persist it, instead of prompting. |
 
 #### Examples
 
@@ -76,6 +78,12 @@ ws create @prod-repro --all --existing
 
 # Create workspace from a declarative YAML spec and run setup scripts:
 ws create -f team-setup.yml --setup
+
+# Create new branches from develop without changing repositories.yml:
+ws create @feat-auth %server %mobile --base develop
+
+# Non-interactive: accept and persist each repo's detected default base:
+ws create @feat-auth %server %mobile --yes
 ```
 
 ---
@@ -294,8 +302,18 @@ ws pull @develop %server
 Adds a new repository worktree to an existing workspace.
 
 ```bash
-ws repo add @<workspace> %<repo>[:branch] [--existing]
+ws repo add @<workspace> %<repo>[:branch] [--existing] [--base <branch>] [--yes]
 ```
+
+#### Options
+
+| Argument / Flag       | Type       | Description                                                                                     |
+| :-------------------- | :--------- | :---------------------------------------------------------------------------------------------- |
+| `@<workspace>`        | Positional | Target workspace (required).                                                                    |
+| `%<repo>[:branch]`    | Positional | Repository name and optional branch.                                                            |
+| `--existing`          | Flag       | Check out an existing branch instead of creating a new one.                                     |
+| `--base <branch>`     | Option     | One-shot base branch when creating a new branch (`--target` / `--from` aliases). Not persisted. |
+| `--yes`               | Flag       | Non-interactive: accept the detected default base and persist it instead of prompting.          |
 
 #### Examples
 
@@ -305,6 +323,9 @@ ws repo add @develop %mobile:feature/auth-screen
 
 # Add server repo checking out existing main:
 ws repo add @develop %server:main --existing
+
+# Create a new branch from develop just this once (repositories.yml unchanged):
+ws repo add @develop %server:feature/api --base develop
 ```
 
 ---
@@ -690,9 +711,9 @@ with sensible defaults for `tmux` (`session` set to project folder,
 configurations are preserved if already present.
 
 ```bash
-ws project init [alias=URL ...]
+ws project init [alias=URL ...] [--yes]
 # Or top-level shortcut:
-ws init [alias=URL ...]
+ws init [alias=URL ...] [--yes]
 ```
 
 #### Example
@@ -700,6 +721,10 @@ ws init [alias=URL ...]
 ```bash
 ws project init server=git@github.com:org/api.git mobile=git@github.com:org/app.git
 ```
+
+With an interactive terminal, `ws` prompts for a `base_branch` per repository,
+prefilled with the detected default. `--yes` skips the prompt, uses the detected
+default, and persists it.
 
 ---
 
@@ -709,7 +734,9 @@ Clones an additional bare repository into `bares/` and registers it in
 `repositories.yml`.
 
 ```bash
-ws project add <alias=URL>
+ws project add <alias=URL> [--yes]
+# Or top-level shortcut:
+ws add <alias=URL> [--yes]
 ```
 
 #### Example
@@ -717,6 +744,9 @@ ws project add <alias=URL>
 ```bash
 ws project add frontend=git@github.com:org/web.git
 ```
+
+When the repository has no `base_branch`, `ws` prompts with the detected
+default (or accepts it non-interactively with `--yes`) and saves the value.
 
 ---
 

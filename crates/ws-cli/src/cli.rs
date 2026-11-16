@@ -156,12 +156,22 @@ pub enum Commands {
     Init {
         #[arg(help = "Git repository URLs")]
         urls: Vec<String>,
+        #[arg(
+            long = "yes",
+            help = "Non-interactive: accept detected default base branches"
+        )]
+        yes: bool,
     },
 
     #[command(about = "Add and clone a new bare repository")]
     Add {
         #[arg(help = "Git repository URL or name=URL")]
         url: String,
+        #[arg(
+            long = "yes",
+            help = "Non-interactive: accept detected default base branches"
+        )]
+        yes: bool,
     },
 
     #[command(about = "Fetch updates in all bare repositories")]
@@ -263,6 +273,12 @@ pub struct CreateArgs {
     )]
     pub target_branch: Option<String>,
 
+    #[arg(
+        long = "yes",
+        help = "Non-interactive: accept detected default base branches"
+    )]
+    pub yes: bool,
+
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub extra_args: Vec<String>,
 }
@@ -356,8 +372,19 @@ pub enum RepoAction {
         repo: Option<String>,
         #[arg(help = "Target branch name")]
         branch: Option<String>,
+        #[arg(
+            long = "base",
+            visible_aliases = ["target", "from"],
+            help = "Base branch for a newly created branch (one-shot override)"
+        )]
+        base: Option<String>,
         #[arg(long = "existing")]
         existing: bool,
+        #[arg(
+            long = "yes",
+            help = "Non-interactive: accept detected default base branches"
+        )]
+        yes: bool,
     },
     #[command(aliases = ["rm", "remove-repo"], about = "Remove a repository worktree from a workspace")]
     Remove {
@@ -575,9 +602,23 @@ pub struct ProjectCommandArgs {
 #[derive(Subcommand, Debug)]
 pub enum ProjectAction {
     #[command(about = "Initialize project and clone bare repositories")]
-    Init { urls: Vec<String> },
+    Init {
+        urls: Vec<String>,
+        #[arg(
+            long = "yes",
+            help = "Non-interactive: accept detected default base branches"
+        )]
+        yes: bool,
+    },
     #[command(about = "Add and clone a new bare repository")]
-    Add { url: String },
+    Add {
+        url: String,
+        #[arg(
+            long = "yes",
+            help = "Non-interactive: accept detected default base branches"
+        )]
+        yes: bool,
+    },
     #[command(about = "Fetch updates in all bare repositories")]
     Fetch,
     #[command(about = "Sync and prune worktrees")]

@@ -6,7 +6,10 @@ use std::process::Command;
 use base64::Engine;
 use sha2::{Digest, Sha256};
 
-use crate::config::ConfigLoader;
+use crate::base_branch::{
+    detect_base_at, resolve_missing_bases, validate_base_at, BaseBranchOptions, BaseCandidate,
+};
+use crate::config::{ConfigLoader, ProjectConfigEdit};
 use crate::env::EnvEngine;
 use crate::errors::WSError;
 use crate::git::GitService;
@@ -194,6 +197,19 @@ impl WorkspaceManager {
         let mut out_cfg = repo_cfg.clone();
         out_cfg.bare = bare_path;
         Ok(out_cfg)
+    }
+
+    fn persist_repo_base_branches(&self, values: &HashMap<String, String>) -> Result<(), WSError> {
+        if values.is_empty() {
+            return Ok(());
+        }
+        let Some(path) = self.config.config_file_path.as_deref() else {
+            OutputHandler::print_warning(
+                "Base branches were resolved, but no configuration file path is known; nothing was saved.",
+            );
+            return Ok(());
+        };
+        ConfigLoader::set_repo_base_branches(path, values)
     }
 
     pub fn validate_creation(&self, name: &str, repo_specs: &[RepoSpec]) -> Result<(), WSError> {
@@ -390,19 +406,76 @@ impl WorkspaceManager {
         tmux_cmd: Option<&str>,
         no_tmux: bool,
     ) -> Result<WorkspaceMetadata, WSError> {
+        let mut options = BaseBranchOptions::non_interactive();
+        self.create_workspace_with_options(name, repo_specs, tmux_cmd, no_tmux, &mut options)
+    }
+
+    pub fn create_workspace_with_options(
+        &self,
+        name: &str,
+        repo_specs: &[RepoSpec],
+        tmux_cmd: Option<&str>,
+        no_tmux: bool,
+        base_options: &mut BaseBranchOptions<'_>,
+    ) -> Result<WorkspaceMetadata, WSError> {
         self.validate_creation(name, repo_specs)?;
 
-        let mut resolved_bases = HashMap::new();
+        let mut resolved_bases: HashMap<String, Option<String>> = HashMap::new();
+        let mut candidates = Vec::new();
+
+        for spec in repo_specs {
+            if !spec.create {
+                continue;
+            }
+            let repo_cfg = self.validate_repository_config(&spec.name)?;
+
+            let explicit = spec
+                .base_branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|b| !b.is_empty());
+            if let Some(branch) = explicit {
+                let normalized = validate_base_at(&self.git, &repo_cfg.bare, &spec.name, branch)?;
+                resolved_bases.insert(spec.name.clone(), Some(normalized));
+                continue;
+            }
+
+            let configured = repo_cfg
+                .base_branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|b| !b.is_empty());
+            if let Some(branch) = configured {
+                let normalized = validate_base_at(&self.git, &repo_cfg.bare, &spec.name, branch)?;
+                resolved_bases.insert(spec.name.clone(), Some(normalized));
+                continue;
+            }
+
+            candidates.push(BaseCandidate {
+                repo: spec.name.clone(),
+                bare: repo_cfg.bare.clone(),
+                suggested: detect_base_at(&self.git, &repo_cfg.bare),
+            });
+        }
+
+        let prompted = resolve_missing_bases(&self.git, &candidates, base_options)?;
+        for (repo, branch) in &prompted {
+            resolved_bases.insert(repo.clone(), Some(branch.clone()));
+        }
+        self.persist_repo_base_branches(&prompted)?;
+
         for spec in repo_specs {
             let repo_cfg = self.validate_repository_config(&spec.name)?;
-            let target_to_sync = if spec.create {
-                spec.base_branch.as_deref()
+            if spec.create {
+                let base = resolved_bases.get(&spec.name).cloned().flatten();
+                self.prepare_and_sync_target_branch(&spec.name, &repo_cfg.bare, base.as_deref())?;
             } else {
-                Some(spec.branch.as_str())
-            };
-            let resolved_base =
-                self.prepare_and_sync_target_branch(&spec.name, &repo_cfg.bare, target_to_sync)?;
-            resolved_bases.insert(spec.name.clone(), resolved_base);
+                self.prepare_and_sync_target_branch(
+                    &spec.name,
+                    &repo_cfg.bare,
+                    Some(&spec.branch),
+                )?;
+            }
         }
 
         let ws_dir = self.get_workspace_dir(name);
@@ -584,7 +657,10 @@ impl WorkspaceManager {
                 .get("base")
                 .or_else(|| v.get("target"))
                 .or_else(|| v.get("from"))
+                .or_else(|| v.get("base_branch"))
                 .and_then(|b| b.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
 
             let frozen = v
@@ -602,6 +678,19 @@ impl WorkspaceManager {
                 locked: frozen,
                 base_branch: base,
             });
+        }
+
+        let missing_bases: Vec<String> = specs
+            .iter()
+            .filter(|spec| spec.create && spec.base_branch.is_none())
+            .map(|spec| format!("%{}", spec.name))
+            .collect();
+        if !missing_bases.is_empty() {
+            return Err(WSError::Validation(format!(
+                "Workspace file '{}' must specify a base branch ('base', 'target', 'from', or 'base_branch') for: {}",
+                config_file.display(),
+                missing_bases.join(", ")
+            )));
         }
 
         self.create_workspace(name, &specs, tmux_cmd, no_tmux)
@@ -1632,12 +1721,47 @@ impl WorkspaceManager {
     }
 
     pub fn init_project(&mut self, repo_inputs: &[String]) -> Result<AppConfig, WSError> {
+        let mut options = BaseBranchOptions::non_interactive();
+        self.init_project_with_options(repo_inputs, &mut options)
+    }
+
+    pub fn init_project_with_options(
+        &mut self,
+        repo_inputs: &[String],
+        base_options: &mut BaseBranchOptions<'_>,
+    ) -> Result<AppConfig, WSError> {
         self.validate_environment()?;
-        let mut updated_repos = self.config.repositories.clone();
+
+        struct InitEntry {
+            name: String,
+            repo: RepoConfig,
+            is_new: bool,
+            bare: PathBuf,
+        }
+
+        let config_path = self
+            .config
+            .config_file_path
+            .clone()
+            .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
+
+        let mut entries: Vec<InitEntry> = Vec::new();
 
         for item in repo_inputs {
             let (name, url, bare_path, checkout) = Self::parse_repo_url(item);
-            let resolved_bare = self.resolve_bare_path(&bare_path);
+            if entries.iter().any(|e| e.name == name) {
+                continue;
+            }
+
+            let (repo, is_new) = if let Some(existing) = self.config.repositories.get(&name) {
+                (existing.clone(), false)
+            } else {
+                let mut repo = RepoConfig::new(name.clone(), bare_path.clone(), checkout);
+                repo.url = Some(url.clone());
+                (repo, true)
+            };
+
+            let resolved_bare = self.resolve_bare_path(&repo.bare);
             if let Some(parent) = resolved_bare.parent() {
                 ensure_directory(parent)?;
             }
@@ -1648,36 +1772,40 @@ impl WorkspaceManager {
                     name, url
                 ));
                 self.git.clone_bare(&url, &resolved_bare)?;
-                OutputHandler::print_success(&format!("Cloned bare repo {}", bare_path.display()));
+                OutputHandler::print_success(&format!("Cloned bare repo {}", repo.bare.display()));
             } else {
                 OutputHandler::print_info(&format!(
                     "Using existing bare repository at {}",
-                    bare_path.display()
+                    repo.bare.display()
                 ));
             }
 
-            updated_repos.insert(
-                name.clone(),
-                RepoConfig {
-                    name,
-                    bare: bare_path,
-                    checkout,
-                    url: Some(url),
-                    port: None,
-                    ports: HashMap::new(),
-                    env: HashMap::new(),
-                    secret_env: HashMap::new(),
-                    private_env: HashMap::new(),
-                    env_file: ".env".to_string(),
-                    env_example: ".env.example".to_string(),
-                    setup: Vec::new(),
-                    launch: None,
-                    secrets: Vec::new(),
-                    copy_files: Vec::new(),
-                    lifecycle: None,
-                },
-            );
+            entries.push(InitEntry {
+                name,
+                repo,
+                is_new,
+                bare: resolved_bare,
+            });
         }
+
+        let mut candidates = Vec::new();
+        for entry in &entries {
+            let has_base = entry
+                .repo
+                .base_branch
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|b| !b.is_empty());
+            if !has_base {
+                candidates.push(BaseCandidate {
+                    repo: entry.name.clone(),
+                    bare: entry.bare.clone(),
+                    suggested: detect_base_at(&self.git, &entry.bare),
+                });
+            }
+        }
+
+        let resolved = resolve_missing_bases(&self.git, &candidates, base_options)?;
 
         let root_dir_name = self
             .config
@@ -1692,7 +1820,6 @@ impl WorkspaceManager {
             command: Some("nvim".to_string()),
             switch: true,
         });
-
         let hub_auto_save =
             self.config
                 .hub_auto_save
@@ -1705,19 +1832,30 @@ impl WorkspaceManager {
                     notify: true,
                 });
 
-        let saved_path = ConfigLoader::save_config(
-            &updated_repos,
-            self.config.config_file_path.as_deref(),
-            Some(&tmux_cfg),
-            Some(&hub_auto_save),
-            self.config.hub_project.as_deref(),
-        )?;
+        let edit = ProjectConfigEdit::open(&config_path)?;
+        edit.ensure_schema_version()?;
+        edit.ensure_tmux(&tmux_cfg)?;
+        edit.ensure_hub(&hub_auto_save, self.config.hub_project.as_deref())?;
 
-        OutputHandler::print_success(&format!("Saved configuration to {}", saved_path.display()));
-        self.config.repositories = updated_repos;
-        self.config.tmux = Some(tmux_cfg);
-        self.config.hub_auto_save = Some(hub_auto_save);
-        self.config.config_file_path = Some(saved_path);
+        for entry in &entries {
+            if entry.is_new {
+                let mut repo = entry.repo.clone();
+                if let Some(base) = resolved.get(&entry.name) {
+                    repo.base_branch = Some(base.clone());
+                }
+                edit.upsert_repository(&entry.name, &repo)?;
+            } else if let Some(base) = resolved.get(&entry.name) {
+                edit.set_repo_base_branch(&entry.name, base)?;
+            }
+        }
+        edit.save()?;
+
+        OutputHandler::print_success(&format!("Saved configuration to {}", config_path.display()));
+
+        let reloaded =
+            ConfigLoader::load_config(Some(&config_path), Some(&self.config.workspaces_dir), true)?;
+        self.config = reloaded;
+        self.config.config_file_path = Some(config_path);
 
         Ok(self.config.clone())
     }
@@ -1740,6 +1878,26 @@ impl WorkspaceManager {
         branch: &str,
         create: bool,
     ) -> Result<(), WSError> {
+        let mut options = BaseBranchOptions::non_interactive();
+        self.workspace_add_repo_with_options(
+            workspace_name,
+            repo_name,
+            branch,
+            create,
+            None,
+            &mut options,
+        )
+    }
+
+    pub fn workspace_add_repo_with_options(
+        &self,
+        workspace_name: &str,
+        repo_name: &str,
+        branch: &str,
+        create: bool,
+        base_override: Option<&str>,
+        base_options: &mut BaseBranchOptions<'_>,
+    ) -> Result<(), WSError> {
         self.validate_environment()?;
         let (mut meta, ws_dir) = self.get_workspace_info(workspace_name)?;
 
@@ -1753,6 +1911,8 @@ impl WorkspaceManager {
         let repo_cfg = self.validate_repository_config(repo_name)?;
         let local_branch_exists = self.git.branch_exists(&repo_cfg.bare, branch);
 
+        let mut resolved_base: Option<String> = None;
+
         if create {
             if local_branch_exists {
                 return Err(WSError::BranchAlreadyExists(format!(
@@ -1760,6 +1920,47 @@ impl WorkspaceManager {
                     branch, repo_name
                 )));
             }
+
+            let explicit = base_override.map(str::trim).filter(|b| !b.is_empty());
+            if let Some(base) = explicit {
+                resolved_base = Some(validate_base_at(
+                    &self.git,
+                    &repo_cfg.bare,
+                    repo_name,
+                    base,
+                )?);
+            } else if let Some(base) = repo_cfg
+                .base_branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+            {
+                resolved_base = Some(validate_base_at(
+                    &self.git,
+                    &repo_cfg.bare,
+                    repo_name,
+                    base,
+                )?);
+            } else {
+                let candidate = BaseCandidate {
+                    repo: repo_name.to_string(),
+                    bare: repo_cfg.bare.clone(),
+                    suggested: detect_base_at(&self.git, &repo_cfg.bare),
+                };
+                let prompted = resolve_missing_bases(&self.git, &[candidate], base_options)?;
+                if let Some(base) = prompted.get(repo_name) {
+                    resolved_base = Some(base.clone());
+                    self.persist_repo_base_branches(&prompted)?;
+                }
+            }
+
+            let base = resolved_base.as_deref().ok_or_else(|| {
+                WSError::Validation(format!(
+                    "No base branch could be resolved for repository '{}'",
+                    repo_name
+                ))
+            })?;
+            self.prepare_and_sync_target_branch(repo_name, &repo_cfg.bare, Some(base))?;
         } else if !local_branch_exists {
             let primary_remote = self.git.primary_remote(&repo_cfg.bare);
             let mut remote_has_branch = false;
@@ -1800,8 +2001,13 @@ impl WorkspaceManager {
         }
 
         let worktree_path = ws_dir.join(&repo_cfg.checkout);
-        self.git
-            .create_worktree(&repo_cfg.bare, &worktree_path, branch, create, None)?;
+        self.git.create_worktree(
+            &repo_cfg.bare,
+            &worktree_path,
+            branch,
+            create,
+            resolved_base.as_deref(),
+        )?;
 
         meta.repositories.insert(
             repo_name.to_string(),
@@ -1812,7 +2018,7 @@ impl WorkspaceManager {
                 path: repo_cfg.checkout,
                 frozen: false,
                 locked: false,
-                base_branch: None,
+                base_branch: resolved_base,
             },
         );
 
@@ -3512,7 +3718,13 @@ impl WorkspaceManager {
             .clone()
             .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
 
-        std::fs::write(&config_file, blueprint_yaml)?;
+        let merged_yaml = if config_file.is_file() {
+            let local_yaml = std::fs::read_to_string(&config_file)?;
+            ConfigLoader::merge_local_bases_into_yaml(&local_yaml, blueprint_yaml)?
+        } else {
+            blueprint_yaml.to_string()
+        };
+        std::fs::write(&config_file, merged_yaml)?;
         OutputHandler::print_success(&format!("Updated {} to revision", config_file.display()));
 
         // Reload config and clone newly added bare repos if any
@@ -4404,6 +4616,7 @@ mod tests {
             bare: PathBuf::from("bares/stocktik-mobile.git"),
             checkout: "stocktik-mobile".to_string(),
             url: Some("git@github.com:Fantastik-sarl/stocktik-mobile.git".to_string()),
+            base_branch: None,
             port: None,
             ports: HashMap::new(),
             env: HashMap::new(),
@@ -4431,6 +4644,10 @@ mod tests {
             !yaml.contains("env_example:"),
             "Serialized YAML should not contain default 'env_example'"
         );
+        assert!(
+            !yaml.contains("base_branch:"),
+            "Serialized YAML should omit an unset 'base_branch'"
+        );
         assert!(yaml.contains("checkout: stocktik-mobile"));
         assert!(yaml.contains("bare: bares/stocktik-mobile.git"));
     }
@@ -4445,5 +4662,35 @@ checkout: '%mobile'
         let cfg = RepoConfig::from_yaml_value("%mobile", &val).unwrap();
         assert_eq!(cfg.name, "mobile");
         assert_eq!(cfg.checkout, "mobile");
+    }
+
+    #[test]
+    fn test_repo_config_parses_base_branch() {
+        let yaml_str = r#"
+bare: bares/api.git
+checkout: api
+base_branch: develop
+"#;
+        let val: serde_yaml::Value = serde_yaml::from_str(yaml_str).unwrap();
+        let cfg = RepoConfig::from_yaml_value("api", &val).unwrap();
+        assert_eq!(cfg.base_branch.as_deref(), Some("develop"));
+
+        let empty = r#"
+bare: bares/api.git
+checkout: api
+base_branch: "   "
+"#;
+        let val: serde_yaml::Value = serde_yaml::from_str(empty).unwrap();
+        let cfg = RepoConfig::from_yaml_value("api", &val).unwrap();
+        assert_eq!(cfg.base_branch, None);
+
+        let null = r#"
+bare: bares/api.git
+checkout: api
+base_branch:
+"#;
+        let val: serde_yaml::Value = serde_yaml::from_str(null).unwrap();
+        let cfg = RepoConfig::from_yaml_value("api", &val).unwrap();
+        assert_eq!(cfg.base_branch, None);
     }
 }

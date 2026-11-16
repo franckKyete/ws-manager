@@ -120,6 +120,10 @@ This command:
 1. Clones bare repositories into `bares/server.git` and `bares/mobile.git`.
 2. Generates a root `repositories.yml` configuration file with sensible `tmux`
    and `hub` defaults.
+3. Detects each repository's default branch (`origin/HEAD`, bare `HEAD`, then
+   `main`/`develop`/`master`) and prompts for a `base_branch`, prefilled with
+   that default. Press Enter to accept; the choice is saved for future
+   workspaces. Pass `--yes` to accept detected defaults non-interactively.
 
 Inspect the generated `repositories.yml`:
 
@@ -140,11 +144,13 @@ repositories:
   server:
     bare: bares/server.git
     checkout: server
+    base_branch: main
     command: npm run dev
     port: 8080
   mobile:
     bare: bares/mobile.git
     checkout: mobile
+    base_branch: main
     command: npm start
     port: 8081
 ```
@@ -165,6 +171,14 @@ Or checkout an existing `main` branch for `%server` while creating a new
 
 ```bash
 ws create @feat-auth %server:main:existing %mobile:feature/auth-ui:new
+```
+
+New branches start from each repository's configured `base_branch`. Override
+that for a single command with `--base`:
+
+```bash
+# Branch both repositories from develop without changing repositories.yml:
+ws create @feat-auth %server %mobile --base develop
 ```
 
 Your directory structure now contains lightweight Git worktrees:

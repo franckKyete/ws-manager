@@ -1,4 +1,6 @@
 use crate::helpers::{clean_repo, resolve_ws_and_repo_args};
+use crate::prompts::{interactive_tty, DialoguerBaseBranchResolver};
+use ws_core::base_branch::BaseBranchOptions;
 use ws_core::WorkspaceManager;
 
 pub fn execute_repo_add(
@@ -6,7 +8,9 @@ pub fn execute_repo_add(
     name: Option<&str>,
     repo_input: Option<&str>,
     branch: Option<&str>,
+    base_override: Option<&str>,
     existing: bool,
+    yes: bool,
 ) -> Result<(), String> {
     let (ws_name, _, _) = resolve_ws_and_repo_args(manager, name, repo_input, None, true, false)?;
     let raw_input = repo_input
@@ -55,8 +59,21 @@ pub fn execute_repo_add(
         }
     });
 
+    let mut resolver = DialoguerBaseBranchResolver;
+    let mut base_options = if !yes && interactive_tty() {
+        BaseBranchOptions::interactive(&mut resolver)
+    } else {
+        BaseBranchOptions::non_interactive()
+    };
     manager
-        .workspace_add_repo(&ws_name, &r_name, &final_branch, create_mode)
+        .workspace_add_repo_with_options(
+            &ws_name,
+            &r_name,
+            &final_branch,
+            create_mode,
+            base_override,
+            &mut base_options,
+        )
         .map_err(|e| e.to_string())
 }
 

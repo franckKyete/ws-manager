@@ -7,6 +7,7 @@ use ws_core::WorkspaceManager;
 mod cli;
 mod commands;
 mod helpers;
+mod prompts;
 
 use cli::*;
 use commands::completion::*;
@@ -160,6 +161,7 @@ fn main() {
             args.no_tmux,
             &args.extra_args,
             args.target_branch.as_deref(),
+            args.yes,
         ),
         Commands::List => execute_list(&manager),
         Commands::Info { name } => execute_info(&manager, name.as_deref()),
@@ -200,13 +202,17 @@ fn main() {
                 name,
                 repo,
                 branch,
+                base,
                 existing,
+                yes,
             }) => execute_repo_add(
                 &manager,
                 name.as_deref(),
                 repo.as_deref(),
                 branch.as_deref(),
+                base.as_deref(),
                 existing,
+                yes,
             ),
             Some(RepoAction::Remove {
                 name,
@@ -313,8 +319,8 @@ fn main() {
         ),
         Commands::Lifecycle(args) => execute_lifecycle(&mut manager, &args),
         Commands::Project(args) => match args.action {
-            Some(ProjectAction::Init { urls }) => execute_init(&mut manager, &urls),
-            Some(ProjectAction::Add { url }) => execute_add(&mut manager, &url),
+            Some(ProjectAction::Init { urls, yes }) => execute_init(&mut manager, &urls, yes),
+            Some(ProjectAction::Add { url, yes }) => execute_add(&mut manager, &url, yes),
             Some(ProjectAction::Fetch) => execute_fetch(&manager),
             Some(ProjectAction::Sync) => execute_sync(&manager),
             Some(ProjectAction::List) => execute_project_list(),
@@ -331,8 +337,8 @@ fn main() {
                 process::exit(1);
             }
         },
-        Commands::Init { urls } => execute_init(&mut manager, &urls),
-        Commands::Add { url } => execute_add(&mut manager, &url),
+        Commands::Init { urls, yes } => execute_init(&mut manager, &urls, yes),
+        Commands::Add { url, yes } => execute_add(&mut manager, &url, yes),
         Commands::Fetch => execute_fetch(&manager),
         Commands::Sync => execute_sync(&manager),
         Commands::Doctor => execute_doctor(&manager),

@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+use yaml_edit::{Document, Mapping};
 
 use crate::errors::{Result, WSError};
 use crate::lifecycle::LIFECYCLE_SCHEMA_VERSION;
@@ -676,5 +679,301 @@ impl ConfigLoader {
         }
         fs::write(&path, content)?;
         Ok(path)
+    }
+}
+
+/// A single-document, format-preserving edit of `repositories.yml`.
+///
+/// Unlike [`ConfigLoader::save_config`], this keeps unknown per-repo keys and
+/// comments intact. Edits are built in memory and written once by [`save`].
+pub struct ProjectConfigEdit<'a> {
+    path: &'a Path,
+    doc: Document,
+}
+
+impl<'a> ProjectConfigEdit<'a> {
+    pub fn open(path: &'a Path) -> Result<Self> {
+        let content = if path.is_file() {
+            fs::read_to_string(path)?
+        } else {
+            String::new()
+        };
+        let content = if content.trim().is_empty() {
+            format!("schema_version: {}\n", LIFECYCLE_SCHEMA_VERSION)
+        } else {
+            content
+        };
+        let doc = Document::from_str(&content).map_err(|e| WSError::Config(e.to_string()))?;
+        if doc.as_mapping().is_none() {
+            return Err(WSError::Config(
+                "Top-level repositories.yml must be a YAML mapping".to_string(),
+            ));
+        }
+        Ok(Self { path, doc })
+    }
+
+    fn root(&self) -> Result<Mapping> {
+        self.doc.as_mapping().ok_or_else(|| {
+            WSError::Config("Top-level repositories.yml must be a YAML mapping".to_string())
+        })
+    }
+
+    fn repositories(&self) -> Result<Mapping> {
+        let root = self.root()?;
+        if let Some(repos) = root.get_mapping("repositories") {
+            // An empty `repositories: {}` is flow-style. Replace it with a
+            // pending block mapping so newly added entries render in the
+            // block style used by the rest of the file.
+            if repos.iter().count() > 0 {
+                return Ok(repos);
+            }
+            root.set("repositories", Mapping::new());
+            return root.get_mapping("repositories").ok_or_else(|| {
+                WSError::Config("Failed to create 'repositories' mapping".to_string())
+            });
+        }
+        root.set("repositories", Mapping::new());
+        root.get_mapping("repositories")
+            .ok_or_else(|| WSError::Config("Failed to create 'repositories' mapping".to_string()))
+    }
+
+    pub fn ensure_schema_version(&self) -> Result<()> {
+        self.root()?
+            .set("schema_version", LIFECYCLE_SCHEMA_VERSION as i64);
+        Ok(())
+    }
+
+    pub fn ensure_tmux(&self, tmux: &TmuxConfig) -> Result<()> {
+        let root = self.root()?;
+        if root.get("tmux").is_none() && root.get("tmux_session").is_none() {
+            root.set("tmux", serialized_mapping(tmux)?);
+        }
+        Ok(())
+    }
+
+    pub fn ensure_hub(&self, auto_save: &HubAutoSaveConfig, project: Option<&str>) -> Result<()> {
+        let root = self.root()?;
+        if root.get_mapping("hub").is_none() {
+            root.set("hub", Mapping::new());
+        }
+        let hub = root
+            .get_mapping("hub")
+            .ok_or_else(|| WSError::Config("Failed to create 'hub' mapping".to_string()))?;
+        if hub.get("auto_save").is_none() {
+            hub.set("auto_save", serialized_mapping(&auto_save.to_map(true))?);
+        }
+        if let Some(project) = project {
+            if hub.get("project").is_none() {
+                hub.set("project", project);
+            }
+        }
+        Ok(())
+    }
+
+    /// Insert a new repository entry. Existing entries are left untouched
+    /// apart from filling a missing `base_branch`.
+    pub fn upsert_repository(&self, name: &str, repo: &RepoConfig) -> Result<()> {
+        let repos = self.repositories()?;
+        if repos.get(name).is_none() {
+            repos.set(name, serialized_mapping(repo)?);
+            return Ok(());
+        }
+        if let Some(base) = repo.base_branch.as_deref().map(str::trim) {
+            if !base.is_empty() {
+                let repo_map = repos.get_mapping(name).ok_or_else(|| {
+                    WSError::Config(format!("Repository '{}' is not a YAML mapping", name))
+                })?;
+                let missing = match repo_map.get("base_branch") {
+                    Some(node) => node
+                        .as_scalar()
+                        .map(|scalar| {
+                            let text = scalar.to_string();
+                            let text = text.trim();
+                            text.is_empty() || text == "null" || text == "~"
+                        })
+                        .unwrap_or(true),
+                    None => true,
+                };
+                if missing {
+                    repo_map.set("base_branch", base);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn set_repo_base_branch(&self, name: &str, branch: &str) -> Result<()> {
+        let repos = self.repositories()?;
+        let repo_map = repos.get_mapping(name).ok_or_else(|| {
+            WSError::Config(format!(
+                "Repository '{}' is not present in configuration",
+                name
+            ))
+        })?;
+        repo_map.set("base_branch", branch);
+        Ok(())
+    }
+
+    pub fn save(&self) -> Result<()> {
+        if let Some(parent) = self.path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        fs::write(self.path, self.doc.to_string())?;
+        Ok(())
+    }
+}
+
+impl ConfigLoader {
+    /// Persist one or more resolved base branches, preserving the rest of the
+    /// configuration file byte-for-byte where possible.
+    pub fn set_repo_base_branches(
+        config_path: &Path,
+        values: &HashMap<String, String>,
+    ) -> Result<()> {
+        if values.is_empty() {
+            return Ok(());
+        }
+        let edit = ProjectConfigEdit::open(config_path)?;
+        for (repo, branch) in values {
+            edit.set_repo_base_branch(repo, branch)?;
+        }
+        edit.save()
+    }
+
+    /// Merge local `base_branch` values into a remote blueprint. Remote
+    /// values win when present; local values fill gaps.
+    pub fn merge_local_bases_into_yaml(local_yaml: &str, remote_yaml: &str) -> Result<String> {
+        let local: serde_yaml::Value = serde_yaml::from_str(local_yaml).map_err(WSError::Yaml)?;
+        let remote_value: serde_yaml::Value =
+            serde_yaml::from_str(remote_yaml).map_err(WSError::Yaml)?;
+
+        let Some(local_repos) = local.get("repositories").and_then(|v| v.as_mapping()) else {
+            return Ok(remote_yaml.to_string());
+        };
+        let Some(remote_repos) = remote_value
+            .get("repositories")
+            .and_then(|v| v.as_mapping())
+        else {
+            return Ok(remote_yaml.to_string());
+        };
+
+        let doc = Document::from_str(remote_yaml).map_err(|e| WSError::Config(e.to_string()))?;
+        let root = doc.as_mapping().ok_or_else(|| {
+            WSError::Config("Remote blueprint must be a YAML mapping".to_string())
+        })?;
+        let remote_edit_repos = root.get_mapping("repositories").ok_or_else(|| {
+            WSError::Config("Remote blueprint has no 'repositories' mapping".to_string())
+        })?;
+
+        for (key, value) in local_repos {
+            let Some(name) = key.as_str() else {
+                continue;
+            };
+            let Some(local_base) = value
+                .get("base_branch")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+            else {
+                continue;
+            };
+            let Some(remote_repo) = remote_repos.get(serde_yaml::Value::String(name.to_string()))
+            else {
+                continue;
+            };
+            let remote_has_base = remote_repo
+                .get("base_branch")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .is_some_and(|v| !v.is_empty());
+            if remote_has_base {
+                continue;
+            }
+            if let Some(repo_map) = remote_edit_repos.get_mapping(name) {
+                repo_map.set("base_branch", local_base);
+            }
+        }
+
+        Ok(doc.to_string())
+    }
+}
+
+fn serialized_mapping<T: serde::Serialize>(value: &T) -> Result<Mapping> {
+    let yaml = serde_yaml::to_string(value).map_err(WSError::Yaml)?;
+    let doc = Document::from_str(&yaml).map_err(|e| WSError::Config(e.to_string()))?;
+    doc.as_mapping()
+        .ok_or_else(|| WSError::Config("Serialized value is not a YAML mapping".to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn targeted_base_branch_edit_preserves_comments_and_unknown_keys() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("repositories.yml");
+        fs::write(
+            &path,
+            "schema_version: 3\n# keep this comment\nrepositories:\n  api:\n    bare: bares/api.git\n    checkout: api\n    depends_on: db  # unknown key\n",
+        )
+        .unwrap();
+
+        let mut values = HashMap::new();
+        values.insert("api".to_string(), "main".to_string());
+        ConfigLoader::set_repo_base_branches(&path, &values).unwrap();
+
+        let output = fs::read_to_string(&path).unwrap();
+        assert!(output.contains("# keep this comment"));
+        assert!(output.contains("depends_on: db"));
+        assert!(output.contains("base_branch: main"));
+    }
+
+    #[test]
+    fn upsert_new_repository_writes_block_mapping_and_defaults() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("repositories.yml");
+        let edit = ProjectConfigEdit::open(&path).unwrap();
+        edit.ensure_schema_version().unwrap();
+        let tmux = TmuxConfig {
+            session: "demo".to_string(),
+            launch_session: None,
+            command: Some("nvim".to_string()),
+            switch: true,
+        };
+        edit.ensure_tmux(&tmux).unwrap();
+        let hub = HubAutoSaveConfig {
+            enabled: true,
+            interval: 300,
+            include_wip: true,
+            workspaces: crate::models::WorkspacesSelector::Mode("all".to_string()),
+            notify: true,
+        };
+        edit.ensure_hub(&hub, None).unwrap();
+
+        let mut repo = RepoConfig::new("api", "bares/api.git", "api");
+        repo.url = Some("git@example.com:org/api.git".to_string());
+        repo.base_branch = Some("main".to_string());
+        edit.upsert_repository("api", &repo).unwrap();
+        edit.save().unwrap();
+
+        let output = fs::read_to_string(&path).unwrap();
+        assert!(output.contains("schema_version: 3"));
+        assert!(output.contains("repositories:\n  api:\n"));
+        assert!(output.contains("base_branch: main"));
+        assert!(output.contains("tmux:"));
+        assert!(output.contains("auto_save:"));
+    }
+
+    #[test]
+    fn merge_local_bases_preserves_gaps_but_remote_wins() {
+        let local = "schema_version: 3\nrepositories:\n  api:\n    bare: bares/api.git\n    checkout: api\n    base_branch: develop\n  web:\n    bare: bares/web.git\n    checkout: web\n    base_branch: main\n";
+        let remote = "schema_version: 3\nrepositories:\n  api:\n    bare: bares/api.git\n    checkout: api\n    base_branch: release\n  web:\n    bare: bares/web.git\n    checkout: web\n";
+
+        let merged = ConfigLoader::merge_local_bases_into_yaml(local, remote).unwrap();
+        assert!(merged.contains("base_branch: release"));
+        assert!(merged.contains("base_branch: main"));
+        assert!(!merged.contains("develop"));
     }
 }

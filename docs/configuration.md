@@ -42,6 +42,7 @@ repositories:
   server:
     bare: bares/Renttik-server.git
     checkout: Renttik-server
+    base_branch: main
     command: npm run dev
     port: 8080
     depends_on: []
@@ -70,6 +71,7 @@ repositories:
   mobile:
     bare: bares/Renttik-mobile.git
     checkout: Renttik-mobile
+    base_branch: main
     command: npx expo start --port 8081
     port: 8081
     depends_on:
@@ -234,6 +236,7 @@ hub:
 | :----------- | :------------------------------ | :------- | :-------------------------------------------------------------------------------------------------- |
 | `bare`       | `string`                        | **Yes**  | Relative or absolute path to the bare Git repository (e.g. `bares/server.git`).                     |
 | `checkout`   | `string`                        | **Yes**  | Subdirectory name where the worktree is checked out inside each workspace (e.g. `Renttik-server`).  |
+| `base_branch` | `string`                        | No       | Default branch new workspace branches are created from. Prompted/detected when missing.              |
 | `command`    | `string`                        | No       | Service launch command (e.g. `npm run dev`, `cargo run`).                                           |
 | `port`       | `integer`                       | No       | Primary base network port the service listens on (used as default port in discovery and status).    |
 | `ports`      | `list[int]` or `dict[str, int]` | No       | Multiple base network ports (e.g. `[8080, 8081]` or `{http: 8080, ws: 8081, metrics: 9090}`).       |
@@ -244,6 +247,48 @@ hub:
 
 > Legacy `setup.scripts`/`setup.env`/bootstrap/env/ready lifecycle forms are
 > not used at runtime in schema v3; migrate with `ws project migrate lifecycle --yes`.
+
+---
+
+### 🌿 Default Base Branches (`base_branch`)
+
+`base_branch` is the branch a repository's new workspace branch starts from.
+It only applies when a branch is **created** (`create: true`); checking out an
+existing branch ignores it.
+
+```yaml
+repositories:
+  server:
+    bare: bares/server.git
+    checkout: server
+    base_branch: develop
+```
+
+- **Optional and additive.** `schema_version` stays `3`; existing configs remain
+  valid without the field.
+- **Prompted when missing.** `ws init`, `ws add`, `ws create`, and
+  `ws repo add` ask for a base branch when the repository has none and the
+  terminal is interactive. The prompt is prefilled with the detected default;
+  pressing Enter accepts it, and an unknown branch re-prompts.
+- **Persisted on choice.** The chosen value is written back to
+  `repositories.yml` before any worktree is created. If persistence fails, the
+  workspace is not created. A base persisted before a later failure remains.
+- **Non-interactive behavior.** With `--yes` (or no TTY), each repository uses
+  its detected default, which is saved with a warning. If no default can be
+  detected, the command fails.
+- **Detection order.** `origin/HEAD`, the bare repository's `HEAD`, then
+  `main` → `develop` → `master`. No branch is invented when none exists.
+- **Validation.** A configured base must exist locally or on the primary remote
+  (`origin`, otherwise the first remote). A missing branch is fetched once
+  before failing.
+- **One-shot overrides.** `--base`, `--target`, and `--from` on `ws create` and
+  `ws repo add` override the configured value for that command only and are
+  never persisted.
+- **Declarative files are strict.** `ws create --file` does not prompt, detect,
+  or fall back: every `create: true` entry must supply `base`, `target`, `from`,
+  or `base_branch` in the file, or the command fails before touching Git.
+- **Editing defaults.** Change `base_branch` directly in `repositories.yml`;
+  there is no dedicated config command.
 
 ---
 
@@ -450,9 +495,11 @@ repositories:
   server:
     branch: feature/auth-api
     create: true
+    base: develop # Required for create: true (base/target/from/base_branch)
   mobile:
     branch: feature/auth-ui
     create: true
+    base: main
   frontend:
     branch: main
     create: false
@@ -464,3 +511,7 @@ Create the workspace directly from the file:
 ```bash
 ws create -f feature-auth.yml --setup
 ```
+
+> `ws create --file` is strict: any `create: true` repository without a base in
+> the file is a hard error. It never prompts, detects a default, falls back to
+> `repositories.yml`, or writes the file.
