@@ -347,6 +347,7 @@ mod tests {
             hub: serde_json::Value::Null,
             lifecycle: None,
             schema_version: Some(ws_core::lifecycle::LIFECYCLE_SCHEMA_VERSION),
+            workspace: ws_core::models::WorkspaceRootConfig::default(),
         };
         WorkspaceManager::new(config, None)
     }

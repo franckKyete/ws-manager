@@ -2351,6 +2351,44 @@ impl WorkspaceManager {
             lan_ip: Some(resolved_lan_ip.clone()),
         };
 
+        // Built-in configure (workspace root): copy files + env/template sync, before hooks.
+        if !self.config.workspace.copy_files.is_empty() {
+            let (f_ok, f_msg) = EnvEngine::sync_copied_files(
+                &self.config.project_root,
+                &ws_dir,
+                &self.config.workspace.copy_files,
+            );
+            OutputHandler::print_setup_step(
+                1,
+                "Workspace File Copy",
+                &f_msg,
+                if f_ok { "success" } else { "warning" },
+            );
+        }
+        let workspace_env_vars = EnvEngine::resolve_workspace_env(
+            &self.config,
+            workspace_name,
+            slot,
+            Some(&service_ports),
+            Some(&resolved_lan_ip),
+            Some(&public_host),
+            interface,
+        );
+        {
+            let (env_ok, env_msg) = EnvEngine::prepare_and_sync_env_file(
+                &ws_dir,
+                &workspace_env_vars,
+                &self.config.workspace.env_file,
+                &self.config.workspace.env_example,
+            )?;
+            OutputHandler::print_setup_step(
+                2,
+                "Workspace Env Sync",
+                &env_msg,
+                if env_ok { "success" } else { "error" },
+            );
+        }
+
         // Built-in configure: copy files + env/template sync for each repo.
         for r_name in &target_repos {
             let Some(spec) = meta.repositories.get(r_name) else {
@@ -2451,17 +2489,7 @@ impl WorkspaceManager {
         if !skip_scripts {
             let ws_hooks = lifecycle::workspace_stage_hooks(&self.config, "configure");
             if !ws_hooks.is_empty() {
-                let global_vars = EnvEngine::resolve_repo_env(
-                    &self.config,
-                    workspace_name,
-                    "",
-                    slot,
-                    Some(&service_ports),
-                    Some(&resolved_lan_ip),
-                    Some(&public_host),
-                    interface,
-                );
-                let mut env_map = global_vars;
+                let mut env_map = workspace_env_vars.clone();
                 env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
                 env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
                 env_map.insert(
@@ -2610,10 +2638,9 @@ impl WorkspaceManager {
 
         let ws_hooks = lifecycle::workspace_stage_hooks(&self.config, stage_key);
         if !ws_hooks.is_empty() {
-            let mut env_map = EnvEngine::resolve_repo_env(
+            let mut env_map = EnvEngine::resolve_workspace_env(
                 &self.config,
                 workspace_name,
-                "",
                 slot,
                 Some(&service_ports),
                 Some(&resolved_lan_ip),
@@ -3513,6 +3540,173 @@ impl WorkspaceManager {
         Ok(data)
     }
 
+    fn collect_workspace_context_snapshot(
+        &self,
+        ws_dir: &Path,
+        meta: &WorkspaceMetadata,
+    ) -> (serde_json::Map<String, serde_json::Value>, Vec<String>) {
+        let mut snapshot = serde_json::Map::new();
+        let mut warnings = Vec::new();
+
+        let mut repo_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for spec in meta.repositories.values() {
+            if !spec.path.is_empty() {
+                let norm = spec.path.trim_matches('/').to_string();
+                if !norm.is_empty() {
+                    repo_paths.insert(norm);
+                }
+            }
+        }
+
+        let env_file = self.config.workspace.env_file.trim_matches('/').to_string();
+        let env_example = self
+            .config
+            .workspace
+            .env_example
+            .trim_matches('/')
+            .to_string();
+        let max_size = self.config.workspace.save_max_file_size();
+
+        let mut builder = globset::GlobSetBuilder::new();
+        for pat in self.config.workspace.save_excludes() {
+            match globset::Glob::new(&pat) {
+                Ok(g) => {
+                    builder.add(g);
+                }
+                Err(e) => warnings.push(format!("invalid exclude glob '{}': {}", pat, e)),
+            }
+        }
+        let globset = builder.build().ok();
+
+        for entry in walkdir::WalkDir::new(ws_dir).follow_links(false) {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            let rel = match path.strip_prefix(ws_dir) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if rel_str.is_empty() {
+                continue;
+            }
+
+            // Built-in excludes
+            if rel_str == "workspace.yml"
+                || rel_str == "workspace.yaml"
+                || rel_str == ".ws"
+                || rel_str.starts_with(".ws/")
+                || rel_str == env_file
+                || rel_str == env_example
+                || rel_str.starts_with(&format!("{}/", env_file))
+                || rel_str.starts_with(&format!("{}/", env_example))
+            {
+                continue;
+            }
+            let mut excluded_by_repo = false;
+            for rp in &repo_paths {
+                if rel_str == *rp || rel_str.starts_with(&format!("{}/", rp)) {
+                    excluded_by_repo = true;
+                    break;
+                }
+            }
+            if excluded_by_repo {
+                continue;
+            }
+
+            let ft = entry.file_type();
+            if ft.is_symlink() {
+                warnings.push(format!("skipped symlink: {}", rel_str));
+                continue;
+            }
+            if ft.is_dir() {
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
+
+            if let Some(ref gs) = globset {
+                if gs.is_match(&rel_str) {
+                    continue;
+                }
+            }
+
+            let md = match std::fs::symlink_metadata(path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if md.len() > max_size {
+                warnings.push(format!(
+                    "skipped oversized file ({} bytes > {}): {}",
+                    md.len(),
+                    max_size,
+                    rel_str
+                ));
+                continue;
+            }
+
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                    snapshot.insert(rel_str, serde_json::Value::String(encoded));
+                }
+                Err(_) => warnings.push(format!("failed to read: {}", rel_str)),
+            }
+        }
+
+        (snapshot, warnings)
+    }
+
+    fn apply_workspace_context_snapshot(
+        &self,
+        ws_dir: &Path,
+        snapshot: &serde_json::Map<String, serde_json::Value>,
+    ) -> Vec<String> {
+        let mut restored = Vec::new();
+        for (rel_str, val) in snapshot {
+            // Safety: prevent path traversal
+            if rel_str.contains("..") || rel_str.starts_with('/') || rel_str.contains('\0') {
+                continue;
+            }
+            let Some(b64_str) = val.as_str() else {
+                continue;
+            };
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64_str) else {
+                continue;
+            };
+            let dest = ws_dir.join(rel_str);
+            if let Some(parent) = dest.parent() {
+                let _ = ensure_directory(parent);
+            }
+            if std::fs::write(&dest, bytes).is_ok() {
+                restored.push(rel_str.clone());
+            }
+        }
+        restored
+    }
+
+    fn workspace_context_fingerprint(&self, ws_dir: &Path, meta: &WorkspaceMetadata) -> String {
+        let (snapshot, _) = self.collect_workspace_context_snapshot(ws_dir, meta);
+        let mut keys: Vec<_> = snapshot.keys().cloned().collect();
+        keys.sort();
+        let mut hasher = Sha256::new();
+        for k in keys {
+            if let Some(v) = snapshot.get(&k).and_then(|v| v.as_str()) {
+                hasher.update(k.as_bytes());
+                hasher.update([0]);
+                hasher.update(v.as_bytes());
+                hasher.update([0]);
+            }
+        }
+        hex::encode(hasher.finalize())
+    }
+
     pub fn hub_state_save(
         &self,
         workspace_name: &str,
@@ -3578,6 +3772,21 @@ impl WorkspaceManager {
             }
         }
 
+        let (context_snapshot, context_warnings) =
+            self.collect_workspace_context_snapshot(&ws_dir, &meta);
+        let context_count = context_snapshot.len();
+        if !context_snapshot.is_empty() {
+            state_map.insert(
+                "context_files".to_string(),
+                serde_json::Value::Object(context_snapshot),
+            );
+        }
+        if !silent {
+            for w in &context_warnings {
+                OutputHandler::print_warning(&format!("workspace context: {}", w));
+            }
+        }
+
         let result = match client.save_workspace_state(&namespace, &name, &meta.name, &state_val) {
             Ok(r) => r,
             Err(e) => {
@@ -3612,6 +3821,12 @@ impl WorkspaceManager {
                 OutputHandler::print_info(&format!(
                     "  Captured uncommitted work in %{} ({} modified, {} untracked)",
                     r_name, mod_cnt, untr_cnt
+                ));
+            }
+            if context_count > 0 {
+                OutputHandler::print_info(&format!(
+                    "  Captured {} workspace-root context file(s)",
+                    context_count
                 ));
             }
         }
@@ -3688,6 +3903,9 @@ impl WorkspaceManager {
                 }
             }
         }
+
+        let ctx_fp = self.workspace_context_fingerprint(&ws_dir, &meta);
+        hasher.update(format!("context:{}", ctx_fp).as_bytes());
 
         Ok(hex::encode(hasher.finalize()))
     }
@@ -4037,8 +4255,8 @@ impl WorkspaceManager {
             repo_specs.push(spec);
         }
 
-        let ws_dir = self.get_workspace_dir(&meta.name);
-        if !ws_dir.exists() {
+        let ws_dir_path = self.get_workspace_dir(&meta.name);
+        if !ws_dir_path.exists() {
             OutputHandler::print_info(&format!(
                 "Recreating workspace @{} from hub state...",
                 meta.name
@@ -4051,9 +4269,20 @@ impl WorkspaceManager {
             ));
         }
 
+        let (_, ws_dir) = self.get_workspace_info(&meta.name)?;
+
+        if let Some(ctx) = state_val.get("context_files").and_then(|v| v.as_object()) {
+            let restored = self.apply_workspace_context_snapshot(&ws_dir, ctx);
+            if !restored.is_empty() {
+                OutputHandler::print_success(&format!(
+                    "Restored {} workspace-root context file(s)",
+                    restored.len()
+                ));
+            }
+        }
+
         if apply_wip {
             if let Some(wip_data) = state_val.get("wip").and_then(|w| w.as_object()) {
-                let (_, ws_dir) = self.get_workspace_info(&meta.name)?;
                 for (r_name, r_wip) in wip_data {
                     let spec = meta.repositories.get(r_name);
                     let wt_path = ws_dir.join(spec.map(|s| s.path.as_str()).unwrap_or(r_name));

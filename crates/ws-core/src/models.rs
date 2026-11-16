@@ -247,17 +247,33 @@ impl RepoConfig {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let env_file = mapping
-            .get(serde_yaml::Value::String("env_file".to_string()))
-            .and_then(|v| v.as_str())
-            .unwrap_or(".env")
-            .to_string();
+        let env_file = {
+            let v = mapping
+                .get(serde_yaml::Value::String("env_file".to_string()))
+                .and_then(|v| v.as_str())
+                .unwrap_or(".env")
+                .trim()
+                .trim_start_matches("./");
+            if v.is_empty() || v == "." {
+                ".env".to_string()
+            } else {
+                v.to_string()
+            }
+        };
 
-        let env_example = mapping
-            .get(serde_yaml::Value::String("env_example".to_string()))
-            .and_then(|v| v.as_str())
-            .unwrap_or(".env.example")
-            .to_string();
+        let env_example = {
+            let v = mapping
+                .get(serde_yaml::Value::String("env_example".to_string()))
+                .and_then(|v| v.as_str())
+                .unwrap_or(".env.example")
+                .trim()
+                .trim_start_matches("./");
+            if v.is_empty() || v == "." {
+                ".env.example".to_string()
+            } else {
+                v.to_string()
+            }
+        };
 
         let mut setup_list = Vec::new();
         if let Some(setup_val) = mapping.get(serde_yaml::Value::String("setup".to_string())) {
@@ -613,6 +629,185 @@ impl HubAutoSaveConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct WorkspaceSaveConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+    #[serde(
+        default = "default_workspace_save_max_file_size",
+        skip_serializing_if = "is_default_workspace_save_max_file_size"
+    )]
+    pub max_file_size: u64,
+}
+
+fn default_workspace_save_max_file_size() -> u64 {
+    1024 * 1024
+}
+
+fn is_default_workspace_save_max_file_size(v: &u64) -> bool {
+    *v == default_workspace_save_max_file_size()
+}
+
+impl WorkspaceSaveConfig {
+    pub fn from_value(val: Option<&serde_json::Value>) -> Self {
+        let mut cfg = Self {
+            exclude: Vec::new(),
+            max_file_size: default_workspace_save_max_file_size(),
+        };
+        let Some(val) = val else {
+            return cfg;
+        };
+        let Some(map) = val.as_object() else {
+            return cfg;
+        };
+        if let Some(ex) = map.get("exclude") {
+            if let Some(arr) = ex.as_array() {
+                cfg.exclude = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect();
+            } else if let Some(s) = ex.as_str() {
+                cfg.exclude = vec![s.to_string()];
+            }
+        }
+        if let Some(m) = map.get("max_file_size").and_then(|v| v.as_u64()) {
+            if m > 0 {
+                cfg.max_file_size = m;
+            }
+        }
+        cfg
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct WorkspaceRootConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copy_files: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+    #[serde(
+        default = "default_env_file",
+        skip_serializing_if = "is_default_env_file"
+    )]
+    pub env_file: String,
+    #[serde(
+        default = "default_env_example",
+        skip_serializing_if = "is_default_env_example"
+    )]
+    pub env_example: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub save: Option<WorkspaceSaveConfig>,
+}
+
+impl WorkspaceRootConfig {
+    pub fn is_empty(&self) -> bool {
+        self.copy_files.is_empty()
+            && self.env.is_empty()
+            && self.env_file == default_env_file()
+            && self.env_example == default_env_example()
+            && self
+                .save
+                .as_ref()
+                .map(|s| {
+                    s.exclude.is_empty()
+                        && s.max_file_size == default_workspace_save_max_file_size()
+                })
+                .unwrap_or(true)
+    }
+
+    pub fn from_yaml_value(val: &serde_yaml::Value) -> Result<Self, String> {
+        let mapping = val
+            .as_mapping()
+            .ok_or_else(|| "workspace config must be a mapping".to_string())?;
+        let mut cfg = WorkspaceRootConfig {
+            copy_files: Vec::new(),
+            env: HashMap::new(),
+            env_file: default_env_file(),
+            env_example: default_env_example(),
+            save: None,
+        };
+
+        if let Some(files_val) = mapping
+            .get(serde_yaml::Value::String("copy_files".to_string()))
+            .or_else(|| mapping.get(serde_yaml::Value::String("files".to_string())))
+        {
+            if let Ok(json) = serde_json::to_value(files_val) {
+                if let Some(arr) = json.as_array() {
+                    cfg.copy_files = arr.clone();
+                } else {
+                    cfg.copy_files.push(json);
+                }
+            }
+        }
+
+        if let Some(env_val) = mapping.get(serde_yaml::Value::String("env".to_string())) {
+            if let Some(env_map) = env_val.as_mapping() {
+                for (k, v) in env_map {
+                    let k_str = match k {
+                        serde_yaml::Value::String(s) => s.clone(),
+                        _ => k.as_str().unwrap_or("").to_string(),
+                    };
+                    let v_str = match v {
+                        serde_yaml::Value::String(s) => s.clone(),
+                        serde_yaml::Value::Number(n) => n.to_string(),
+                        serde_yaml::Value::Bool(b) => b.to_string(),
+                        _ => "".to_string(),
+                    };
+                    cfg.env.insert(k_str, clean_env_val(&v_str));
+                }
+            }
+        }
+
+        if let Some(s) = mapping
+            .get(serde_yaml::Value::String("env_file".to_string()))
+            .and_then(|v| v.as_str())
+        {
+            let v = s.trim();
+            if !v.is_empty() && v != "." {
+                cfg.env_file = v.trim_start_matches("./").to_string();
+            }
+        }
+        if let Some(s) = mapping
+            .get(serde_yaml::Value::String("env_example".to_string()))
+            .and_then(|v| v.as_str())
+        {
+            let v = s.trim();
+            if !v.is_empty() && v != "." {
+                cfg.env_example = v.trim_start_matches("./").to_string();
+            }
+        }
+
+        if let Some(save_val) = mapping.get(serde_yaml::Value::String("save".to_string())) {
+            let json = serde_json::to_value(save_val).ok();
+            let save = WorkspaceSaveConfig::from_value(json.as_ref());
+            if !save.exclude.is_empty()
+                || save.max_file_size != default_workspace_save_max_file_size()
+            {
+                cfg.save = Some(save);
+            } else if save_val.as_mapping().is_some() {
+                // preserve explicit empty save block awareness not required; keep None for empty
+                cfg.save = None;
+            }
+        }
+
+        Ok(cfg)
+    }
+
+    pub fn save_max_file_size(&self) -> u64 {
+        self.save
+            .as_ref()
+            .map(|s| s.max_file_size)
+            .unwrap_or_else(default_workspace_save_max_file_size)
+    }
+
+    pub fn save_excludes(&self) -> Vec<String> {
+        self.save
+            .as_ref()
+            .map(|s| s.exclude.clone())
+            .unwrap_or_default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppConfig {
     pub project_root: PathBuf,
@@ -632,6 +827,7 @@ pub struct AppConfig {
     pub hub: serde_json::Value,
     pub lifecycle: Option<serde_json::Value>,
     pub schema_version: Option<u32>,
+    pub workspace: WorkspaceRootConfig,
 }
 
 impl AppConfig {

@@ -111,6 +111,7 @@ impl ConfigLoader {
         let mut hub_val = serde_json::Value::Object(serde_json::Map::new());
         let mut lifecycle_val = None;
         let mut schema_version = None;
+        let mut workspace_cfg = crate::models::WorkspaceRootConfig::default();
 
         if let Some(ref fp) = file_path {
             let content = fs::read_to_string(fp)?;
@@ -289,6 +290,34 @@ impl ConfigLoader {
                 if let Some(sv) = map.get(serde_yaml::Value::String("schema_version".to_string())) {
                     schema_version = sv.as_u64().map(|n| n as u32);
                 }
+
+                // 12. Workspace (additive schema v3 extension)
+                if let Some(ws_val) = map.get(serde_yaml::Value::String("workspace".to_string())) {
+                    workspace_cfg = crate::models::WorkspaceRootConfig::from_yaml_value(ws_val)
+                        .map_err(WSError::Config)?;
+                } else if let Some(ws_val) =
+                    map.get(serde_yaml::Value::String("workspaces".to_string()))
+                {
+                    // Compat: accept workspace-root settings nested under "workspaces"
+                    // (e.g. workspaces.copy_files/env/save) when "workspace" is absent.
+                    if let Some(ws_map) = ws_val.as_mapping() {
+                        let has_workspace_keys = [
+                            "copy_files",
+                            "files",
+                            "env",
+                            "env_file",
+                            "env_example",
+                            "save",
+                        ]
+                        .iter()
+                        .any(|k| ws_map.contains_key(serde_yaml::Value::String((*k).to_string())));
+                        if has_workspace_keys {
+                            workspace_cfg =
+                                crate::models::WorkspaceRootConfig::from_yaml_value(ws_val)
+                                    .map_err(WSError::Config)?;
+                        }
+                    }
+                }
             }
         } else {
             // Auto-detect bare repos in bares/ or project_root
@@ -384,6 +413,7 @@ impl ConfigLoader {
             hub: hub_val,
             lifecycle: lifecycle_val,
             schema_version,
+            workspace: workspace_cfg,
         })
     }
 
@@ -464,6 +494,13 @@ impl ConfigLoader {
                 "copy_files".to_string(),
                 serde_json::Value::Array(app_config.copy_files.clone()),
             );
+        }
+        if !app_config.workspace.is_empty() {
+            if let Ok(val) = serde_json::to_value(&app_config.workspace) {
+                if !val.is_null() {
+                    sanitized_data.insert("workspace".to_string(), val);
+                }
+            }
         }
         if let Some(ref tc) = app_config.tmux {
             sanitized_data.insert(

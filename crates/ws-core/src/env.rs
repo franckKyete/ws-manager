@@ -343,6 +343,110 @@ impl EnvEngine {
         cmd
     }
 
+    pub fn resolve_workspace_env(
+        app_config: &AppConfig,
+        workspace_name: &str,
+        slot: u16,
+        service_ports: Option<&HashMap<String, u16>>,
+        lan_ip: Option<&str>,
+        public_host: Option<&str>,
+        interface: Option<&str>,
+    ) -> HashMap<String, String> {
+        let (auto_ports, _) = if service_ports.is_none() {
+            let (p, _) = allocate_workspace_ports(&app_config.repositories, slot, None);
+            (Some(p), false)
+        } else {
+            (None, false)
+        };
+
+        let ports_ref = service_ports.or(auto_ports.as_ref()).unwrap();
+        let resolved_lan_ip = match lan_ip {
+            Some(ip) => ip.to_string(),
+            None => get_lan_ip(interface),
+        };
+        let resolved_public_host = public_host
+            .map(|s| s.to_string())
+            .or_else(|| app_config.global_env.get("PUBLIC_HOST").cloned())
+            .or_else(|| std::env::var("WS_PUBLIC_HOST").ok())
+            .or_else(|| std::env::var("PUBLIC_HOST").ok())
+            .unwrap_or_else(|| resolved_lan_ip.clone());
+
+        let mut merged = HashMap::new();
+
+        for (k, v) in &app_config.global_env {
+            merged.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &app_config.secret_env {
+            merged.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &app_config.private_env {
+            merged.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &app_config.dynamic_env {
+            merged.insert(k.clone(), v.clone());
+        }
+        for (k, v) in &app_config.workspace.env {
+            merged.insert(k.clone(), v.clone());
+        }
+
+        let mut resolved = HashMap::new();
+        let pr = app_config.project_root();
+        for (k, v) in merged {
+            let res_v = Self::resolve_template_string(
+                &v,
+                workspace_name,
+                "",
+                slot,
+                Some(pr),
+                Some(&app_config.workspaces_dir),
+                Some(ports_ref),
+                None,
+                Some(&resolved_lan_ip),
+                Some(&resolved_public_host),
+                interface,
+            );
+            resolved.insert(k, res_v);
+        }
+
+        resolved.insert("WS_WORKSPACE".to_string(), workspace_name.to_string());
+        resolved.insert("WS_SLOT".to_string(), slot.to_string());
+        resolved.insert("WS_LAN_IP".to_string(), resolved_lan_ip.clone());
+        resolved.insert("WS_PUBLIC_HOST".to_string(), resolved_public_host);
+
+        for (svc_name, p) in ports_ref {
+            if !svc_name.contains(':') {
+                let upper = svc_name.to_uppercase().replace('-', "_");
+                resolved.insert(format!("WS_SERVICE_{}_PORT", upper), p.to_string());
+                resolved.insert(
+                    format!("WS_SERVICE_{}_URL", upper),
+                    format!("http://127.0.0.1:{}", p),
+                );
+                resolved.insert(
+                    format!("WS_SERVICE_{}_URL_LAN", upper),
+                    format!("http://{}:{}", resolved_lan_ip, p),
+                );
+            } else {
+                let parts: Vec<&str> = svc_name.splitn(2, ':').collect();
+                let upper = parts[0].to_uppercase().replace('-', "_");
+                let sub_upper = parts[1].to_uppercase().replace('-', "_");
+                resolved.insert(
+                    format!("WS_SERVICE_{}_PORT_{}", upper, sub_upper),
+                    p.to_string(),
+                );
+                resolved.insert(
+                    format!("WS_SERVICE_{}_URL_{}", upper, sub_upper),
+                    format!("http://127.0.0.1:{}", p),
+                );
+                resolved.insert(
+                    format!("WS_SERVICE_{}_URL_LAN_{}", upper, sub_upper),
+                    format!("http://{}:{}", resolved_lan_ip, p),
+                );
+            }
+        }
+
+        resolved
+    }
+
     pub fn resolve_repo_env(
         app_config: &AppConfig,
         workspace_name: &str,
@@ -554,28 +658,60 @@ impl EnvEngine {
                 }
             };
 
-            let dst_path = worktree_path.join(&dst_rel);
-            if let Some(parent) = dst_path.parent() {
-                let _ = fs::create_dir_all(parent);
-            }
-
-            if src_path.is_dir() {
-                let _ = Self::copy_dir_recursive(&src_path, &dst_path);
-                copied_count += 1;
-            } else if fs::copy(&src_path, &dst_path).is_ok() {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if let Ok(meta) = dst_path.metadata() {
-                        let mut perms = meta.permissions();
-                        let mode = perms.mode() | 0o600;
-                        perms.set_mode(mode);
-                        let _ = fs::set_permissions(&dst_path, perms);
+            let mut dst_path = worktree_path.join(&dst_rel);
+            if src_path.is_file() {
+                // If destination resolves to the target root, copy into it.
+                if dst_rel.is_empty() || dst_rel == "." || dst_path == worktree_path {
+                    if let Some(name) = src_path.file_name() {
+                        dst_path = worktree_path.join(name);
                     }
                 }
-                copied_count += 1;
+            }
+            if src_path.is_dir() {
+                if dst_path.exists() && dst_path.is_file() {
+                    errors.push(format!(
+                        "destination exists as a file, cannot copy directory: {} -> {}",
+                        src_rel, dst_rel
+                    ));
+                    continue;
+                }
+                if let Err(e) = Self::copy_dir_recursive(&src_path, &dst_path) {
+                    errors.push(format!(
+                        "failed copying directory {} -> {}: {}",
+                        src_rel, dst_rel, e
+                    ));
+                } else {
+                    copied_count += 1;
+                }
             } else {
-                errors.push(format!("failed copying {} -> {}", src_rel, dst_rel));
+                if dst_path.exists() && dst_path.is_dir() {
+                    errors.push(format!(
+                        "destination is a directory, expected file path: {} -> {}",
+                        src_rel, dst_rel
+                    ));
+                    continue;
+                }
+                if let Some(parent) = dst_path.parent() {
+                    let _ = fs::create_dir_all(parent);
+                }
+                match fs::copy(&src_path, &dst_path) {
+                    Ok(_) => {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(meta) = dst_path.metadata() {
+                                let mut perms = meta.permissions();
+                                let mode = perms.mode() | 0o600;
+                                perms.set_mode(mode);
+                                let _ = fs::set_permissions(&dst_path, perms);
+                            }
+                        }
+                        copied_count += 1;
+                    }
+                    Err(e) => {
+                        errors.push(format!("failed copying {} -> {}: {}", src_rel, dst_rel, e));
+                    }
+                }
             }
         }
 
@@ -592,7 +728,33 @@ impl EnvEngine {
         env_file_name: &str,
         env_example_name: &str,
     ) -> std::io::Result<(bool, String)> {
-        let target_env = worktree_path.join(env_file_name);
+        let env_file_name = {
+            let v = env_file_name.trim().trim_start_matches("./");
+            if v.is_empty() || v == "." {
+                ".env".to_string()
+            } else {
+                v.to_string()
+            }
+        };
+        let env_example_name = {
+            let v = env_example_name.trim().trim_start_matches("./");
+            if v.is_empty() || v == "." {
+                ".env.example".to_string()
+            } else {
+                v.to_string()
+            }
+        };
+        let target_env = worktree_path.join(&env_file_name);
+
+        if target_env == *worktree_path || (target_env.exists() && target_env.is_dir()) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "env file path '{}' resolves to a directory (check workspace.env_file)",
+                    target_env.display()
+                ),
+            ));
+        }
 
         // Step 1: Copy example if missing
         if !target_env.exists() {
@@ -627,6 +789,14 @@ impl EnvEngine {
                 }
                 existing_lines.push(line.to_string());
             }
+        } else if target_env.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "env file path '{}' is not a regular file",
+                    target_env.display()
+                ),
+            ));
         }
 
         // Step 3: Update existing keys or append

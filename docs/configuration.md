@@ -109,7 +109,22 @@ repositories:
 | `lifecycle`      | `object`                | v3 lifecycle definition (`configure` hooks and ordered `setup` stages).                     |
 | `tmux`           | `dict` or `str`         | Project Tmux session configuration for workspace windows (`session`, `command`, `switch`). |
 | `hub`            | `dict`                  | wshub settings: default project identifier and background `auto_save` configuration.       |
+| `workspace`      | `object`                | Workspace-root settings (project-wide): root `copy_files`, root `env`/env file sync, and hub context save options. |
 | `repositories`   | `dict[str, RepoConfig]` | Map of repository definitions keyed by repository alias (`server`, `mobile`, etc.).        |
+
+---
+
+### 📁 Workspace Root (`workspace:`)
+
+Configures workspace-root behavior applied to each workspace directory (`workspaces/<name>/`) during the built-in `configure` stage (before workspace-scope configure hooks):
+
+- `copy_files` / `files`: copy specs (same format as repository `copy_files`) from project sources (`files/` or project root) into the workspace root.
+- `env`: workspace-specific environment variables (merged with global env, workspace values override on key collision) resolved with placeholder expansion in workspace context.
+- `env_file` / `env_example`: target and template filenames for generated/synced workspace env file (defaults `.env` / `.env.example`).
+- `save.exclude`: glob patterns to exclude additional workspace-root context files from hub state snapshots.
+- `save.max_file_size`: per-file size limit in bytes for hub context snapshots (default `1048576`).
+
+Hub state save/restore captures eligible workspace-root context files (implicit, excluding repo worktrees, `.ws/`, `workspace.yml`/`workspace.yaml`, and the configured workspace env files by default), skips symlinks and oversized files, and restores snapshot paths by upsert (no deletions). Workspace-scope lifecycle hooks continue to run at the workspace root and receive resolved workspace env vars.
 
 ---
 
