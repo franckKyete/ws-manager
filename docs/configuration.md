@@ -1,15 +1,15 @@
 # ⚙️ Configuration Specification
 
 `ws` is configured declaratively using YAML. This document details the schema
-and behavior of the project configuration file (`repositories.yml`), declarative
+and behavior of the project configuration file (`ws-project.yml`), declarative
 workspace templates (`workspace.yml`), environment variable scoping, and
 lifecycle/setup configuration.
 
 ---
 
-## 📄 `repositories.yml` Schema
+## 📄 `ws-project.yml` Schema
 
-The `repositories.yml` file resides in the root of your project directory and
+The `ws-project.yml` file resides in the root of your project directory and
 defines the bare repository store, services, ports, environment variables, and
 setup pipelines.
 
@@ -271,7 +271,7 @@ repositories:
   terminal is interactive. The prompt is prefilled with the detected default;
   pressing Enter accepts it, and an unknown branch re-prompts.
 - **Persisted on choice.** The chosen value is written back to
-  `repositories.yml` before any worktree is created. If persistence fails, the
+  `ws-project.yml` before any worktree is created. If persistence fails, the
   workspace is not created. A base persisted before a later failure remains.
 - **Non-interactive behavior.** With `--yes` (or no TTY), each repository uses
   its detected default, which is saved with a warning. If no default can be
@@ -287,7 +287,7 @@ repositories:
 - **Declarative files are strict.** `ws create --file` does not prompt, detect,
   or fall back: every `create: true` entry must supply `base`, `target`, `from`,
   or `base_branch` in the file, or the command fails before touching Git.
-- **Editing defaults.** Change `base_branch` directly in `repositories.yml`;
+- **Editing defaults.** Change `base_branch` directly in `ws-project.yml`;
   there is no dedicated config command.
 
 ---
@@ -514,4 +514,4 @@ ws create -f feature-auth.yml --setup
 
 > `ws create --file` is strict: any `create: true` repository without a base in
 > the file is a hard error. It never prompts, detects a default, falls back to
-> `repositories.yml`, or writes the file.
+> `ws-project.yml`, or writes the file.

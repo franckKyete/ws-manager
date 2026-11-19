@@ -17,7 +17,7 @@ ws doctor
 - ✅ Git binary version and `git worktree` support (>= 2.20)
 - ✅ Multiplexer binaries (`tmux`, `zellij`)
 - ✅ Bare repositories directory integrity in `bares/`
-- ✅ Configuration syntax in `repositories.yml`
+- ✅ Configuration syntax in `ws-project.yml`
 - ✅ Active Unix domain sockets and permissions in `workspaces/`
 
 ---
@@ -138,7 +138,7 @@ Workspace creation fails with one of:
 
 New branches start from a repository's `base_branch`. A configured value must
 exist; non-interactive runs have no way to ask; and `ws create --file` never
-falls back to prompts or `repositories.yml`.
+falls back to prompts or `ws-project.yml`.
 
 #### Resolution:
 
@@ -146,7 +146,7 @@ falls back to prompts or `repositories.yml`.
    ```bash
    git -C bares/<repo>.git branch -a
    ```
-2. Fix the value in `repositories.yml` (`base_branch: main`), or pass a one-shot
+2. Fix the value in `ws-project.yml` (`base_branch: main`), or pass a one-shot
    override:
    ```bash
    ws create @feat %server --base develop

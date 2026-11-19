@@ -156,6 +156,36 @@ impl TmuxLauncher {
         }
     }
 
+    pub fn is_current_window(session_name: &str, window_name: &str) -> bool {
+        if std::env::var_os("TMUX").is_none() || !Self::is_available() {
+            return false;
+        }
+        let target_win = match Self::find_window_name(session_name, window_name) {
+            Some(w) => w,
+            None => window_name.to_string(),
+        };
+        let output = match Command::new("tmux")
+            .args(["display-message", "-p", "#S\t#{window_name}"])
+            .output()
+        {
+            Ok(o) if o.status.success() => o,
+            _ => return false,
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut parts = stdout.trim_end().splitn(2, '\t');
+        let cur_session = parts.next().unwrap_or_default().trim();
+        let cur_window = parts.next().unwrap_or_default().trim();
+        if cur_session != session_name {
+            return false;
+        }
+        let clean = window_name.trim_start_matches('@');
+        let with_at = format!("@{}", clean);
+        cur_window == target_win
+            || cur_window == window_name
+            || cur_window == clean
+            || cur_window == with_at
+    }
+
     pub fn kill_workspace_window(session_name: &str, window_name: &str) -> bool {
         if !Self::is_session_active(session_name) {
             return false;

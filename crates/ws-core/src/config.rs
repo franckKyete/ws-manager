@@ -12,7 +12,12 @@ use crate::models::{
     TmuxConfig,
 };
 
+pub const PROJECT_CONFIG_FILENAME: &str = "ws-project.yml";
+pub const LEGACY_CONFIG_FILENAMES: &[&str] = &["repositories.yml", "repositories.yaml"];
+
 pub const DEFAULT_CONFIG_FILENAMES: &[&str] = &[
+    "ws-project.yml",
+    "ws-project.yaml",
     "repositories.yml",
     "repositories.yaml",
     "ws.yml",
@@ -23,7 +28,89 @@ pub const DEFAULT_CONFIG_FILENAMES: &[&str] = &[
 pub struct ConfigLoader;
 
 impl ConfigLoader {
+    pub fn is_legacy_config_path(path: &Path) -> bool {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| LEGACY_CONFIG_FILENAMES.contains(&n))
+    }
+
+    pub fn legacy_config_migration_message(path: &Path) -> String {
+        format!(
+            "Project configuration '{}' uses the legacy filename. Rename it to '{}' or run 'ws project migrate config' from the project root.",
+            path.display(),
+            PROJECT_CONFIG_FILENAME
+        )
+    }
+
     pub fn find_config_file(explicit_path: Option<&Path>) -> Result<Option<PathBuf>> {
+        if let Some(p) = explicit_path {
+            let abs_path = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                std::env::current_dir()?.join(p)
+            };
+            if abs_path.is_file() {
+                return Ok(Some(abs_path));
+            }
+            return Err(WSError::Config(format!(
+                "Specified config file not found: {}",
+                p.display()
+            )));
+        }
+
+        let mut curr = std::env::current_dir()?;
+        loop {
+            let mut legacy: Option<PathBuf> = None;
+            for filename in DEFAULT_CONFIG_FILENAMES {
+                let candidate = curr.join(filename);
+                if candidate.is_file() {
+                    if Self::is_legacy_config_path(&candidate) {
+                        if legacy.is_none() {
+                            legacy = Some(candidate);
+                        }
+                        continue;
+                    }
+                    return Ok(Some(candidate));
+                }
+            }
+            if let Some(legacy) = legacy {
+                return Err(WSError::Config(Self::legacy_config_migration_message(
+                    &legacy,
+                )));
+            }
+            if !curr.pop() {
+                break;
+            }
+        }
+
+        if let Some(home) = dirs::home_dir() {
+            let user_config_dir = home.join(".config").join("ws");
+            for filename in &[
+                PROJECT_CONFIG_FILENAME,
+                "ws-project.yaml",
+                "repositories.yml",
+                "config.yml",
+                "ws.yml",
+            ] {
+                let candidate = user_config_dir.join(filename);
+                if candidate.is_file() {
+                    if Self::is_legacy_config_path(&candidate) {
+                        return Err(WSError::Config(Self::legacy_config_migration_message(
+                            &candidate,
+                        )));
+                    }
+                    return Ok(Some(candidate));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Locate a project config file for migration commands. Unlike
+    /// `find_config_file`, this allows legacy `repositories.yml` files to be
+    /// discovered so they can be migrated.
+    pub fn find_config_file_for_migration(explicit_path: Option<&Path>) -> Result<Option<PathBuf>> {
         if let Some(p) = explicit_path {
             let abs_path = if p.is_absolute() {
                 p.to_path_buf()
@@ -54,7 +141,13 @@ impl ConfigLoader {
 
         if let Some(home) = dirs::home_dir() {
             let user_config_dir = home.join(".config").join("ws");
-            for filename in &["repositories.yml", "config.yml", "ws.yml"] {
+            for filename in &[
+                PROJECT_CONFIG_FILENAME,
+                "ws-project.yaml",
+                "repositories.yml",
+                "config.yml",
+                "ws.yml",
+            ] {
                 let candidate = user_config_dir.join(filename);
                 if candidate.is_file() {
                     return Ok(Some(candidate));
@@ -78,7 +171,226 @@ impl ConfigLoader {
         workspaces_dir: Option<&Path>,
         allow_empty: bool,
     ) -> Result<AppConfig> {
-        Self::load_config_with_options(config_path, workspaces_dir, allow_empty, false)
+        let file_path = Self::find_config_file_for_migration(config_path)?;
+        let project_root = if let Some(ref fp) = file_path {
+            fp.parent().unwrap_or_else(|| Path::new(".")).to_path_buf()
+        } else {
+            std::env::current_dir()?
+        };
+
+        let mut repos = HashMap::new();
+        let mut global_env = HashMap::new();
+        let mut global_secret_env = HashMap::new();
+        let mut global_private_env = HashMap::new();
+        let mut dynamic_env = HashMap::new();
+        let mut global_setup = Vec::new();
+        let mut global_secrets = Vec::new();
+        let mut global_copy_files = Vec::new();
+        let mut tmux_cfg = None;
+        let mut hub_auto_save = None;
+        let mut hub_project = None;
+        let mut hub_val = serde_json::Value::Object(serde_json::Map::new());
+        let mut lifecycle_val = None;
+        let mut schema_version = None;
+        let mut workspace_cfg = crate::models::WorkspaceRootConfig::default();
+
+        if let Some(ref fp) = file_path {
+            let content = fs::read_to_string(fp)?;
+            let doc: serde_yaml::Value = serde_yaml::from_str(&content).map_err(|e| {
+                WSError::Config(format!("Failed to parse YAML '{}': {}", fp.display(), e))
+            })?;
+
+            if let Some(map) = doc.as_mapping() {
+                if let Some(repos_val) =
+                    map.get(serde_yaml::Value::String("repositories".to_string()))
+                {
+                    if let Some(repos_map) = repos_val.as_mapping() {
+                        for (k, v) in repos_map {
+                            if let Some(r_name) = k.as_str() {
+                                let clean_r_name =
+                                    r_name.trim_start_matches(['%', '+', ':', '#', '$']);
+                                let cfg = RepoConfig::from_yaml_value(clean_r_name, v)
+                                    .map_err(WSError::Config)?;
+                                repos.insert(clean_r_name.to_string(), cfg);
+                            }
+                        }
+                    }
+                }
+
+                if let Some(env_val) = map.get(serde_yaml::Value::String("env".to_string())) {
+                    if let Some(env_map) = env_val.as_mapping() {
+                        for (k, v) in env_map {
+                            if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
+                                if is_secret_val(v_str) {
+                                    global_secret_env
+                                        .insert(k_str.to_string(), clean_env_val(v_str));
+                                } else if is_private_val(v_str) {
+                                    global_private_env
+                                        .insert(k_str.to_string(), clean_env_val(v_str));
+                                } else {
+                                    global_env.insert(k_str.to_string(), clean_env_val(v_str));
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let Some(sec_val) = map
+                    .get(serde_yaml::Value::String("secret".to_string()))
+                    .or_else(|| map.get(serde_yaml::Value::String("secrets".to_string())))
+                {
+                    if let Some(sec_map) = sec_val.as_mapping() {
+                        for (k, v) in sec_map {
+                            if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
+                                global_secret_env.insert(k_str.to_string(), clean_env_val(v_str));
+                            }
+                        }
+                    } else if let Some(seq) = sec_val.as_sequence() {
+                        for item in seq {
+                            if let Some(s) = item.as_str() {
+                                global_secrets.push(s.to_string());
+                            }
+                        }
+                    } else if let Some(s) = sec_val.as_str() {
+                        global_secrets.push(s.to_string());
+                    }
+                }
+
+                if let Some(priv_val) = map
+                    .get(serde_yaml::Value::String("private".to_string()))
+                    .or_else(|| map.get(serde_yaml::Value::String("local_env".to_string())))
+                {
+                    if let Some(priv_map) = priv_val.as_mapping() {
+                        for (k, v) in priv_map {
+                            if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
+                                global_private_env.insert(k_str.to_string(), clean_env_val(v_str));
+                            }
+                        }
+                    }
+                }
+
+                if let Some(dyn_val) = map.get(serde_yaml::Value::String("dynamic_env".to_string()))
+                {
+                    if let Some(dyn_map) = dyn_val.as_mapping() {
+                        for (k, v) in dyn_map {
+                            if let (Some(k_str), Some(v_str)) = (k.as_str(), v.as_str()) {
+                                dynamic_env.insert(k_str.to_string(), v_str.to_string());
+                            }
+                        }
+                    }
+                }
+
+                if let Some(setup_val) = map.get(serde_yaml::Value::String("setup".to_string())) {
+                    if let Some(s) = setup_val.as_str() {
+                        global_setup.push(s.to_string());
+                    } else if let Some(seq) = setup_val.as_sequence() {
+                        for item in seq {
+                            if let Some(s) = item.as_str() {
+                                global_setup.push(s.to_string());
+                            } else if let Ok(json) = serde_json::to_value(item) {
+                                global_setup.push(json.to_string());
+                            }
+                        }
+                    }
+                }
+
+                if let Some(cf_val) = map
+                    .get(serde_yaml::Value::String("copy_files".to_string()))
+                    .or_else(|| map.get(serde_yaml::Value::String("files".to_string())))
+                {
+                    if let Ok(json) = serde_json::to_value(cf_val) {
+                        if let Some(arr) = json.as_array() {
+                            global_copy_files = arr.clone();
+                        } else {
+                            global_copy_files.push(json);
+                        }
+                    }
+                }
+
+                if let Some(tmux_val) = map
+                    .get(serde_yaml::Value::String("tmux".to_string()))
+                    .or_else(|| map.get(serde_yaml::Value::String("tmux_session".to_string())))
+                {
+                    tmux_cfg = Some(TmuxConfig::from_value(tmux_val).map_err(WSError::Config)?);
+                }
+
+                if let Some(h_val) = map.get(serde_yaml::Value::String("hub".to_string())) {
+                    if let Ok(json) = serde_json::to_value(h_val) {
+                        hub_val = json;
+                    }
+                    if let Some(h_map) = h_val.as_mapping() {
+                        hub_project = h_map
+                            .get(serde_yaml::Value::String("project".to_string()))
+                            .or_else(|| h_map.get(serde_yaml::Value::String("name".to_string())))
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string());
+                        if let Some(as_val) =
+                            h_map.get(serde_yaml::Value::String("auto_save".to_string()))
+                        {
+                            if let Ok(as_cfg) = HubAutoSaveConfig::from_value(as_val) {
+                                hub_auto_save = Some(as_cfg);
+                            }
+                        }
+                    }
+                }
+                if hub_auto_save.is_none() {
+                    if let Some(as_val) =
+                        map.get(serde_yaml::Value::String("auto_save".to_string()))
+                    {
+                        if let Ok(as_cfg) = HubAutoSaveConfig::from_value(as_val) {
+                            hub_auto_save = Some(as_cfg);
+                        }
+                    }
+                }
+                if let Some(lv) = map.get(serde_yaml::Value::String("lifecycle".to_string())) {
+                    lifecycle_val = serde_json::to_value(lv).ok();
+                }
+                if let Some(sv) = map.get(serde_yaml::Value::String("schema_version".to_string())) {
+                    schema_version = sv.as_u64().map(|n| n as u32);
+                }
+                if let Some(ws_val) = map.get(serde_yaml::Value::String("workspace".to_string())) {
+                    workspace_cfg = crate::models::WorkspaceRootConfig::from_yaml_value(ws_val)
+                        .map_err(WSError::Config)?;
+                }
+            }
+        }
+
+        if repos.is_empty() && !allow_empty {
+            return Err(WSError::Config(
+                "No repositories configured. Run 'ws init <git-url...>' to clone repositories or create 'ws-project.yml'.".to_string(),
+            ));
+        }
+
+        let resolved_ws_dir = if let Some(ws_d) = workspaces_dir {
+            if ws_d.is_absolute() {
+                ws_d.to_path_buf()
+            } else {
+                project_root.join(ws_d)
+            }
+        } else {
+            project_root.join("workspaces")
+        };
+
+        Ok(AppConfig {
+            project_root: project_root.clone(),
+            repositories: repos,
+            workspaces_dir: resolved_ws_dir,
+            config_file_path: file_path,
+            global_env,
+            secret_env: global_secret_env,
+            private_env: global_private_env,
+            dynamic_env,
+            setup: global_setup,
+            secrets: global_secrets,
+            copy_files: global_copy_files,
+            tmux: tmux_cfg,
+            hub_auto_save,
+            hub_project,
+            hub: hub_val,
+            lifecycle: lifecycle_val,
+            schema_version,
+            workspace: workspace_cfg,
+        })
     }
 
     fn load_config_with_options(
@@ -95,7 +407,8 @@ impl ConfigLoader {
         };
 
         if let Some(ref fp) = file_path {
-            if fp.file_name().and_then(|n| n.to_str()) == Some("repositories.yml") {
+            let name = fp.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if name == PROJECT_CONFIG_FILENAME || name == "ws-project.yaml" {
                 let _ = crate::registry::register_project(&project_root, None);
             }
         }
@@ -365,7 +678,7 @@ impl ConfigLoader {
                     "Project configuration '{}' uses unsupported lifecycle schema (found: {}, expected: {}).\\nRun 'ws project migrate lifecycle --yes' before using this project.",
                     file_path
                         .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| project_root.join("repositories.yml").display().to_string()),
+                        .unwrap_or_else(|| project_root.join(PROJECT_CONFIG_FILENAME).display().to_string()),
                     schema_version.unwrap_or(0),
                     LIFECYCLE_SCHEMA_VERSION
                 )));
@@ -384,7 +697,7 @@ impl ConfigLoader {
 
         if repos.is_empty() && !allow_empty {
             return Err(WSError::Config(
-                "No repositories configured. Run 'ws init <git-url...>' to clone repositories or create 'repositories.yml'.".to_string(),
+                "No repositories configured. Run 'ws init <git-url...>' to clone repositories or create 'ws-project.yml'.".to_string(),
             ));
         }
 
@@ -512,6 +825,18 @@ impl ConfigLoader {
             );
         }
 
+        if let Some(ref lc) = app_config.lifecycle {
+            sanitized_data.insert("lifecycle".to_string(), lc.clone());
+        }
+        sanitized_data.insert(
+            "schema_version".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(
+                app_config
+                    .schema_version
+                    .unwrap_or(LIFECYCLE_SCHEMA_VERSION),
+            )),
+        );
+
         let mut hub_map = if let Some(obj) = app_config.hub.as_object() {
             obj.clone()
         } else {
@@ -620,7 +945,7 @@ impl ConfigLoader {
     ) -> Result<PathBuf> {
         let path = config_path
             .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| PathBuf::from("repositories.yml"));
+            .unwrap_or_else(|| PathBuf::from(PROJECT_CONFIG_FILENAME));
 
         let mut data: serde_yaml::Mapping = if path.is_file() {
             let content = fs::read_to_string(&path).unwrap_or_default();
@@ -682,7 +1007,7 @@ impl ConfigLoader {
     }
 }
 
-/// A single-document, format-preserving edit of `repositories.yml`.
+/// A single-document, format-preserving edit of a project configuration file.
 ///
 /// Unlike [`ConfigLoader::save_config`], this keeps unknown per-repo keys and
 /// comments intact. Edits are built in memory and written once by [`save`].
@@ -706,7 +1031,7 @@ impl<'a> ProjectConfigEdit<'a> {
         let doc = Document::from_str(&content).map_err(|e| WSError::Config(e.to_string()))?;
         if doc.as_mapping().is_none() {
             return Err(WSError::Config(
-                "Top-level repositories.yml must be a YAML mapping".to_string(),
+                "Top-level project configuration must be a YAML mapping".to_string(),
             ));
         }
         Ok(Self { path, doc })
@@ -714,7 +1039,7 @@ impl<'a> ProjectConfigEdit<'a> {
 
     fn root(&self) -> Result<Mapping> {
         self.doc.as_mapping().ok_or_else(|| {
-            WSError::Config("Top-level repositories.yml must be a YAML mapping".to_string())
+            WSError::Config("Top-level project configuration must be a YAML mapping".to_string())
         })
     }
 

@@ -17,7 +17,7 @@ pub fn execute_init(
     manager
         .init_project_with_options(repo_inputs, &mut options)
         .map_err(|e| e.to_string())?;
-    OutputHandler::print_success("Initialized project configuration in repositories.yml");
+    OutputHandler::print_success("Initialized project configuration in ws-project.yml");
     Ok(())
 }
 
@@ -36,6 +36,6 @@ pub fn execute_add(
         .init_project_with_options(&[repo_input.to_string()], &mut options)
         .map_err(|e| e.to_string())?;
     let (name, _, _, _) = WorkspaceManager::parse_repo_url(repo_input);
-    OutputHandler::print_success(&format!("Added repository '{}' to repositories.yml", name));
+    OutputHandler::print_success(&format!("Added repository '{}' to ws-project.yml", name));
     Ok(())
 }

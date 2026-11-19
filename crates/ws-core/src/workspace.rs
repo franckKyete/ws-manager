@@ -89,6 +89,25 @@ impl WorkspaceManager {
             && (ws_dir.join("workspace.yml").exists() || ws_dir.join("workspace.yaml").exists())
     }
 
+    fn ensure_cwd_outside_dir(&self, path: &Path) -> Result<(), WSError> {
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(_) => {
+                return std::env::set_current_dir(&self.config.project_root)
+                    .or_else(|_| std::env::set_current_dir(std::env::temp_dir()))
+                    .map_err(WSError::Io);
+            }
+        };
+        let cwd_canon = cwd.canonicalize().unwrap_or(cwd);
+        let path_canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if cwd_canon.starts_with(&path_canon) {
+            std::env::set_current_dir(&self.config.project_root)
+                .or_else(|_| std::env::set_current_dir(std::env::temp_dir()))
+                .map_err(WSError::Io)?;
+        }
+        Ok(())
+    }
+
     pub fn detect_context(&self, cwd: Option<&Path>) -> (Option<String>, Option<String>) {
         let current = cwd
             .map(|p| p.to_path_buf())
@@ -987,47 +1006,149 @@ impl WorkspaceManager {
             }
         }
 
-        let mut branches_to_delete = Vec::new();
+        let mut branches_to_delete: Vec<(String, PathBuf, String)> = Vec::new();
         if delete_branch {
             if let Some(meta) = &metadata {
                 for (r_name, spec) in &meta.repositories {
                     if let Some(repo_cfg) = self.config.repositories.get(r_name) {
                         let bare_path = self.resolve_bare_path(&repo_cfg.bare);
-                        let default_br = self.git.get_default_branch(&bare_path);
-                        if spec.branch != default_br {
-                            branches_to_delete.push((bare_path, spec.branch.clone()));
-                        }
+                        branches_to_delete.push((r_name.clone(), bare_path, spec.branch.clone()));
                     }
                 }
             }
         }
 
-        self.remove_workspace(name, true)?;
+        self.ensure_cwd_outside_dir(&ws_dir)?;
+        let removal_result = self.remove_workspace(name, true);
+        let removal_ok = match &removal_result {
+            Ok(_) => true,
+            Err(e) => {
+                OutputHandler::print_error(
+                    &format!("Failed to remove workspace '@{}'", name),
+                    Some(&e.to_string()),
+                );
+                false
+            }
+        };
 
-        for (b_path, br_name) in branches_to_delete {
-            let _ = self.git.delete_branch(&b_path, &br_name, true);
-            OutputHandler::print_info(&format!(
-                "Deleted branch '{}' from {}",
-                br_name,
-                b_path.display()
-            ));
+        let mut branch_delete_failures: Vec<(String, String, String)> = Vec::new();
+        if !branches_to_delete.is_empty() {
+            let mut deleted: Vec<String> = Vec::new();
+            for (r_name, b_path, br_name) in &branches_to_delete {
+                let default_br = self.git.get_default_branch(b_path);
+                if br_name == &default_br {
+                    OutputHandler::print_info(&format!(
+                        "Skipped deleting default branch '{}' for %{}",
+                        br_name, r_name
+                    ));
+                    continue;
+                }
+                match self.git.delete_branch(b_path, br_name, true) {
+                    Ok(_) => {
+                        deleted.push(format!("%{} ({})", r_name, br_name));
+                    }
+                    Err(e) => {
+                        branch_delete_failures.push((
+                            r_name.clone(),
+                            br_name.clone(),
+                            e.to_string(),
+                        ));
+                    }
+                }
+            }
+
+            if !deleted.is_empty() {
+                OutputHandler::print_success(&format!(
+                    "Deleted branch(es): {}",
+                    deleted.join(", ")
+                ));
+            }
+            if !branch_delete_failures.is_empty() {
+                for (r_name, br_name, err) in &branch_delete_failures {
+                    OutputHandler::print_error(
+                        &format!("Failed to delete branch '{}' for %{}", br_name, r_name),
+                        Some(err.as_str()),
+                    );
+                }
+                OutputHandler::print_warning(&format!(
+                    "Branch deletion completed with {} failure(s).",
+                    branch_delete_failures.len()
+                ));
+            }
         }
+
+        let close_ok = removal_ok && branch_delete_failures.is_empty();
 
         if let Some(tmux_cfg) = &self.config.tmux {
             if !no_tmux {
                 let sess_name = &tmux_cfg.session;
                 if TmuxLauncher::is_window_active(sess_name, name) {
-                    let _ = TmuxLauncher::kill_workspace_window(sess_name, name);
-                    OutputHandler::print_info(&format!(
-                        "Closed tmux window '@{}' in session '{}'",
-                        name, sess_name
-                    ));
+                    if close_ok {
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                        let _ = std::io::stderr().flush();
+                        let inside_target = TmuxLauncher::is_current_window(sess_name, name);
+                        let _ = TmuxLauncher::kill_workspace_window(sess_name, name);
+                        if inside_target {
+                            OutputHandler::print_info(&format!(
+                                "Closing tmux window '@{}' in session '{}' (workspace closed successfully).",
+                                name, sess_name
+                            ));
+                        } else {
+                            OutputHandler::print_info(&format!(
+                                "Closed tmux window '@{}' in session '{}'",
+                                name, sess_name
+                            ));
+                        }
+                    } else {
+                        let inside_target = TmuxLauncher::is_current_window(sess_name, name);
+                        let reason = if !removal_ok {
+                            "workspace removal failed"
+                        } else {
+                            "branch deletion did not complete successfully"
+                        };
+                        OutputHandler::print_warning(&format!(
+                            "Left tmux window '@{}' in session '{}' open because {}. Review the errors above{}.",
+                            name,
+                            sess_name,
+                            reason,
+                            if inside_target {
+                                " before closing this window"
+                            } else {
+                                ""
+                            }
+                        ));
+                    }
                 }
             }
         }
 
-        OutputHandler::print_success(&format!("Safely closed workspace '@{}'", name));
-        Ok(())
+        if close_ok {
+            OutputHandler::print_success(&format!("Safely closed workspace '@{}'", name));
+            Ok(())
+        } else {
+            let mut details: Vec<String> = Vec::new();
+            if let Err(e) = removal_result {
+                details.push(format!("workspace removal: {}", e));
+            }
+            if !branch_delete_failures.is_empty() {
+                let failed_branches = branch_delete_failures
+                    .iter()
+                    .map(|(r, b, _)| format!("%{} ({})", r, b))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                details.push(format!("branch deletion failed: {}", failed_branches));
+            }
+            Err(WSError::Config(format!(
+                "Workspace '@{}' was not fully closed: {}",
+                name,
+                if details.is_empty() {
+                    "unknown error".to_string()
+                } else {
+                    details.join("; ")
+                }
+            )))
+        }
     }
 
     pub fn list_workspaces(&self) -> Vec<WorkspaceMetadata> {
@@ -1314,7 +1435,7 @@ impl WorkspaceManager {
     pub fn focus_workspace(&self, name: &str) -> Result<bool, WSError> {
         let tmux_cfg = self.config.tmux.as_ref().ok_or_else(|| {
             WSError::Config(
-                "Tmux integration is not configured. Add 'tmux:' to repositories.yml.".to_string(),
+                "Tmux integration is not configured. Add 'tmux:' to ws-project.yml.".to_string(),
             )
         })?;
 
@@ -1408,7 +1529,7 @@ impl WorkspaceManager {
 
         self.persist_launch_session(&candidate);
         OutputHandler::print_info(&format!(
-            "Configured tmux launch session as '{}' in repositories.yml",
+            "Configured tmux launch session as '{}' in ws-project.yml",
             candidate
         ));
         Ok(candidate)
@@ -1437,7 +1558,7 @@ impl WorkspaceManager {
             .config
             .config_file_path
             .clone()
-            .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
+            .unwrap_or_else(|| self.config.project_root.join("ws-project.yml"));
         if cfg_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&cfg_path) {
                 if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
@@ -1743,7 +1864,7 @@ impl WorkspaceManager {
             .config
             .config_file_path
             .clone()
-            .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
+            .unwrap_or_else(|| self.config.project_root.join("ws-project.yml"));
 
         let mut entries: Vec<InitEntry> = Vec::new();
 
@@ -2057,13 +2178,24 @@ impl WorkspaceManager {
         let worktree_path = ws_dir.join(&spec.path);
 
         if worktree_path.exists() {
+            self.ensure_cwd_outside_dir(&worktree_path)?;
             self.git.set_tracked_files_readonly(&worktree_path, false);
             self.git
                 .remove_worktree(&repo_cfg.bare, &worktree_path, true)?;
         }
 
+        let mut branch_deleted = false;
         if delete_branch {
-            let _ = self.git.delete_branch(&repo_cfg.bare, &spec.branch, true);
+            self.ensure_cwd_outside_dir(&ws_dir)?;
+            match self.git.delete_branch(&repo_cfg.bare, &spec.branch, true) {
+                Ok(_) => branch_deleted = true,
+                Err(e) => {
+                    OutputHandler::print_warning(&format!(
+                        "Failed to delete branch '{}' for repository '{}': {}",
+                        spec.branch, repo_name, e
+                    ));
+                }
+            }
         }
 
         meta.repositories.remove(repo_name);
@@ -2073,7 +2205,11 @@ impl WorkspaceManager {
             repo_name,
             workspace_name,
             if delete_branch {
-                " (deleted branch)"
+                if branch_deleted {
+                    " (deleted branch)"
+                } else {
+                    " (branch not deleted)"
+                }
             } else {
                 ""
             }
@@ -3372,7 +3508,7 @@ impl WorkspaceManager {
         ensure_directory(&dest_dir.join("bares"))?;
         ensure_directory(&dest_dir.join("workspaces"))?;
 
-        let config_path = dest_dir.join("repositories.yml");
+        let config_path = dest_dir.join("ws-project.yml");
         std::fs::write(&config_path, blueprint_yaml)?;
         OutputHandler::print_success(&format!("Wrote {}", config_path.display()));
 
@@ -3505,10 +3641,10 @@ impl WorkspaceManager {
             .config
             .config_file_path
             .clone()
-            .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
+            .unwrap_or_else(|| self.config.project_root.join("ws-project.yml"));
         if !config_file.exists() {
             return Err(WSError::Config(
-                "No 'repositories.yml' found in project root to publish.".to_string(),
+                "No 'ws-project.yml' found in project root to publish.".to_string(),
             ));
         }
 
@@ -3611,10 +3747,10 @@ impl WorkspaceManager {
             .config
             .config_file_path
             .clone()
-            .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
+            .unwrap_or_else(|| self.config.project_root.join("ws-project.yml"));
         if !config_file.exists() {
             return Err(WSError::Config(
-                "No 'repositories.yml' found in project root.".to_string(),
+                "No 'ws-project.yml' found in project root.".to_string(),
             ));
         }
 
@@ -3716,7 +3852,7 @@ impl WorkspaceManager {
             .config
             .config_file_path
             .clone()
-            .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
+            .unwrap_or_else(|| self.config.project_root.join("ws-project.yml"));
 
         let merged_yaml = if config_file.is_file() {
             let local_yaml = std::fs::read_to_string(&config_file)?;

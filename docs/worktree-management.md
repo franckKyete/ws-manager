@@ -49,7 +49,7 @@ ws create @prod-debug --all --existing
 
 ## 🌱 Choosing the Base Branch
 
-New branches start from each repository's `base_branch` in `repositories.yml`.
+New branches start from each repository's `base_branch` in `ws-project.yml`.
 If it is missing, `ws create` prompts once per repository with the detected
 default (or accepts it with `--yes`) and saves it.
 

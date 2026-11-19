@@ -358,7 +358,10 @@ _ws() {
                         _arguments '1:action:(init add fetch sync list register unregister migrate)'
                     elif [[ "$proj_cmd" == "migrate" ]]; then
                         if [[ $CURRENT -eq 4 ]]; then
-                            _arguments '1:action:(init add fetch sync list register unregister migrate)' '2:subaction:(lifecycle)'
+                            _arguments '1:action:(init add fetch sync list register unregister migrate)' '2:subaction:(lifecycle config)'
+                        elif [[ "${words[3]}" == "config" ]]; then
+                            _arguments \
+                                '--dry-run[Preview rename without changing files]'
                         else
                             _arguments \
                                 '--dry-run[Preview migration changes without writing files]' \
@@ -588,7 +591,11 @@ _ws_completion() {
                 COMPREPLY=( $(compgen -W "init add fetch sync list register unregister migrate" -- "$cur") )
             elif [[ "${words[2]}" == "migrate" ]]; then
                 if [[ $cword -eq 3 ]]; then
-                    COMPREPLY=( $(compgen -W "lifecycle" -- "$cur") )
+                    COMPREPLY=( $(compgen -W "lifecycle config" -- "$cur") )
+                elif [[ "${words[3]}" == "config" ]]; then
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "--dry-run" -- "$cur") )
+                    fi
                 elif [[ "$cur" == -* ]]; then
                     COMPREPLY=( $(compgen -W "--dry-run --yes --no-backup --stage-name --source --no-state --reset-state" -- "$cur") )
                 elif [[ "$prev" == "--source" ]]; then
@@ -728,7 +735,7 @@ complete -c ws -n "__fish_seen_subcommand_from hub" -a "login whoami logout clon
 complete -c ws -n "__fish_seen_subcommand_from repo" -a "add remove lock unlock"
 
 # Project migrate
-complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -a "lifecycle"
+complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -a "lifecycle config"
 complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -l dry-run -d "Preview migration changes without writing files"
 complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -l yes -d "Apply migration without prompting"
 complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -l no-backup -d "Do not write a backup file before applying migration"
@@ -795,7 +802,11 @@ pub fn generate_completion_script(shell: &str) -> Result<String, String> {
 pub fn find_project_root_and_workspaces_dir() -> (Option<PathBuf>, Option<PathBuf>) {
     if let Ok(mut curr) = std::env::current_dir() {
         loop {
-            if curr.join("repositories.yml").exists() || curr.join("repositories.yaml").exists() {
+            if curr.join("ws-project.yml").exists()
+                || curr.join("ws-project.yaml").exists()
+                || curr.join("repositories.yml").exists()
+                || curr.join("repositories.yaml").exists()
+            {
                 let ws_dir = curr.join("workspaces");
                 return (Some(curr), Some(ws_dir));
             }
@@ -922,7 +933,12 @@ pub fn query_repositories(
     }
 
     if let Some(pr) = proj_root {
-        if let Ok(cfg) = ConfigLoader::load_config(Some(&pr.join("repositories.yml")), None, true) {
+        let cfg_path = if pr.join("ws-project.yml").exists() {
+            pr.join("ws-project.yml")
+        } else {
+            pr.join("ws-project.yaml")
+        };
+        if let Ok(cfg) = ConfigLoader::load_config(Some(&cfg_path), None, true) {
             for (k, v) in cfg.repositories {
                 let disp = if include_sigil { format!("%{}", k) } else { k };
                 let desc = v.launch.clone().unwrap_or_else(|| "repository".to_string());
@@ -943,7 +959,12 @@ pub fn query_stages(workspace_name: Option<&str>) -> Vec<(String, String)> {
 
     let (proj_root, _) = find_project_root_and_workspaces_dir();
     if let Some(pr) = proj_root {
-        if let Ok(cfg) = ConfigLoader::load_config(Some(&pr.join("repositories.yml")), None, true) {
+        let cfg_path = if pr.join("ws-project.yml").exists() {
+            pr.join("ws-project.yml")
+        } else {
+            pr.join("ws-project.yaml")
+        };
+        if let Ok(cfg) = ConfigLoader::load_config(Some(&cfg_path), None, true) {
             let mut stages = std::collections::BTreeSet::new();
             for stage in crate::lifecycle::setup_stage_names(&cfg, None) {
                 stages.insert(stage);

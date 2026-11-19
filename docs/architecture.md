@@ -12,7 +12,7 @@ and headless terminal screen emulator.
 graph TD
     User["👤 Developer (CLI / Subshell)"]
     CLI["🦀 ws CLI (Rust)"]
-    Config["📄 repositories.yml / workspace.yml"]
+    Config["📄 ws-project.yml / workspace.yml"]
 
     subgraph "Git Storage Layer"
         BareStore["📦 Bare Store (bares/*.git)"]

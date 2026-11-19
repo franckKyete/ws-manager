@@ -52,9 +52,9 @@ ws create @<name> [%repo[:branch[:mode]] ...] [--all] [--existing] [-f <file.yml
 | :------------------------- | :--------- | :-------------------------------------------------------------------------------------------- |
 | `@<name>`                  | Positional | Target workspace name (required unless `-f` is used).                                         |
 | `%<repo>[:branch[:mode]]`  | Positional | Repository name with optional target branch and branch creation mode (`new` or `existing`).   |
-| `--all`                    | Flag       | Include all repositories defined in `repositories.yml`.                                       |
+| `--all`                    | Flag       | Include all repositories defined in `ws-project.yml`.                                       |
 | `--existing`               | Flag       | Default to checking out existing branches rather than creating new `feature/<name>` branches. For `:existing`/`--existing`, `ws` fetches the branch from the primary remote (preferring `origin`) if needed and creates a local branch ref when the branch exists only remotely. |
-| `--base <branch>`          | Option     | One-shot base branch for newly created branches (`--target` / `--from` are aliases). Overrides `base_branch` from `repositories.yml` for this command only; not persisted. |
+| `--base <branch>`          | Option     | One-shot base branch for newly created branches (`--target` / `--from` are aliases). Overrides `base_branch` from `ws-project.yml` for this command only; not persisted. |
 | `-f`, `--file <file.yml>`  | Option     | Path to a declarative workspace YAML configuration file. Every `create: true` entry must include a base (`base`/`target`/`from`/`base_branch`); no prompt or fallback is used. |
 | `--setup`                  | Flag       | Run the default lifecycle flow after creation (`configure` + all setup stages).                |
 | `--cmd`, `--command <cmd>` | Option     | Command to run inside the workspace Tmux window upon creation (overrides config default).     |
@@ -79,7 +79,7 @@ ws create @prod-repro --all --existing
 # Create workspace from a declarative YAML spec and run setup scripts:
 ws create -f team-setup.yml --setup
 
-# Create new branches from develop without changing repositories.yml:
+# Create new branches from develop without changing ws-project.yml:
 ws create @feat-auth %server %mobile --base develop
 
 # Non-interactive: accept and persist each repo's detected default base:
@@ -324,7 +324,7 @@ ws repo add @develop %mobile:feature/auth-screen
 # Add server repo checking out existing main:
 ws repo add @develop %server:main --existing
 
-# Create a new branch from develop just this once (repositories.yml unchanged):
+# Create a new branch from develop just this once (ws-project.yml unchanged):
 ws repo add @develop %server:feature/api --base develop
 ```
 
@@ -607,7 +607,7 @@ ws env @develop --sync
 ### `ws setup`
 
 Runs the workspace lifecycle default flow (configure + all setup stages) as
-defined in `repositories.yml` (schema v3).
+defined in `ws-project.yml` (schema v3).
 
 ```bash
 ws setup @<name> [%repos...] [--all] [--dry-run] [--skip-scripts] [--interface <iface>] [--ip <ip>]
@@ -705,7 +705,7 @@ ws lifecycle %api run +post_launch   # workspace and repo inferred from cwd
 
 ### `ws project init` / `ws init`
 
-Initializes bare Git repositories in `bares/` and generates `repositories.yml`
+Initializes bare Git repositories in `bares/` and generates `ws-project.yml`
 with sensible defaults for `tmux` (`session` set to project folder,
 `command: nvim`, `switch: true`) and `hub` (`auto_save` every 5m). Existing
 configurations are preserved if already present.
@@ -731,7 +731,7 @@ default, and persists it.
 ### `ws project add` / `ws add`
 
 Clones an additional bare repository into `bares/` and registers it in
-`repositories.yml`.
+`ws-project.yml`.
 
 ```bash
 ws project add <alias=URL> [--yes]
@@ -791,6 +791,22 @@ ws project migrate lifecycle [--dry-run] [--yes] [--no-backup] [--stage-name <na
 | `--source <mode>`    | Migration source preference: `auto`, `legacy`, or `v1`.                            |
 | `--no-state`         | Migrate config only; skip workspace lifecycle state migration.                     |
 | `--reset-state`      | Reset workspace lifecycle state instead of migrating it.                           |
+
+---
+
+### `ws project migrate config`
+
+Renames a legacy `repositories.yml` project configuration to `ws-project.yml`.
+
+```bash
+ws project migrate config [--dry-run]
+```
+
+#### Options
+
+| Flag        | Description                                |
+| :---------- | :----------------------------------------- |
+| `--dry-run` | Preview the rename without changing files. |
 
 ---
 
@@ -864,7 +880,7 @@ ws hub clone <org/project> [target_dir]
 
 ### `ws hub publish`
 
-Publishes a local workspace project blueprint (`repositories.yml`) and
+Publishes a local workspace project blueprint (`ws-project.yml`) and
 automation scripts to wshub.
 
 ```bash
@@ -932,12 +948,12 @@ ws service restart
 ws service logs
 
 # Run the global daemon in foreground (used by ws.service)
-# Includes real-time configuration file watcher for repositories.yml and workspace.yml
+# Includes real-time configuration file watcher for ws-project.yml and workspace.yml
 ws daemon run [--tick 15]
 ```
 
-The daemon automatically watches `repositories.yml` and `workspace.yml` in real
-time, auto-pushing blueprint revisions on `repositories.yml` edits and
+The daemon automatically watches `ws-project.yml` and `workspace.yml` in real
+time, auto-pushing blueprint revisions on `ws-project.yml` edits and
 auto-saving workspace states on `workspace.yml` edits. Projects not yet
 published on `wshub` are automatically published on first save or push.
 

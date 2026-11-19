@@ -704,7 +704,7 @@ impl OutputHandler {
             table.add_row(vec![
                 Cell::new("(none)").fg(Color::DarkGrey),
                 Cell::new("-").fg(Color::DarkGrey),
-                Cell::new("No launch commands configured in repositories.yml").fg(Color::DarkGrey),
+                Cell::new("No launch commands configured in ws-project.yml").fg(Color::DarkGrey),
             ]);
         } else {
             for (repo, wt_dir, cmd) in launch_entries {

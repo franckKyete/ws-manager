@@ -225,7 +225,7 @@ pub fn execute_hub_pull(
         .and_then(|v| v.as_i64());
     if let Some(rev) = ver {
         OutputHandler::print_success(&format!(
-            "Updated local repositories.yml to wshub blueprint v{}",
+            "Updated local ws-project.yml to wshub blueprint v{}",
             rev
         ));
     } else {
@@ -729,7 +729,7 @@ pub fn execute_hub_auto_save_start(
     let auto_cfg = manager.config.hub_auto_save.as_ref();
     if !auto_cfg.map(|a| a.enabled).unwrap_or(false) {
         OutputHandler::print_warning(
-            "Note: 'hub.auto_save.enabled' is currently false or missing in repositories.yml for this project.\nSet 'enabled: true' under 'hub.auto_save' in repositories.yml to include this project.",
+            "Note: 'hub.auto_save.enabled' is currently false or missing in ws-project.yml for this project.\nSet 'enabled: true' under 'hub.auto_save' in ws-project.yml to include this project.",
         );
     }
 

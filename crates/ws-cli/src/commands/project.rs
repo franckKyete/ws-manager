@@ -32,7 +32,11 @@ pub fn print_registered_projects_table(title: &str) {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| p.display().to_string());
         let p_str = p.to_string_lossy().to_string();
-        let cfg_path = p.join("repositories.yml");
+        let cfg_path = if p.join("ws-project.yml").exists() {
+            p.join("ws-project.yml")
+        } else {
+            p.join("ws-project.yaml")
+        };
 
         let mut auto_save_cell = Cell::new("disabled").fg(Color::DarkGrey);
         let mut interval_cell = Cell::new("-").fg(Color::DarkGrey);
@@ -131,13 +135,12 @@ pub fn execute_project_migrate_lifecycle(
 ) -> Result<(), String> {
     use ws_core::migration::{self, MigrationOptions, MigrationSourceKind};
 
-    let config_path = project_root.join("repositories.yml");
-    if !config_path.exists() {
-        return Err(format!(
-            "Configuration file not found: {}",
-            config_path.display()
-        ));
-    }
+    let config_path = migration::find_migratable_config_file(project_root).ok_or_else(|| {
+        format!(
+            "Configuration file not found in {} (expected ws-project.yml or repositories.yml)",
+            project_root.display()
+        )
+    })?;
 
     let source_kind = match source {
         "auto" => MigrationSourceKind::Auto,
@@ -190,5 +193,26 @@ pub fn execute_project_migrate_lifecycle(
         ));
     }
 
+    Ok(())
+}
+
+pub fn execute_project_migrate_config(project_root: &Path, dry_run: bool) -> Result<(), String> {
+    use ws_core::migration;
+
+    let report = migration::migrate_project_config_filename(project_root, dry_run)
+        .map_err(|e| e.to_string())?;
+    if dry_run {
+        OutputHandler::print_info(&format!(
+            "[DRY-RUN] Would rename {} to {}",
+            report.from.display(),
+            report.to.display()
+        ));
+    } else {
+        OutputHandler::print_success(&format!(
+            "Renamed {} to {}",
+            report.from.display(),
+            report.to.display()
+        ));
+    }
     Ok(())
 }

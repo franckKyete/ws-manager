@@ -57,11 +57,67 @@ pub struct MigrationReport {
     pub backup_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ConfigFilenameMigrationReport {
+    pub from: PathBuf,
+    pub to: PathBuf,
+    pub changed: bool,
+}
+
+pub fn find_migratable_config_file(project_root: &Path) -> Option<PathBuf> {
+    for name in [
+        "ws-project.yml",
+        "ws-project.yaml",
+        "repositories.yml",
+        "repositories.yaml",
+    ] {
+        let candidate = project_root.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+pub fn migrate_project_config_filename(
+    project_root: &Path,
+    dry_run: bool,
+) -> Result<ConfigFilenameMigrationReport> {
+    let new_path = project_root.join("ws-project.yml");
+    if new_path.exists() {
+        return Err(WSError::Config(format!(
+            "Target configuration '{}' already exists",
+            new_path.display()
+        )));
+    }
+
+    let old_path = ["repositories.yml", "repositories.yaml"]
+        .iter()
+        .map(|n| project_root.join(n))
+        .find(|p| p.is_file())
+        .ok_or_else(|| {
+            WSError::Config(format!(
+                "No legacy repositories.yml found in {}",
+                project_root.display()
+            ))
+        })?;
+
+    if !dry_run {
+        fs::rename(&old_path, &new_path)?;
+    }
+
+    Ok(ConfigFilenameMigrationReport {
+        from: old_path,
+        to: new_path,
+        changed: !dry_run,
+    })
+}
+
 pub fn detect_project_source(config_path: &Path) -> Result<DetectedSource> {
     let content = fs::read_to_string(config_path)?;
     let doc = Document::from_str(&content).map_err(|e| WSError::Config(e.to_string()))?;
     let root = doc.as_mapping().ok_or_else(|| {
-        WSError::Config("Top-level repositories.yml must be a YAML mapping".to_string())
+        WSError::Config("Top-level project configuration must be a YAML mapping".to_string())
     })?;
     Ok(detect_source(&root))
 }
@@ -74,7 +130,7 @@ pub fn migrate_project_config(
     let content = fs::read_to_string(config_path)?;
     let doc = Document::from_str(&content).map_err(|e| WSError::Config(e.to_string()))?;
     let root = doc.as_mapping().ok_or_else(|| {
-        WSError::Config("Top-level repositories.yml must be a YAML mapping".to_string())
+        WSError::Config("Top-level project configuration must be a YAML mapping".to_string())
     })?;
 
     let detected = detect_source(&root);

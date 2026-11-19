@@ -118,14 +118,14 @@ ws project init server=git@github.com:example-org/api-server.git \
 This command:
 
 1. Clones bare repositories into `bares/server.git` and `bares/mobile.git`.
-2. Generates a root `repositories.yml` configuration file with sensible `tmux`
+2. Generates a root `ws-project.yml` configuration file with sensible `tmux`
    and `hub` defaults.
 3. Detects each repository's default branch (`origin/HEAD`, bare `HEAD`, then
    `main`/`develop`/`master`) and prompts for a `base_branch`, prefilled with
    that default. Press Enter to accept; the choice is saved for future
    workspaces. Pass `--yes` to accept detected defaults non-interactively.
 
-Inspect the generated `repositories.yml`:
+Inspect the generated `ws-project.yml`:
 
 ```yaml
 tmux:
@@ -177,7 +177,7 @@ New branches start from each repository's configured `base_branch`. Override
 that for a single command with `--base`:
 
 ```bash
-# Branch both repositories from develop without changing repositories.yml:
+# Branch both repositories from develop without changing ws-project.yml:
 ws create @feat-auth %server %mobile --base develop
 ```
 
@@ -188,7 +188,7 @@ my-polyrepo-project/
 ├── bares/
 │   ├── server.git/
 │   └── mobile.git/
-├── repositories.yml
+├── ws-project.yml
 └── workspaces/
     └── @feat-auth/
         ├── .ws/

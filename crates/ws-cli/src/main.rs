@@ -81,21 +81,9 @@ fn main() {
         _ => {}
     }
 
-    // 2. Handle migration without requiring an already-migrated (v3) config.
+    // 2. Handle migration without requiring an already-migrated/loadable config.
     if let Commands::Project(ProjectCommandArgs {
-        action:
-            Some(ProjectAction::Migrate {
-                action:
-                    ProjectMigrateAction::Lifecycle {
-                        dry_run,
-                        yes,
-                        no_backup,
-                        stage_name,
-                        source,
-                        no_state,
-                        reset_state,
-                    },
-            }),
+        action: Some(ProjectAction::Migrate { action }),
     }) = &command
     {
         let project_root = if let Some(cfg) = cli.config.as_deref() {
@@ -105,16 +93,29 @@ fn main() {
         } else {
             std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
         };
-        let result = commands::project::execute_project_migrate_lifecycle(
-            &project_root,
-            *dry_run,
-            *yes,
-            !*no_backup,
-            stage_name,
-            source,
-            *no_state,
-            *reset_state,
-        );
+        let result = match action {
+            ProjectMigrateAction::Lifecycle {
+                dry_run,
+                yes,
+                no_backup,
+                stage_name,
+                source,
+                no_state,
+                reset_state,
+            } => commands::project::execute_project_migrate_lifecycle(
+                &project_root,
+                *dry_run,
+                *yes,
+                !*no_backup,
+                stage_name,
+                source,
+                *no_state,
+                *reset_state,
+            ),
+            ProjectMigrateAction::Config { dry_run } => {
+                commands::project::execute_project_migrate_config(&project_root, *dry_run)
+            }
+        };
         if let Err(e) = result {
             OutputHandler::print_err(&e);
             process::exit(1);

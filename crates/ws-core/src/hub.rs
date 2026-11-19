@@ -495,6 +495,7 @@ impl HubClient {
         version: Option<&str>,
     ) -> Result<serde_json::Value> {
         let body = serde_json::json!({
+            "blueprintYaml": blueprint_yaml,
             "blueprint": blueprint_yaml,
             "changelog": changelog.unwrap_or("Updated project blueprint"),
             "version": version,

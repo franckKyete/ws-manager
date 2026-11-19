@@ -102,12 +102,12 @@ pub fn resolve_missing_bases(
         for candidate in candidates {
             let Some(branch) = candidate.suggested.as_deref() else {
                 return Err(WSError::Validation(format!(
-                    "No base branch is configured for repository '{}' and no default branch could be detected. Set 'base_branch' in repositories.yml or run interactively.",
+                    "No base branch is configured for repository '{}' and no default branch could be detected. Set 'base_branch' in ws-project.yml or run interactively.",
                     candidate.repo
                 )));
             };
             OutputHandler::print_warning(&format!(
-                "No base_branch configured for repository '{}'; using detected default '{}' and saving it to repositories.yml.",
+                "No base_branch configured for repository '{}'; using detected default '{}' and saving it to ws-project.yml.",
                 candidate.repo, branch
             ));
             resolved.insert(candidate.repo.clone(), branch.to_string());

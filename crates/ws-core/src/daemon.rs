@@ -99,7 +99,10 @@ impl GlobalAutoSaveWorker {
         let mut cache_updated = false;
 
         for p in project_paths {
-            let cfg_file = p.join("repositories.yml");
+            let mut cfg_file = p.join("ws-project.yml");
+            if !cfg_file.exists() {
+                cfg_file = p.join("ws-project.yaml");
+            }
             if !cfg_file.exists() {
                 continue;
             }

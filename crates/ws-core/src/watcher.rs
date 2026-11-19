@@ -48,9 +48,9 @@ impl ConfigFileWatcher {
     pub fn initialize(&mut self) {
         let projects = list_registered_projects(self.registry_path.as_deref(), true);
         for p in projects {
-            let mut cfg_file = p.join("repositories.yml");
+            let mut cfg_file = p.join("ws-project.yml");
             if !cfg_file.exists() {
-                cfg_file = p.join("repository.yml");
+                cfg_file = p.join("ws-project.yaml");
             }
             if cfg_file.exists() {
                 if let Some(h) = Self::hash_file(&cfg_file) {
@@ -104,9 +104,9 @@ impl ConfigFileWatcher {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_default();
-            let mut cfg_file = p.join("repositories.yml");
+            let mut cfg_file = p.join("ws-project.yml");
             if !cfg_file.exists() {
-                cfg_file = p.join("repository.yml");
+                cfg_file = p.join("ws-project.yaml");
             }
 
             if cfg_file.exists() {

@@ -638,7 +638,7 @@ pub enum ProjectAction {
 
 #[derive(Subcommand, Debug)]
 pub enum ProjectMigrateAction {
-    #[command(about = "Migrate repositories.yml and workspace state to lifecycle schema v3")]
+    #[command(about = "Migrate ws-project.yml and workspace state to lifecycle schema v3")]
     Lifecycle {
         #[arg(long = "dry-run", help = "Show migration plan without writing changes")]
         dry_run: bool,
@@ -646,7 +646,7 @@ pub enum ProjectMigrateAction {
         yes: bool,
         #[arg(
             long = "no-backup",
-            help = "Do not create a backup of repositories.yml"
+            help = "Do not create a backup of the configuration file"
         )]
         no_backup: bool,
         #[arg(
@@ -665,6 +665,11 @@ pub enum ProjectMigrateAction {
         no_state: bool,
         #[arg(long = "reset-state", help = "Reset lifecycle state before migration")]
         reset_state: bool,
+    },
+    #[command(about = "Rename legacy repositories.yml to ws-project.yml")]
+    Config {
+        #[arg(long = "dry-run", help = "Show rename plan without changing files")]
+        dry_run: bool,
     },
 }
 

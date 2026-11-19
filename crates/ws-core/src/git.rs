@@ -37,6 +37,8 @@ impl GitService {
         cmd.args(args);
         if let Some(d) = cwd {
             cmd.current_dir(d);
+        } else if std::env::current_dir().is_err() {
+            cmd.current_dir(std::env::temp_dir());
         }
         cmd.output()
     }
@@ -51,6 +53,8 @@ impl GitService {
         cmd.args(args);
         if let Some(d) = cwd {
             cmd.current_dir(d);
+        } else if std::env::current_dir().is_err() {
+            cmd.current_dir(std::env::temp_dir());
         }
         let output = cmd.output().map_err(|e| WSError::Git {
             message: format!("Failed to spawn git command: {}", e),
@@ -297,8 +301,31 @@ impl GitService {
         let bare_str = bare_path.to_string_lossy();
         let flag = if force { "-D" } else { "-d" };
         let args = vec!["--git-dir", &bare_str, "branch", flag, branch];
-        let _ = self.run_git(&args, None, false);
-        Ok(())
+        let output = self.run_git(&args, None, false)?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            let stderr_str = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let stdout_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let err_msg = if !stderr_str.is_empty() {
+                stderr_str
+            } else if !stdout_str.is_empty() {
+                stdout_str
+            } else {
+                format!("failed to delete branch '{}'", branch)
+            };
+            Err(WSError::Git {
+                message: err_msg,
+                command: Some(
+                    args.iter()
+                        .map(|s| s.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                ),
+                returncode: output.status.code(),
+                stderr: Some(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+            })
+        }
     }
 
     pub fn fetch_repo(&self, bare_path: &Path) -> Result<()> {

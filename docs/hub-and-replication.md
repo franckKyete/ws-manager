@@ -17,7 +17,7 @@ Git repositories.
    - **Secrets never enter Git commits or repositories**.
 
 2. **Project Blueprint Registry & Versioning**:
-   - Stores `repositories.yml` blueprints and automation scripts with linear
+   - Stores `ws-project.yml` blueprints and automation scripts with linear
      versioning (`v1`, `v2`, ...).
    - Enables one-command project cloning: `ws clone <org/project>`.
 
@@ -159,7 +159,7 @@ Auto-save continuously computes a workspace fingerprint incorporating:
 If nothing has changed since the last snapshot, the upload is **completely
 skipped**, ensuring zero wasteful network calls.
 
-#### Configuration in `repositories.yml`
+#### Configuration in `ws-project.yml`
 
 ```yaml
 hub:
@@ -225,7 +225,7 @@ Auto-save automatically sends desktop notifications over D-Bus
   (e.g. `wshub` server offline or connection lost), without interrupting your
   terminal or local work.
 - Notifications can be muted anytime by setting `notify: false` under
-  `hub.auto_save` in `repositories.yml`.
+  `hub.auto_save` in `ws-project.yml`.
 
 #### Automatic Publishing on First Save
 
@@ -243,7 +243,7 @@ registered on `wshub`, `ws` automatically:
 The background daemon (`ws.service`) includes a lightweight real-time file
 watcher that continuously monitors all registered projects:
 
-- **`repositories.yml` Edited**: Automatically pushes an updated blueprint
+- **`ws-project.yml` Edited**: Automatically pushes an updated blueprint
   revision to `wshub` and issues a desktop notification.
 - **`workspace.yml` Edited**: Automatically saves the workspace state (branches,
   locks, uncommitted WIP) to `wshub` and updates the deduplication fingerprint
