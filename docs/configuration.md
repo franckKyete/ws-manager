@@ -515,3 +515,38 @@ ws create -f feature-auth.yml --setup
 > `ws create --file` is strict: any `create: true` repository without a base in
 > the file is a hard error. It never prompts, detects a default, falls back to
 > `ws-project.yml`, or writes the file.
+
+
+---
+
+## Activity Tracking (`~/.config/ws/activity.yml`)
+
+Global activity tracking is configured in `~/.config/ws/activity.yml` (created/managed by `ws activity ...`). Common fields:
+
+```yaml
+enabled: true
+paused: false
+device_name: null        # defaults to hostname
+idle_gap: 300            # seconds (or duration string)
+session_cap: 14400
+tail_credit: 60
+heartbeat_interval: 60
+heartbeat_window: 900
+debounce: 2
+raw_retention: 365d
+watch_reconcile: 60
+sync:
+  enabled: true
+  interval: 600
+  backfill: none
+exclude: []
+```
+
+Project-level overrides/mapping in `ws-project.yml` (no schema_version bump):
+
+```yaml
+activity:
+  project_id: <uuid>      # generated/persisted locally
+  sync: true              # per-project sync enable/disable
+  hub_project: org/name   # hub mapping (may be auto-created/persisted)
+```

@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use crate::activity::collector::ActivityCollector;
 use crate::config::ConfigLoader;
 use crate::errors::WSError;
 use crate::registry::list_registered_projects;
@@ -182,12 +183,18 @@ pub fn run_daemon_loop(tick_seconds: u64) {
     let mut auto_save_worker = GlobalAutoSaveWorker::new();
     let mut file_watcher = ConfigFileWatcher::new(None);
     file_watcher.initialize();
+    let mut activity_collector = ActivityCollector::new().ok();
 
     // Initial check on startup
     let _ = auto_save_worker.process_all_projects();
+    if let Some(c) = activity_collector.as_mut() {
+        c.tick();
+    }
 
     let mut last_auto_save_run = Instant::now();
+    let mut last_activity_run = Instant::now();
     let tick_dur = Duration::from_secs(tick_seconds);
+    let activity_dur = Duration::from_secs(2);
 
     while running.load(Ordering::SeqCst) {
         // 1. Check for immediate config / workspace file modifications
@@ -197,6 +204,16 @@ pub fn run_daemon_loop(tick_seconds: u64) {
         if last_auto_save_run.elapsed() >= tick_dur {
             let _ = auto_save_worker.process_all_projects();
             last_auto_save_run = Instant::now();
+        }
+
+        // 3. Activity collection (inotify/socket/spool fast path + scheduled slow work)
+        if last_activity_run.elapsed() >= activity_dur {
+            if let Some(c) = activity_collector.as_mut() {
+                c.tick();
+            } else {
+                activity_collector = ActivityCollector::new().ok();
+            }
+            last_activity_run = Instant::now();
         }
 
         std::thread::sleep(Duration::from_secs(1));

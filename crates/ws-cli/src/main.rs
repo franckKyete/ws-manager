@@ -10,6 +10,7 @@ mod helpers;
 mod prompts;
 
 use cli::*;
+use commands::activity::*;
 use commands::completion::*;
 use commands::create::*;
 use commands::daemon::*;
@@ -135,6 +136,7 @@ fn main() {
             | Commands::Clone { .. }
             | Commands::Daemon { .. }
             | Commands::Service { .. }
+            | Commands::Activity(_)
     );
 
     let app_config = match ConfigLoader::load_config(
@@ -468,6 +470,7 @@ fn main() {
                 Ok(())
             }
         },
+        Commands::Activity(args) => execute_activity(args.action),
         Commands::Daemon { tick, action: _ } => execute_daemon(Some(tick)),
         Commands::Service { action } => dispatch_service_action(action),
         Commands::Completion { .. } | Commands::InternalComplete { .. } => unreachable!(),

@@ -36,6 +36,22 @@ Git repositories.
 
 ---
 
+
+
+## Activity Sync (Aggregates)
+
+When activity tracking is enabled and hub sync is configured, `ws` can
+periodically push **hourly aggregate buckets** to `wshub` (scoped to the
+authenticated user/project):
+
+- synced fields: active time, event/session counts, project/repo/workspace, device
+- never synced: file paths, file contents, command names, command arguments, or raw events
+- projects may be auto-linked/created (sanitized blueprint) and can be disabled
+  per project; remote history can be purged via `ws activity sync purge`.
+
+`wshub-web` surfaces this data in an Activity view for users with available data.
+
+
 ## Quick Start Workflow
 
 ### 1. Authenticate with wshub

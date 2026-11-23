@@ -4,6 +4,7 @@ members = [
     "crates/ws-tui",
     "crates/ws-core",
     "crates/ws-cli",
+    "crates/ws-dashboard",
 ]
 default-members = ["crates/ws-cli"]
 

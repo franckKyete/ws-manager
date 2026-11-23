@@ -20,6 +20,8 @@ dialoguer = "0.11"
 anyhow = "1.0"
 serde_json = "1.0"
 serde_yaml = "0.9"
+chrono = "0.4"
+dirs = "5.0"
 
 [dev-dependencies]
 tempfile = "3.10"

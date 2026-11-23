@@ -230,6 +230,9 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<ServiceAction>,
     },
+
+    #[command(about = "Track local activity and sync time reports")]
+    Activity(ActivityCommandArgs),
 }
 
 // Subcommand Argument Structs
@@ -966,5 +969,222 @@ pub enum ServiceAction {
         follow: bool,
         #[arg(short = 'n', long = "lines", default_value = "50")]
         lines: usize,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct ActivityCommandArgs {
+    #[command(subcommand)]
+    pub action: Option<ActivityAction>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityAction {
+    #[command(about = "Show activity collector, daemon, DB and sync status")]
+    Status {
+        #[arg(long, help = "Output machine-readable JSON")]
+        json: bool,
+        #[arg(long, help = "Output compact Waybar JSON")]
+        waybar: bool,
+    },
+    #[command(about = "Report time spent by project, workspace and repo")]
+    Report {
+        #[arg(long, help = "Report today (default)")]
+        day: bool,
+        #[arg(long, help = "Report the last 7 days")]
+        week: bool,
+        #[arg(long, help = "Report the last 30 days")]
+        month: bool,
+        #[arg(long, help = "Start date/time (YYYY-MM-DD or RFC3339)")]
+        from: Option<String>,
+        #[arg(long, help = "End date/time (exclusive, YYYY-MM-DD or RFC3339)")]
+        to: Option<String>,
+        #[arg(long, help = "Filter by project name or id")]
+        project: Option<String>,
+        #[arg(long, help = "Filter by repository name")]
+        repo: Option<String>,
+        #[arg(long, help = "Filter by workspace name")]
+        workspace: Option<String>,
+        #[arg(long, help = "Filter by device id (not applied to local bucketing; hub views only)")]
+        device: Option<String>,
+        #[arg(long, help = "Display timezone (not applied to local bucketing; hub views only)")]
+        tz: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Output CSV")]
+        csv: bool,
+    },
+    #[command(about = "Show a dense local-aligned activity snapshot")]
+    Snapshot {
+        #[arg(long, default_value = "today", help = "Range: today, week or month")]
+        range: String,
+        #[arg(long, help = "Filter by project name or id")]
+        project: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+    #[command(about = "Show time-series activity buckets")]
+    Series {
+        #[arg(long, help = "Report today (default)")]
+        day: bool,
+        #[arg(long, help = "Report the last 7 days")]
+        week: bool,
+        #[arg(long, help = "Report the last 30 days")]
+        month: bool,
+        #[arg(long, help = "Start date/time (YYYY-MM-DD or RFC3339)")]
+        from: Option<String>,
+        #[arg(long, help = "End date/time (exclusive, YYYY-MM-DD or RFC3339)")]
+        to: Option<String>,
+        #[arg(long, help = "Bucket step: hour or day", default_value = "hour")]
+        step: String,
+        #[arg(long, help = "Filter by project name or id")]
+        project: Option<String>,
+        #[arg(long, help = "Filter by repository name")]
+        repo: Option<String>,
+        #[arg(long, help = "Filter by workspace name")]
+        workspace: Option<String>,
+        #[arg(long, help = "Group series by: none or project", default_value = "none")]
+        group_by: String,
+        #[arg(long, help = "Output JSON (default)")]
+        json: bool,
+    },
+    #[command(about = "Open the GTK activity dashboard (requires ws-dashboard build)")]
+    Dashboard,
+    #[command(about = "Sync pending activity aggregates to wshub")]
+    Sync {
+        #[arg(long, help = "Sync only this project")]
+        project: Option<String>,
+        #[arg(long, help = "Ignore backoff and force a sync pass")]
+        force: bool,
+        #[command(subcommand)]
+        action: Option<ActivitySyncAction>,
+    },
+    #[command(about = "Export raw local activity events")]
+    Export {
+        #[arg(long, help = "Export raw events (required)")]
+        raw: bool,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        csv: bool,
+    },
+    #[command(about = "Prune old raw events")]
+    Prune {
+        #[arg(long, help = "Delete raw events before this date")]
+        before: Option<String>,
+        #[arg(long, help = "Show what would be deleted")]
+        dry_run: bool,
+    },
+    #[command(about = "Install or uninstall shell command hooks")]
+    Shell {
+        #[command(subcommand)]
+        action: ActivityShellAction,
+    },
+    #[command(about = "Enable local activity collection")]
+    Enable {
+        #[arg(long)]
+        yes: bool,
+    },
+    #[command(about = "Disable local activity collection")]
+    Disable,
+    #[command(about = "Pause local activity collection")]
+    Pause,
+    #[command(about = "Resume local activity collection")]
+    Resume,
+    #[command(about = "Delete local activity data")]
+    Clear {
+        #[arg(long)]
+        yes: bool,
+    },
+    #[command(about = "Manage this device identity")]
+    Device {
+        #[command(subcommand)]
+        action: ActivityDeviceAction,
+    },
+    #[command(about = "Inspect and migrate legacy activity project IDs")]
+    Ids {
+        #[command(subcommand)]
+        action: ActivityIdsAction,
+    },
+    #[command(about = "Record a shell command event (used by shell hooks)", hide = true)]
+    Record {
+        #[arg(long)]
+        cmd: Option<String>,
+        #[arg(long)]
+        cwd: Option<String>,
+        #[arg(long)]
+        exit: Option<i64>,
+        #[arg(long)]
+        dur: Option<i64>,
+        #[arg(long)]
+        ts: Option<i64>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivitySyncAction {
+    #[command(about = "Enable hub sync for a project or all projects")]
+    Enable {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    #[command(about = "Disable hub sync for a project or all projects")]
+    Disable {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    #[command(about = "Delete synced activity history from wshub for this user")]
+    Purge {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityShellAction {
+    #[command(about = "Install shell hooks for command tracking")]
+    Install {
+        #[arg(long, help = "Shell: bash, zsh, fish (default: auto-detect)")]
+        shell: Option<String>,
+        #[arg(long, help = "Target rc/config file path")]
+        file: Option<String>,
+    },
+    #[command(about = "Uninstall shell hooks")]
+    Uninstall {
+        #[arg(long)]
+        shell: Option<String>,
+        #[arg(long)]
+        file: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityDeviceAction {
+    #[command(about = "Rename this device as shown in reports and wshub")]
+    Rename {
+        #[arg(help = "New device name")]
+        name: String,
+    },
+}
+
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityIdsAction {
+    #[command(about = "List canonical and legacy project IDs found in local activity data")]
+    List,
+    #[command(about = "Migrate legacy path:<dir> IDs to canonical activity.project_id values")]
+    Migrate {
+        #[arg(long, help = "Show what would change without modifying data")]
+        dry_run: bool,
+        #[arg(long, help = "Keep legacy aggregates instead of rebuilding from raw events")]
+        keep_aggregates: bool,
+        #[arg(long, help = "Skip confirmation prompt")]
+        yes: bool,
     },
 }

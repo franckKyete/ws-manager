@@ -190,6 +190,7 @@ impl ConfigLoader {
         let mut hub_auto_save = None;
         let mut hub_project = None;
         let mut hub_val = serde_json::Value::Object(serde_json::Map::new());
+        let mut activity_val = serde_json::Value::Null;
         let mut lifecycle_val = None;
         let mut schema_version = None;
         let mut workspace_cfg = crate::models::WorkspaceRootConfig::default();
@@ -348,6 +349,9 @@ impl ConfigLoader {
                 if let Some(sv) = map.get(serde_yaml::Value::String("schema_version".to_string())) {
                     schema_version = sv.as_u64().map(|n| n as u32);
                 }
+                if let Some(av) = map.get(serde_yaml::Value::String("activity".to_string())) {
+                    activity_val = serde_json::to_value(av).unwrap_or(serde_json::Value::Null);
+                }
                 if let Some(ws_val) = map.get(serde_yaml::Value::String("workspace".to_string())) {
                     workspace_cfg = crate::models::WorkspaceRootConfig::from_yaml_value(ws_val)
                         .map_err(WSError::Config)?;
@@ -387,6 +391,7 @@ impl ConfigLoader {
             hub_auto_save,
             hub_project,
             hub: hub_val,
+            activity: activity_val.clone(),
             lifecycle: lifecycle_val,
             schema_version,
             workspace: workspace_cfg,
@@ -425,6 +430,7 @@ impl ConfigLoader {
         let mut hub_auto_save = None;
         let mut hub_project = None;
         let mut hub_val = serde_json::Value::Object(serde_json::Map::new());
+        let mut activity_val = serde_json::Value::Null;
         let mut lifecycle_val = None;
         let mut schema_version = None;
         let mut workspace_cfg = crate::models::WorkspaceRootConfig::default();
@@ -599,6 +605,10 @@ impl ConfigLoader {
                     }
                 }
 
+                if let Some(av) = map.get(serde_yaml::Value::String("activity".to_string())) {
+                    activity_val = serde_json::to_value(av).unwrap_or(serde_json::Value::Null);
+                }
+
                 // 11. Lifecycle
                 if let Some(lv) = map.get(serde_yaml::Value::String("lifecycle".to_string())) {
                     lifecycle_val = serde_json::to_value(lv).ok();
@@ -727,6 +737,7 @@ impl ConfigLoader {
             hub_auto_save,
             hub_project,
             hub: hub_val,
+            activity: activity_val.clone(),
             lifecycle: lifecycle_val,
             schema_version,
             workspace: workspace_cfg,

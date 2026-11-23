@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod completion;
 pub mod create;
 pub mod daemon;

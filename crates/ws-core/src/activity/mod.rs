@@ -1,0 +1,17 @@
+pub mod collector;
+pub mod config;
+pub mod db;
+pub mod export;
+pub mod model;
+pub mod rollup;
+pub mod snapshot;
+pub mod ids;
+pub mod sync;
+
+pub use config::{ActivityConfig, ActivityPaths, ProjectActivityConfig};
+pub use db::ActivityDb;
+pub use model::*;
+
+pub fn default_paths() -> ActivityPaths { ActivityPaths::discover() }
+pub fn load_activity_config() -> Result<ActivityConfig, String> { ActivityConfig::load() }
+pub fn open_db(paths: &ActivityPaths) -> Result<ActivityDb, String> { paths.ensure_dirs()?; ActivityDb::open(&paths.db_path) }

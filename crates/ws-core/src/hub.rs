@@ -786,6 +786,64 @@ impl HubClient {
             None,
         )
     }
+
+    pub fn push_activity_buckets(
+        &self,
+        namespace: &str,
+        name: &str,
+        buckets: &[serde_json::Value],
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({ "buckets": buckets });
+        self.request(
+            reqwest::Method::POST,
+            &format!("projects/{}/{}/activity/buckets", namespace, name),
+            Some(&body),
+            None,
+            None,
+        )
+    }
+
+    pub fn upsert_activity_device(
+        &self,
+        namespace: &str,
+        name: &str,
+        device_id: &str,
+        device_name: &str,
+    ) -> Result<serde_json::Value> {
+        let body = serde_json::json!({ "deviceId": device_id, "deviceName": device_name });
+        self.request(
+            reqwest::Method::POST,
+            &format!("projects/{}/{}/activity/devices", namespace, name),
+            Some(&body),
+            None,
+            None,
+        )
+    }
+
+    pub fn get_activity_summary(
+        &self,
+        namespace: &str,
+        name: &str,
+        from: Option<&str>,
+        to: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let mut ep = format!("projects/{}/{}/activity/summary", namespace, name);
+        let mut params = Vec::new();
+        if let Some(f) = from { params.push(format!("from={}", f)); }
+        if let Some(t) = to { params.push(format!("to={}", t)); }
+        if !params.is_empty() { ep.push('?'); ep.push_str(&params.join("&")); }
+        self.request(reqwest::Method::GET, &ep, None, None, None)
+    }
+
+    pub fn purge_activity(&self, namespace: &str, name: &str) -> Result<serde_json::Value> {
+        self.request(
+            reqwest::Method::DELETE,
+            &format!("projects/{}/{}/activity/buckets", namespace, name),
+            None,
+            None,
+            None,
+        )
+    }
 }
 
 impl Default for HubClient {

@@ -50,6 +50,7 @@ pub const KNOWN_COMMANDS: &[&str] = &[
     "clone",
     "daemon",
     "service",
+    "activity",
     "lifecycle",
 ];
 

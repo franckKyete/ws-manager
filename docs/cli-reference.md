@@ -1014,6 +1014,96 @@ ws hub secret pull
 
 ---
 
+
+---
+
+## 8. Activity Tracking
+
+Tracks local development activity (file changes, terminal commands via shell hooks, heartbeats, and git events where available), derives active-time sessions/buckets, and can sync hourly aggregates to `wshub`.
+
+- **Local storage**: global SQLite DB at `~/.local/share/ws/activity.db` (WAL) and config at `~/.config/ws/activity.yml`.
+- **Privacy**: sync sends aggregates only (time/counts/project/repo/workspace/device). No file paths, command names, command arguments, or file contents are synced. Command events are recorded locally as command names only (no arguments).
+- **Project config** (`ws-project.yml`): `activity.project_id`, `activity.sync`, `activity.hub_project` (optional mapping/overrides).
+
+```bash
+# Status and control
+ws activity status [--json] [--waybar]
+ws activity enable [--yes]
+ws activity disable
+ws activity pause
+ws activity resume
+ws activity clear [--yes]
+
+# Reports, series, snapshot, and export
+ws activity report [--day|--week|--month] [--from <date>] [--to <date>] [--project <name|id>] [--repo <name>] [--workspace <name>] [--json|--csv]
+ws activity series [--day|--week|--month] [--from <date>] [--to <date>] [--step hour|day] [--project <name|id>] [--repo <name>] [--workspace <name>] [--group-by none|project] [--json]
+ws activity snapshot [--range today|week|month] [--project <name|id>] [--json]
+ws activity export --raw [--from <date>] [--to <date>] [--json|--csv]
+ws activity prune [--before <date>] [--dry-run]
+
+# Shell command hooks (opt-in)
+ws activity shell install [--shell bash|zsh|fish] [--file <path>]
+ws activity shell uninstall [--shell bash|zsh|fish] [--file <path>]
+
+# Hub sync
+ws activity sync [--project <name|id>] [--force]
+ws activity sync enable|disable [--project <name|id>]
+ws activity sync purge --yes [--project <name|id>]
+
+# Device identity
+ws activity device rename <name>
+
+# Dashboard
+ws activity dashboard
+```
+
+### Waybar Module
+
+`ws activity status --waybar` emits compact Waybar JSON (`text`, `alt`, `tooltip`, `class`, `percentage`). The module is intended as the always-visible trigger in Waybar; a Quickshell overlay can show a rich hover panel.
+
+Example module (`~/.config/waybar/modules/custom-ws.jsonc`):
+
+```jsonc
+{
+  "custom/ws": {
+    "exec": "ws activity status --waybar",
+    "return-type": "json",
+    "format": "{text}",
+    "interval": 60,
+    "signal": 10,
+    "tooltip": false,
+    "on-click": "ws activity sync --force; pkill -RTMIN+10 waybar"
+  }
+}
+```
+
+Place `custom/ws` first in `modules-left` and give it a fixed slot so Quickshell can align a transparent hover catcher over it. The reference geometry is defined in `~/.config/waybar/user-style.css` and mirrored in `~/.config/quickshell/ws-activity/Geometry.qml` (`x=12 y=6 w=120 h=26`, bar height `38`).
+
+Style classes: `active`, `paused`, `disabled`, `stale`, `sync-error`, `watch-limited`, `synced`.
+
+### Quickshell Hover Panel
+
+`ws activity snapshot --range today|week|month [--project <name|id>] --json` returns a dense, local-time-aligned snapshot for the popup: status, totals, series, project breakdown, and repo breakdown. Series points are 24 hourly slots for `today`, 7 local-day slots for `week`, and 30 local-day slots for `month`.
+
+The Quickshell config lives at `~/.config/quickshell/ws-activity/`. It creates a transparent overlay `PanelWindow` over the Waybar trigger, uses an input mask so only the module slot captures pointer events, and opens a `PopupWindow` with charts/metrics on hover.
+
+Setup:
+
+```bash
+sudo pacman -S quickshell
+quickshell -c ws-activity
+```
+
+Hyprland autostart (`~/.config/hypr/userprefs.conf`):
+
+```ini
+exec-once = quickshell -c ws-activity
+```
+
+The `dashboard` command still launches the optional GTK `ws-dashboard` (`cargo build -p ws-dashboard`; install/copy it next to `ws` or on `PATH`).
+
+> Some advanced collection/transport behaviors (full inotify/git-metadata, unix socket transport, and complete hub linkage/blueprint-push automation) may be partially implemented depending on version; local rollup/buckets and baseline sync are supported.
+
 ## 7. Universal Inverted Syntax
 
 All workspace-scoped commands support the intuitive **`ws @<name> <verb>`**
@@ -1032,3 +1122,25 @@ ws @develop push
 ws @develop pull
 ws @develop stop
 ```
+
+
+### ID Migration
+
+Reconcile legacy `path:<dir>` project IDs with canonical `activity.project_id` values.
+
+```bash
+# Inspect canonical vs legacy IDs
+ws activity ids list
+
+# Dry run
+ws activity ids migrate --dry-run
+
+# Rebuild buckets from raw events (recommended when raw history is complete)
+ws activity ids migrate --yes
+
+# Keep/merge existing aggregates instead of rebuilding (approximate when raw history is incomplete)
+ws activity ids migrate --keep-aggregates --yes
+```
+
+- Rebuild mode deletes affected buckets/rollup state and rerolls from raw events; it refuses if legacy buckets exist without raw events.
+- A best-effort DB backup (`activity.db.bak-*`) is created before migration.

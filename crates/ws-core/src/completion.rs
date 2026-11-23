@@ -56,6 +56,7 @@ _ws() {
         'clone:Clone and replicate a project from wshub'
         'daemon:Manage or run global background daemon'
         'service:Manage systemd user service (ws.service)'
+        'activity:Track local activity and sync time reports'
         'completion:Generate or install shell completion scripts'
     )
 
@@ -379,6 +380,56 @@ _ws() {
                             '--yes[Non-interactive: accept detected default base branches]'
                     fi
                     ;;
+                activity)
+                    local act_cmd="${words[2]}"
+                    if [[ $CURRENT -eq 3 ]]; then
+                        _arguments '1:action:(status report sync export enable disable pause resume clear prune shell device record)'
+                    else
+                        case "$act_cmd" in
+                            status)
+                                _arguments '--json[Output as JSON]'
+                                ;;
+                            report)
+                                _arguments \
+                                    '--day[Today]' '--week[Last 7 days]' '--month[Last 30 days]' \
+                                    '--from[Start date]:date:' '--to[End date]:date:' \
+                                    '--project[Project name or id]:project:' '--repo[Repository name]:repo:_ws_repositories' \
+                                    '--workspace[Workspace name]:workspace:_ws_workspaces' \
+                                    '--device[Device id or name]:device:' '--tz[Timezone]:tz:' \
+                                    '--json[JSON output]' '--csv[CSV output]'
+                                ;;
+                            sync)
+                                if [[ "${words[3]}" == "enable" || "${words[3]}" == "disable" || "${words[3]}" == "purge" ]]; then
+                                    _arguments '--project[Project name or id]:project:' '--yes[Confirm]'
+                                else
+                                    _arguments '1:action:(enable disable purge)' '--project[Project name or id]:project:' '--force[Force sync]' '--yes[Confirm]'
+                                fi
+                                ;;
+                            export)
+                                _arguments '--raw[Export raw events]' '--from[Start date]:date:' '--to[End date]:date:' '--json[JSON lines]' '--csv[CSV output]'
+                                ;;
+                            prune)
+                                _arguments '--before[Delete events before date]:date:' '--dry-run[Show what would be deleted]'
+                                ;;
+                            clear|enable)
+                                _arguments '--yes[Skip confirmation]'
+                                ;;
+                            shell)
+                                if [[ "${words[3]}" == "install" || "${words[3]}" == "uninstall" ]]; then
+                                    _arguments '--shell[Shell]:shell:(bash zsh fish)' '--file[RC file path]:file:_files'
+                                else
+                                    _arguments '1:action:(install uninstall)' '--shell[Shell]:shell:(bash zsh fish)' '--file[RC file path]:file:_files'
+                                fi
+                                ;;
+                            device)
+                                _arguments '1:action:(rename)' '2:name:'
+                                ;;
+                            record)
+                                _arguments '--cmd[Command]:cmd:' '--cwd[Working directory]:cwd:_files -/' '--exit[Exit code]:code:' '--dur[Duration ms]:ms:' '--ts[Timestamp ms]:ts:'
+                                ;;
+                        esac
+                    fi
+                    ;;
                 daemon)
                     _arguments \
                         '--tick[Worker loop tick interval in seconds]:tick:' \
@@ -453,7 +504,7 @@ _ws_completion() {
         cword=$COMP_CWORD
     fi
 
-    local commands="create new list ls info focus switch end close delete rm remove status exec push pull start launch run attach stop kill restart logs bridge shell enter open env setup lifecycle repo lock unlock project init add fetch sync doctor antigravity hub clone daemon service completion"
+    local commands="create new list ls info focus switch end close delete rm remove status exec push pull start launch run attach stop kill restart logs bridge shell enter open env setup lifecycle repo lock unlock project init add fetch sync doctor antigravity hub clone daemon service activity completion"
 
     if [[ $cword -eq 1 ]]; then
         local workspaces=$(ws _complete workspaces_all 2>/dev/null | cut -d: -f1)
@@ -645,6 +696,29 @@ _ws_completion() {
                 COMPREPLY=( $(compgen -W "--project --force --no-wip" -- "$cur") )
             fi
             ;;
+        activity)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "status report sync export enable disable pause resume clear prune shell device record" -- "$cur") )
+            elif [[ $cword -eq 3 ]]; then
+                case "${words[2]}" in
+                    sync) COMPREPLY=( $(compgen -W "enable disable purge" -- "$cur") ) ;;
+                    shell) COMPREPLY=( $(compgen -W "install uninstall" -- "$cur") ) ;;
+                    device) COMPREPLY=( $(compgen -W "rename" -- "$cur") ) ;;
+                esac
+            fi
+            if [[ "$cur" == -* ]]; then
+                case "${words[2]}" in
+                    status) COMPREPLY=( $(compgen -W "--json" -- "$cur") ) ;;
+                    report) COMPREPLY=( $(compgen -W "--day --week --month --from --to --project --repo --workspace --device --tz --json --csv" -- "$cur") ) ;;
+                    sync) COMPREPLY=( $(compgen -W "--project --force --yes" -- "$cur") ) ;;
+                    export) COMPREPLY=( $(compgen -W "--raw --from --to --json --csv" -- "$cur") ) ;;
+                    prune) COMPREPLY=( $(compgen -W "--before --dry-run" -- "$cur") ) ;;
+                    clear|enable) COMPREPLY=( $(compgen -W "--yes" -- "$cur") ) ;;
+                    shell) COMPREPLY=( $(compgen -W "--shell --file" -- "$cur") ) ;;
+                    record) COMPREPLY=( $(compgen -W "--cmd --cwd --exit --dur --ts" -- "$cur") ) ;;
+                esac
+            fi
+            ;;
         clone)
             ;;
         completion)
@@ -724,6 +798,7 @@ complete -c ws -n "__fish_use_subcommand" -a "hub" -d "Collaborate, clone, publi
 complete -c ws -n "__fish_use_subcommand" -a "clone" -d "Clone and replicate a project from wshub"
 complete -c ws -n "__fish_use_subcommand" -a "daemon" -d "Manage or run global background daemon"
 complete -c ws -n "__fish_use_subcommand" -a "service" -d "Manage systemd user service (ws.service)"
+complete -c ws -n "__fish_use_subcommand" -a "activity" -d "Track local activity and sync time reports"
 complete -c ws -n "__fish_use_subcommand" -a "completion" -d "Generate completion scripts"
 
 # Subcommands
@@ -733,6 +808,39 @@ complete -c ws -n "__fish_seen_subcommand_from daemon" -a "run" -d "Run global d
 complete -c ws -n "__fish_seen_subcommand_from service" -a "install uninstall start stop restart enable disable status logs"
 complete -c ws -n "__fish_seen_subcommand_from hub" -a "login whoami logout clone publish push pull status sync state resume auto-save secret service"
 complete -c ws -n "__fish_seen_subcommand_from repo" -a "add remove lock unlock"
+
+# Activity
+complete -c ws -n "__fish_seen_subcommand_from activity" -a "status report sync export enable disable pause resume clear prune shell device record"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from sync" -a "enable disable purge"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from shell" -a "install uninstall"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from device" -a "rename"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from status" -l json -d "Output as JSON"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l day -d "Today"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l week -d "Last 7 days"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l month -d "Last 30 days"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l from -d "Start date"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l to -d "End date"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l project -d "Project name or id"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l repo -d "Repository name"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l workspace -d "Workspace name"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l device -d "Device"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l tz -d "Timezone"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l json -d "JSON output"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l csv -d "CSV output"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from sync" -l project -d "Project name or id"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from sync" -l force -d "Force sync"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from sync" -l yes -d "Confirm"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from export" -l raw -d "Export raw events"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from export" -l from -d "Start date"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from export" -l to -d "End date"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from export" -l json -d "JSON lines"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from export" -l csv -d "CSV output"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from prune" -l before -d "Delete events before date"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from prune" -l dry-run -d "Show what would be deleted"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from clear" -l yes -d "Skip confirmation"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from enable" -l yes -d "Skip confirmation"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from shell" -l shell -a "bash zsh fish" -d "Shell"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from shell" -l file -d "RC file path"
 
 # Project migrate
 complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -a "lifecycle config"

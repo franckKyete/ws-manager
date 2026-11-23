@@ -848,6 +848,7 @@ pub struct AppConfig {
     pub hub_auto_save: Option<HubAutoSaveConfig>,
     pub hub_project: Option<String>,
     pub hub: serde_json::Value,
+    pub activity: serde_json::Value,
     pub lifecycle: Option<serde_json::Value>,
     pub schema_version: Option<u32>,
     pub workspace: WorkspaceRootConfig,

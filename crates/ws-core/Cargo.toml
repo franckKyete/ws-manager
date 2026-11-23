@@ -29,12 +29,16 @@ comfy-table = "7.1"
 crossterm = "0.27"
 
 notify = "6.1"
+ignore = "0.4"
+inotify = "0.10"
+uuid = { version = "1", features = ["v4"] }
 dirs = "5.0"
 thiserror = "1.0"
 anyhow = "1.0"
 nix = { version = "0.28", features = ["process", "signal", "term", "fs"] }
 libc = "0.2"
 base64 = "0.22"
+rusqlite = "0.32"
 
 
 

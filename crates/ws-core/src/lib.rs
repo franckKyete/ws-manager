@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod base_branch;
 pub mod completion;
 pub mod config;
