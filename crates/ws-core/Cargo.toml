@@ -39,6 +39,9 @@ nix = { version = "0.28", features = ["process", "signal", "term", "fs"] }
 libc = "0.2"
 base64 = "0.22"
 rusqlite = "0.32"
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+lz4_flex = "0.11"
 
 
 

@@ -1038,6 +1038,10 @@ ws activity clear [--yes]
 ws activity report [--day|--week|--month] [--from <date>] [--to <date>] [--project <name|id>] [--repo <name>] [--workspace <name>] [--json|--csv]
 ws activity series [--day|--week|--month] [--from <date>] [--to <date>] [--step hour|day] [--project <name|id>] [--repo <name>] [--workspace <name>] [--group-by none|project] [--json]
 ws activity snapshot [--range today|week|month] [--project <name|id>] [--json]
+ws activity presence [--range today|week|month] [--json]
+ws activity presence set <active|idle|away|locked|asleep>
+ws activity presence category <work|leisure|neutral|auto> [--for <duration>] [--current]
+ws activity presence explain [--json]
 ws activity export --raw [--from <date>] [--to <date>] [--json|--csv]
 ws activity prune [--before <date>] [--dry-run]
 

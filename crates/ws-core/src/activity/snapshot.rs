@@ -3,6 +3,7 @@ use chrono::{Duration, Local, NaiveDate, TimeZone, Timelike};
 use super::db::ActivityDb;
 use super::model::{
     ActivitySeriesPoint, ActivitySnapshot, ActivitySnapshotPoint, ActivityStatus, ActivityTotals,
+    PresenceSnapshot,
 };
 
 /// Build a dense, local-time-aligned activity snapshot for the requested range.
@@ -71,6 +72,10 @@ pub fn build_snapshot(
 
     let projects = db.report_breakdown(from_hour, to_hour, "project", project, None, None)?;
     let repos = db.report_breakdown(from_hour, to_hour, "repo", project, None, None)?;
+    let work_projects = db.report_focus_breakdown(from_hour, to_hour, "project").unwrap_or_default();
+    let work_repos = db.report_focus_breakdown(from_hour, to_hour, "repo").unwrap_or_default();
+
+    let presence = build_presence_snapshot(db, from_hour, to_hour, now, totals.active_seconds);
 
     Ok(ActivitySnapshot {
         range: range.to_string(),
@@ -79,9 +84,12 @@ pub fn build_snapshot(
         to_ms,
         status,
         totals,
+        presence: Some(presence),
         series,
         projects,
         repos,
+        work_projects,
+        work_repos,
     })
 }
 
@@ -163,6 +171,54 @@ pub fn local_day_start_ms(now: i64) -> i64 {
 }
 
 pub const SNAPSHOT_RANGES: [&str; 3] = ["today", "week", "month"];
+
+fn build_presence_snapshot(db: &ActivityDb, from_hour: i64, to_hour: i64, now: i64, event_seconds: i64) -> PresenceSnapshot {
+    let totals = super::presence::presence_totals_for_range(db, from_hour, to_hour, now)
+        .unwrap_or_default();
+    let (state, source) = db.latest_presence_state()
+        .ok()
+        .flatten()
+        .map(|(s, src, _)| (s, src))
+        .unwrap_or_else(|| ("unknown".to_string(), "none".to_string()));
+    let focus = db.current_focus_interval().ok().flatten();
+    let (category, focus_project, focus_workspace, focus_repo) = if let Some(ref f) = focus {
+        (
+            f.category.clone(),
+            if f.project_name.is_empty() { None } else { Some(f.project_name.clone()) },
+            if f.workspace.is_empty() { None } else { Some(f.workspace.clone()) },
+            if f.repo.is_empty() { None } else { Some(f.repo.clone()) },
+        )
+    } else {
+        (String::new(), None, None, None)
+    };
+    let override_category = db.active_category_override(now, focus.as_ref()).ok().flatten().map(|o| o.category);
+    let category_source = focus.as_ref().map(|f| f.category_source.clone()).unwrap_or_default();
+    let focused_work_seconds = totals.work_seconds;
+    let active_work_seconds = totals.active_work_seconds;
+    let event_work_seconds = event_seconds;
+    let presence_only_seconds = (focused_work_seconds - event_work_seconds).max(0);
+    let background_seconds = (event_work_seconds - focused_work_seconds).max(0);
+    PresenceSnapshot {
+        state,
+        source,
+        category,
+        override_category,
+        focus_project,
+        focus_workspace,
+        focus_repo,
+        focus_app: focus.as_ref().and_then(|f| if f.app.is_empty() { None } else { Some(f.app.clone()) }),
+        focus_domain: focus.as_ref().and_then(|f| if f.domain.is_empty() { None } else { Some(f.domain.clone()) }),
+        focus_rule: focus.as_ref().and_then(|f| if f.rule.is_empty() { None } else { Some(f.rule.clone()) }),
+        category_source,
+        totals,
+        event_work_seconds,
+        active_work_seconds,
+        focused_work_seconds,
+        event_seconds: event_work_seconds,
+        presence_only_seconds,
+        background_seconds,
+    }
+}
 
 #[cfg(test)]
 mod tests {

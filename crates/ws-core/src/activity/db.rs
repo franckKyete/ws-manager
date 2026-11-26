@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::model::{ActivityEvent, ActivityStatus, Bucket, ProjectState, ReportRow};
 use super::ActivityPaths;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 4;
 pub const PRIVACY_NOTICE_VERSION: &str = "1";
 
 pub struct ActivityDb {
@@ -41,12 +41,39 @@ impl ActivityDb {
              CREATE TABLE IF NOT EXISTS buckets(project_id TEXT NOT NULL, project_name TEXT NOT NULL, hour INTEGER NOT NULL, workspace TEXT NOT NULL DEFAULT '', repo TEXT NOT NULL DEFAULT '', active_seconds INTEGER NOT NULL DEFAULT 0, file_events INTEGER NOT NULL DEFAULT 0, git_events INTEGER NOT NULL DEFAULT 0, command_events INTEGER NOT NULL DEFAULT 0, session_count INTEGER NOT NULL DEFAULT 0, dirty INTEGER NOT NULL DEFAULT 1, synced_hour INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(project_id, hour, workspace, repo));
              CREATE INDEX IF NOT EXISTS buckets_dirty ON buckets(dirty, hour);
              CREATE TABLE IF NOT EXISTS projects(project_id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, hub_project TEXT, hub_auto_created INTEGER NOT NULL DEFAULT 0, sync_enabled INTEGER NOT NULL DEFAULT 1, disabled_reason TEXT, linked_at INTEGER, last_synced_hour INTEGER, backoff_until INTEGER NOT NULL DEFAULT 0, last_error TEXT);
-             CREATE TABLE IF NOT EXISTS rollup_state(project_id TEXT PRIMARY KEY, through_hour INTEGER NOT NULL, through_event_id INTEGER NOT NULL DEFAULT 0, session_state TEXT);",
+             CREATE TABLE IF NOT EXISTS rollup_state(project_id TEXT PRIMARY KEY, through_hour INTEGER NOT NULL, through_event_id INTEGER NOT NULL DEFAULT 0, session_state TEXT);
+             CREATE TABLE IF NOT EXISTS presence_intervals(id INTEGER PRIMARY KEY, start_ts INTEGER NOT NULL, end_ts INTEGER, state TEXT NOT NULL, source TEXT NOT NULL);
+             CREATE INDEX IF NOT EXISTS presence_intervals_start ON presence_intervals(start_ts);
+             CREATE INDEX IF NOT EXISTS presence_intervals_end ON presence_intervals(end_ts);
+             CREATE TABLE IF NOT EXISTS presence_buckets(hour INTEGER PRIMARY KEY, active_seconds INTEGER NOT NULL DEFAULT 0, idle_seconds INTEGER NOT NULL DEFAULT 0, away_seconds INTEGER NOT NULL DEFAULT 0, locked_seconds INTEGER NOT NULL DEFAULT 0, asleep_seconds INTEGER NOT NULL DEFAULT 0, work_seconds INTEGER NOT NULL DEFAULT 0, active_work_seconds INTEGER NOT NULL DEFAULT 0, leisure_seconds INTEGER NOT NULL DEFAULT 0, neutral_seconds INTEGER NOT NULL DEFAULT 0, unattributed_seconds INTEGER NOT NULL DEFAULT 0, unassigned_work_seconds INTEGER NOT NULL DEFAULT 0, dirty INTEGER NOT NULL DEFAULT 1, synced_hour INTEGER NOT NULL DEFAULT 0);
+             CREATE INDEX IF NOT EXISTS presence_buckets_dirty ON presence_buckets(dirty, hour);
+             CREATE TABLE IF NOT EXISTS focus_intervals(id INTEGER PRIMARY KEY, start_ts INTEGER NOT NULL, end_ts INTEGER, project_id TEXT NOT NULL DEFAULT '', project_name TEXT NOT NULL DEFAULT '', workspace TEXT NOT NULL DEFAULT '', repo TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', confidence TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT 'neutral', category_source TEXT NOT NULL DEFAULT 'default', app TEXT NOT NULL DEFAULT '', app_kind TEXT NOT NULL DEFAULT '', domain TEXT NOT NULL DEFAULT '', rule TEXT NOT NULL DEFAULT '', evidence TEXT NOT NULL DEFAULT '');
+             CREATE INDEX IF NOT EXISTS focus_intervals_start ON focus_intervals(start_ts);
+             CREATE INDEX IF NOT EXISTS focus_intervals_end ON focus_intervals(end_ts);
+             CREATE TABLE IF NOT EXISTS focus_buckets(project_id TEXT NOT NULL, project_name TEXT NOT NULL, hour INTEGER NOT NULL, workspace TEXT NOT NULL DEFAULT '', repo TEXT NOT NULL DEFAULT '', work_seconds INTEGER NOT NULL DEFAULT 0, input_seconds INTEGER NOT NULL DEFAULT 0, dirty INTEGER NOT NULL DEFAULT 1, synced_hour INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(project_id, hour, workspace, repo));
+             CREATE INDEX IF NOT EXISTS focus_buckets_dirty ON focus_buckets(dirty, hour);
+             CREATE TABLE IF NOT EXISTS category_overrides(id INTEGER PRIMARY KEY, start_ts INTEGER NOT NULL, end_ts INTEGER, category TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'global', created_at INTEGER NOT NULL DEFAULT 0, match_project TEXT NOT NULL DEFAULT '', match_repo TEXT NOT NULL DEFAULT '', match_workspace TEXT NOT NULL DEFAULT '', match_domain TEXT NOT NULL DEFAULT '', match_app TEXT NOT NULL DEFAULT '');",
         ).map_err(|e| e.to_string())?;
         let _ = self.conn.execute("ALTER TABLE rollup_state ADD COLUMN through_event_id INTEGER NOT NULL DEFAULT 0", []);
         let _ = self.conn.execute("ALTER TABLE rollup_state ADD COLUMN session_state TEXT", []);
         let _ = self.conn.execute("ALTER TABLE projects ADD COLUMN hub_auto_created INTEGER NOT NULL DEFAULT 0", []);
-        if self.get_meta_i64("schema_version")?.is_none() { self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?; }
+        for sql in [
+            "ALTER TABLE focus_intervals ADD COLUMN app TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE focus_intervals ADD COLUMN app_kind TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE focus_intervals ADD COLUMN domain TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE focus_intervals ADD COLUMN rule TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE focus_intervals ADD COLUMN evidence TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE category_overrides ADD COLUMN match_project TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE category_overrides ADD COLUMN match_repo TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE category_overrides ADD COLUMN match_workspace TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE category_overrides ADD COLUMN match_domain TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE category_overrides ADD COLUMN match_app TEXT NOT NULL DEFAULT ''",
+            "ALTER TABLE presence_buckets ADD COLUMN active_work_seconds INTEGER NOT NULL DEFAULT 0",
+        ] { let _ = self.conn.execute(sql, []); }
+        let current_ver = self.get_meta_i64("schema_version")?.unwrap_or(0);
+        if current_ver < SCHEMA_VERSION {
+            self.set_meta("schema_version", &SCHEMA_VERSION.to_string())?;
+        }
         if self.get_meta("device_id")?.is_none() { self.set_meta("device_id", &uuid::Uuid::new_v4().to_string())?; }
         Ok(())
     }
@@ -408,6 +435,300 @@ impl ActivityDb {
             })
         }).map_err(|e| e.to_string())?;
         rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    }
+
+    // --- Presence ---
+
+    pub fn current_presence_interval(&self) -> Result<Option<super::model::PresenceInterval>, String> {
+        self.conn.query_row(
+            "SELECT id, start_ts, end_ts, state, source FROM presence_intervals WHERE end_ts IS NULL ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok(super::model::PresenceInterval {
+                id: r.get(0)?,
+                start_ts: r.get(1)?,
+                end_ts: r.get(2)?,
+                state: r.get(3)?,
+                source: r.get(4)?,
+            }),
+        ).optional().map_err(|e| e.to_string())
+    }
+
+    pub fn open_presence_interval(&self, start_ts: i64, state: &str, source: &str) -> Result<i64, String> {
+        self.conn.execute(
+            "INSERT INTO presence_intervals(start_ts, end_ts, state, source) VALUES(?1, NULL, ?2, ?3)",
+            params![start_ts, state, source],
+        ).map_err(|e| e.to_string())?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn close_presence_interval(&self, id: i64, end_ts: i64) -> Result<(), String> {
+        self.conn.execute(
+            "UPDATE presence_intervals SET end_ts = ?2 WHERE id = ?1 AND (end_ts IS NULL OR end_ts > ?2)",
+            params![id, end_ts],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn close_open_presence_intervals(&self, end_ts: i64) -> Result<usize, String> {
+        self.conn.execute(
+            "UPDATE presence_intervals SET end_ts = ?1 WHERE end_ts IS NULL",
+            params![end_ts],
+        ).map_err(|e| e.to_string())
+    }
+
+    pub fn latest_presence_state(&self) -> Result<Option<(String, String, i64)>, String> {
+        self.conn.query_row(
+            "SELECT state, source, COALESCE(end_ts, start_ts) as ts FROM presence_intervals ORDER BY id DESC LIMIT 1",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)),
+        ).optional().map_err(|e| e.to_string())
+    }
+
+    pub fn presence_intervals_in_range(&self, from_ms: i64, to_ms: i64) -> Result<Vec<super::model::PresenceInterval>, String> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, start_ts, end_ts, state, source FROM presence_intervals \
+             WHERE start_ts < ?2 AND (end_ts IS NULL OR end_ts > ?1) ORDER BY start_ts ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![from_ms, to_ms], |r| Ok(super::model::PresenceInterval {
+            id: r.get(0)?,
+            start_ts: r.get(1)?,
+            end_ts: r.get(2)?,
+            state: r.get(3)?,
+            source: r.get(4)?,
+        })).map_err(|e| e.to_string())?;
+        rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    }
+
+    pub fn upsert_presence_bucket(&self, b: &super::model::PresenceBucket) -> Result<(), String> {
+        self.conn.execute(
+            "INSERT INTO presence_buckets(hour, active_seconds, idle_seconds, away_seconds, locked_seconds, asleep_seconds, work_seconds, active_work_seconds, leisure_seconds, neutral_seconds, unattributed_seconds, unassigned_work_seconds, dirty, synced_hour)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,1,0)
+             ON CONFLICT(hour) DO UPDATE SET
+               active_seconds=excluded.active_seconds, idle_seconds=excluded.idle_seconds, away_seconds=excluded.away_seconds,
+               locked_seconds=excluded.locked_seconds, asleep_seconds=excluded.asleep_seconds,
+               work_seconds=excluded.work_seconds, active_work_seconds=excluded.active_work_seconds, leisure_seconds=excluded.leisure_seconds, neutral_seconds=excluded.neutral_seconds,
+               unattributed_seconds=excluded.unattributed_seconds, unassigned_work_seconds=excluded.unassigned_work_seconds,
+               dirty=CASE WHEN
+                 presence_buckets.active_seconds!=excluded.active_seconds OR presence_buckets.idle_seconds!=excluded.idle_seconds OR
+                 presence_buckets.away_seconds!=excluded.away_seconds OR presence_buckets.locked_seconds!=excluded.locked_seconds OR
+                 presence_buckets.asleep_seconds!=excluded.asleep_seconds OR presence_buckets.work_seconds!=excluded.work_seconds OR
+                 presence_buckets.active_work_seconds!=excluded.active_work_seconds OR
+                 presence_buckets.leisure_seconds!=excluded.leisure_seconds OR presence_buckets.neutral_seconds!=excluded.neutral_seconds OR
+                 presence_buckets.unattributed_seconds!=excluded.unattributed_seconds OR presence_buckets.unassigned_work_seconds!=excluded.unassigned_work_seconds
+               THEN 1 ELSE presence_buckets.dirty END",
+            params![b.hour, b.active_seconds, b.idle_seconds, b.away_seconds, b.locked_seconds, b.asleep_seconds, b.work_seconds, b.active_work_seconds, b.leisure_seconds, b.neutral_seconds, b.unattributed_seconds, b.unassigned_work_seconds],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn presence_totals(&self, from_hour: i64, to_hour: i64) -> Result<super::model::PresenceTotals, String> {
+        self.conn.query_row(
+            "SELECT COALESCE(SUM(active_seconds),0), COALESCE(SUM(idle_seconds),0), COALESCE(SUM(away_seconds),0), \
+                    COALESCE(SUM(locked_seconds),0), COALESCE(SUM(asleep_seconds),0), \
+                    COALESCE(SUM(work_seconds),0), COALESCE(SUM(active_work_seconds),0), COALESCE(SUM(leisure_seconds),0), COALESCE(SUM(neutral_seconds),0), \
+                    COALESCE(SUM(unattributed_seconds),0), COALESCE(SUM(unassigned_work_seconds),0) \
+             FROM presence_buckets WHERE hour >= ?1 AND hour < ?2",
+            params![from_hour, to_hour],
+            |r| {
+                let active: i64 = r.get(0)?;
+                let idle: i64 = r.get(1)?;
+                Ok(super::model::PresenceTotals {
+                    active_seconds: active,
+                    idle_seconds: idle,
+                    away_seconds: r.get(2)?,
+                    locked_seconds: r.get(3)?,
+                    asleep_seconds: r.get(4)?,
+                    work_seconds: r.get(5)?,
+                    active_work_seconds: r.get(6)?,
+                    leisure_seconds: r.get(7)?,
+                    neutral_seconds: r.get(8)?,
+                    unattributed_seconds: r.get(9)?,
+                    unassigned_work_seconds: r.get(10)?,
+                    present_seconds: active + idle,
+                })
+            },
+        ).map_err(|e| e.to_string())
+    }
+
+    pub fn presence_buckets_in_range(&self, from_hour: i64, to_hour: i64) -> Result<Vec<super::model::PresenceBucket>, String> {
+        let mut stmt = self.conn.prepare(
+            "SELECT hour, active_seconds, idle_seconds, away_seconds, locked_seconds, asleep_seconds, work_seconds, active_work_seconds, leisure_seconds, neutral_seconds, unattributed_seconds, unassigned_work_seconds \
+             FROM presence_buckets WHERE hour >= ?1 AND hour < ?2 ORDER BY hour ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![from_hour, to_hour], |r| Ok(super::model::PresenceBucket {
+            hour: r.get(0)?,
+            active_seconds: r.get(1)?,
+            idle_seconds: r.get(2)?,
+            away_seconds: r.get(3)?,
+            locked_seconds: r.get(4)?,
+            asleep_seconds: r.get(5)?,
+            work_seconds: r.get(6)?,
+            active_work_seconds: r.get(7)?,
+            leisure_seconds: r.get(8)?,
+            neutral_seconds: r.get(9)?,
+            unattributed_seconds: r.get(10)?,
+            unassigned_work_seconds: r.get(11)?,
+        })).map_err(|e| e.to_string())?;
+        rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    }
+
+    // --- Focus / Category ---
+
+    fn focus_interval_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<super::model::FocusInterval> {
+        Ok(super::model::FocusInterval {
+            id: r.get(0)?, start_ts: r.get(1)?, end_ts: r.get(2)?,
+            project_id: r.get(3)?, project_name: r.get(4)?, workspace: r.get(5)?, repo: r.get(6)?,
+            source: r.get(7)?, confidence: r.get(8)?, category: r.get(9)?, category_source: r.get(10)?,
+            app: r.get(11).unwrap_or_default(), app_kind: r.get(12).unwrap_or_default(),
+            domain: r.get(13).unwrap_or_default(), rule: r.get(14).unwrap_or_default(),
+            evidence: r.get(15).unwrap_or_default(),
+        })
+    }
+
+    pub fn current_focus_interval(&self) -> Result<Option<super::model::FocusInterval>, String> {
+        self.conn.query_row(
+            "SELECT id,start_ts,end_ts,project_id,project_name,workspace,repo,source,confidence,category,category_source,app,app_kind,domain,rule,evidence \
+             FROM focus_intervals WHERE end_ts IS NULL ORDER BY id DESC LIMIT 1",
+            [],
+            Self::focus_interval_row,
+        ).optional().map_err(|e| e.to_string())
+    }
+
+    pub fn focus_interval_at(&self, ts_ms: i64) -> Result<Option<super::model::FocusInterval>, String> {
+        self.conn.query_row(
+            "SELECT id,start_ts,end_ts,project_id,project_name,workspace,repo,source,confidence,category,category_source,app,app_kind,domain,rule,evidence \
+             FROM focus_intervals WHERE start_ts <= ?1 AND (end_ts IS NULL OR end_ts > ?1) ORDER BY id DESC LIMIT 1",
+            rusqlite::params![ts_ms],
+            Self::focus_interval_row,
+        ).optional().map_err(|e| e.to_string())
+    }
+
+    pub fn open_focus_interval(&self, f: &super::model::FocusInterval) -> Result<i64, String> {
+        self.conn.execute(
+            "INSERT INTO focus_intervals(start_ts,end_ts,project_id,project_name,workspace,repo,source,confidence,category,category_source,app,app_kind,domain,rule,evidence) \
+             VALUES(?1,NULL,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+            params![f.start_ts, f.project_id, f.project_name, f.workspace, f.repo, f.source, f.confidence, f.category, f.category_source, f.app, f.app_kind, f.domain, f.rule, f.evidence],
+        ).map_err(|e| e.to_string())?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn close_focus_interval(&self, id: i64, end_ts: i64) -> Result<(), String> {
+        self.conn.execute(
+            "UPDATE focus_intervals SET end_ts=?2 WHERE id=?1 AND (end_ts IS NULL OR end_ts > ?2)",
+            params![id, end_ts],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn close_open_focus_intervals(&self, end_ts: i64) -> Result<usize, String> {
+        self.conn.execute("UPDATE focus_intervals SET end_ts=?1 WHERE end_ts IS NULL", params![end_ts]).map_err(|e| e.to_string())
+    }
+
+    pub fn focus_intervals_in_range(&self, from_ms: i64, to_ms: i64) -> Result<Vec<super::model::FocusInterval>, String> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id,start_ts,end_ts,project_id,project_name,workspace,repo,source,confidence,category,category_source,app,app_kind,domain,rule,evidence \
+             FROM focus_intervals WHERE start_ts < ?2 AND (end_ts IS NULL OR end_ts > ?1) ORDER BY start_ts ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![from_ms, to_ms], Self::focus_interval_row).map_err(|e| e.to_string())?;
+        rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    }
+
+    pub fn upsert_focus_bucket(&self, b: &super::model::FocusBucket) -> Result<(), String> {
+        self.conn.execute(
+            "INSERT INTO focus_buckets(project_id,project_name,hour,workspace,repo,work_seconds,input_seconds,dirty,synced_hour) \
+             VALUES(?1,?2,?3,?4,?5,?6,?7,1,0) \
+             ON CONFLICT(project_id,hour,workspace,repo) DO UPDATE SET \
+               project_name=excluded.project_name, \
+               work_seconds=excluded.work_seconds, input_seconds=excluded.input_seconds, \
+               dirty=CASE WHEN focus_buckets.work_seconds!=excluded.work_seconds OR focus_buckets.input_seconds!=excluded.input_seconds THEN 1 ELSE focus_buckets.dirty END",
+            params![b.project_id,b.project_name,b.hour,b.workspace,b.repo,b.work_seconds,b.input_seconds],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn focus_totals(&self, from_hour: i64, to_hour: i64) -> Result<(i64, i64), String> {
+        self.conn.query_row(
+            "SELECT COALESCE(SUM(work_seconds),0), COALESCE(SUM(input_seconds),0) FROM focus_buckets WHERE hour >= ?1 AND hour < ?2",
+            params![from_hour, to_hour],
+            |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+        ).map_err(|e| e.to_string())
+    }
+
+    pub fn report_focus_breakdown(&self, from_hour: i64, to_hour: i64, group_by: &str) -> Result<Vec<super::model::ActivityBreakdownRow>, String> {
+        let (key_expr, group_expr) = match group_by {
+            "repo" => ("repo", "repo"),
+            _ => ("project_name", "project_id, project_name"),
+        };
+        let sql = format!(
+            "SELECT {key_expr}, project_id, project_name, workspace, repo, \
+             SUM(work_seconds), SUM(input_seconds) \
+             FROM focus_buckets WHERE hour >= ?1 AND hour < ?2 AND work_seconds > 0 \
+             GROUP BY {group_expr} ORDER BY SUM(work_seconds) DESC, 1 ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![from_hour, to_hour], |r| {
+            let key: String = r.get::<_, String>(0).unwrap_or_default();
+            let project_id: String = r.get::<_, String>(1).unwrap_or_default();
+            let project_name: String = r.get::<_, String>(2).unwrap_or_default();
+            let ws: String = r.get::<_, String>(3).unwrap_or_default();
+            let rp: String = r.get::<_, String>(4).unwrap_or_default();
+            Ok(super::model::ActivityBreakdownRow {
+                key: if key.is_empty() { if group_by == "repo" { "(none)".to_string() } else { project_name.clone() } } else { key },
+                project_id: if group_by == "project" { Some(project_id) } else { None },
+                project_name: if group_by == "project" { Some(project_name) } else { None },
+                workspace: if group_by == "workspace" { Some(ws) } else { None },
+                repo: if group_by == "repo" { Some(rp) } else { None },
+                active_seconds: r.get::<_, i64>(5).unwrap_or(0), // work_seconds
+                file_events: r.get::<_, i64>(6).unwrap_or(0),    // input_seconds (reused field)
+                git_events: 0,
+                command_events: 0,
+                session_count: 0,
+            })
+        }).map_err(|e| e.to_string())?;
+        rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    }
+
+    pub fn active_category_override(&self, now_ms: i64, focus: Option<&super::model::FocusInterval>) -> Result<Option<super::model::CategoryOverride>, String> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id,start_ts,end_ts,category,scope,created_at,match_project,match_repo,match_workspace,match_domain,match_app \
+             FROM category_overrides WHERE start_ts <= ?1 AND (end_ts IS NULL OR end_ts > ?1) ORDER BY id DESC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![now_ms], |r| Ok(super::model::CategoryOverride {
+            id: r.get(0)?, start_ts: r.get(1)?, end_ts: r.get(2)?, category: r.get(3)?, scope: r.get(4)?,
+            match_project: r.get::<_, String>(6).unwrap_or_default(),
+            match_repo: r.get::<_, String>(7).unwrap_or_default(),
+            match_workspace: r.get::<_, String>(8).unwrap_or_default(),
+            match_domain: r.get::<_, String>(9).unwrap_or_default(),
+            match_app: r.get::<_, String>(10).unwrap_or_default(),
+        })).map_err(|e| e.to_string())?;
+        for row in rows {
+            let o = row.map_err(|e| e.to_string())?;
+            if o.scope == "global" { return Ok(Some(o)); }
+            // focus-scoped: match stored fields against current focus
+            let Some(f) = focus else { continue; };
+            let ok = (o.match_project.is_empty() || o.match_project == f.project_id || o.match_project == f.project_name)
+                && (o.match_repo.is_empty() || o.match_repo == f.repo)
+                && (o.match_workspace.is_empty() || o.match_workspace == f.workspace)
+                && (o.match_domain.is_empty() || o.match_domain.eq_ignore_ascii_case(&f.domain))
+                && (o.match_app.is_empty() || o.match_app.eq_ignore_ascii_case(&f.app));
+            if ok { return Ok(Some(o)); }
+        }
+        Ok(None)
+    }
+
+    pub fn insert_category_override(&self, o: &super::model::CategoryOverride) -> Result<i64, String> {
+        self.conn.execute(
+            "INSERT INTO category_overrides(start_ts,end_ts,category,scope,created_at,match_project,match_repo,match_workspace,match_domain,match_app) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![o.start_ts, o.end_ts, o.category, o.scope, now_ms(), o.match_project, o.match_repo, o.match_workspace, o.match_domain, o.match_app],
+        ).map_err(|e| e.to_string())?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn clear_active_category_overrides(&self, now_ms: i64) -> Result<usize, String> {
+        self.conn.execute(
+            "UPDATE category_overrides SET end_ts=?1 WHERE end_ts IS NULL OR end_ts > ?1",
+            params![now_ms],
+        ).map_err(|e| e.to_string())
     }
 }
 

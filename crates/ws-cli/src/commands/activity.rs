@@ -86,6 +86,19 @@ pub fn execute_activity_status(json: bool) -> Result<(), String> {
         status.watching_workspaces, status.known_workspaces,
         if status.watch_limited { " (inotify budget)" } else { "" }
     );
+    // Presence
+    let cfg = ActivityConfig::load().unwrap_or_default();
+    let now = now_ms();
+    let _ = ws_core::activity::presence::rollup_presence(&db, &cfg, now);
+    let _ = ws_core::activity::focus::rollup_focus(&db, now);
+    let today_start_ms = chrono::Local::now().date_naive().and_hms_opt(0,0,0).unwrap().and_local_timezone(chrono::Local).single().unwrap().timestamp_millis();
+    let today_end_ms = (chrono::Local::now().date_naive() + chrono::Duration::days(1)).and_hms_opt(0,0,0).unwrap().and_local_timezone(chrono::Local).single().unwrap().timestamp_millis();
+    let from_h = (today_start_ms / 1000 / 3600) * 3600;
+    let to_h = ((today_end_ms + 999) / 1000 / 3600) * 3600;
+    if let Ok(pt) = ws_core::activity::presence::presence_totals_for_range(&db, from_h, to_h, now) {
+        let (pstate, psource, _) = db.latest_presence_state().ok().flatten().unwrap_or_else(|| ("unknown".to_string(), "none".to_string(), 0));
+        println!("  Presence:          {} ({})  present {} · away {}", pstate, psource, format_duration_human(pt.present_seconds), format_duration_human(pt.away_seconds));
+    }
     if !status.projects.is_empty() {
         println!("\nProjects:");
         for p in &status.projects {
@@ -110,6 +123,8 @@ pub fn execute_activity_status_waybar() -> Result<(), String> {
     let status = db.basic_status(&paths)?;
 
     let now = now_ms();
+    let _ = ws_core::activity::presence::rollup_presence(&db, &cfg, now);
+    let _ = ws_core::activity::focus::rollup_focus(&db, now);
     let from_ms = local_day_start_ms();
     let from_hour = hour_floor_secs(from_ms);
     let to_hour = hour_floor_secs(now) + 3600;
@@ -121,7 +136,12 @@ pub fn execute_activity_status_waybar() -> Result<(), String> {
     let week_rows = db.report_totals(week_from_hour, to_hour, None)?;
     let week_active: i64 = week_rows.iter().map(|r| r.active_seconds).sum();
 
+    let today_presence = ws_core::activity::presence::presence_totals_for_range(&db, from_hour, to_hour, now).unwrap_or_default();
+    let week_presence = ws_core::activity::presence::presence_totals_for_range(&db, week_from_hour, to_hour, now).unwrap_or_default();
+    let pstate = db.latest_presence_state().ok().flatten().map(|(s,_,_)| s).unwrap_or_else(|| "unknown".to_string());
+
     let mut classes: Vec<String> = Vec::new();
+    let headline_secs = total_active; // raw event work (presence-confirmed sessions included)
     let (text, alt) = if !status.enabled {
         classes.push("disabled".to_string());
         ("󱎫 off".to_string(), "disabled".to_string())
@@ -130,13 +150,14 @@ pub fn execute_activity_status_waybar() -> Result<(), String> {
         ("󱎫 paused".to_string(), "paused".to_string())
     } else {
         classes.push("active".to_string());
-        (format!("󱎫 {}", format_duration_human(total_active)), "active".to_string())
+        (format!("󱎫 {}", format_duration_human(headline_secs)), "active".to_string())
     };
 
     if status.watch_limited { classes.push("watch-limited".to_string()); }
 
     let sync_errors = status.projects.iter().filter(|p| p.last_error.is_some() || p.backoff_until > now).count();
     if sync_errors > 0 { classes.push("sync-error".to_string()); } else { classes.push("synced".to_string()); }
+    classes.push(format!("presence-{}", pstate));
 
     let last_event = status.last_event_at
         .map(|ts| {
@@ -153,8 +174,10 @@ pub fn execute_activity_status_waybar() -> Result<(), String> {
     }
 
     let mut tooltip = Vec::new();
-    tooltip.push(format!("Today: {} ({}s)", format_duration_human(total_active), total_active));
-    tooltip.push(format!("Week:  {} ({}s)", format_duration_human(week_active), week_active));
+    tooltip.push(format!("Work (event): {} · active {}", format_duration_human(total_active), format_duration_human(today_presence.active_work_seconds)));
+    tooltip.push(format!("Focus work: {}  present {}", format_duration_human(today_presence.work_seconds), format_duration_human(today_presence.present_seconds)));
+    tooltip.push(format!("Week work (event): {} · active {}", format_duration_human(week_active), format_duration_human(week_presence.active_work_seconds)));
+    tooltip.push(format!("Presence: {}", pstate));
     tooltip.push(format!("Daemon: {}", if status.daemon_running { format!("running{}", status.daemon_pid.map(|p| format!(" (pid {})", p)).unwrap_or_default()) } else { "not running".to_string() }));
     tooltip.push(format!("Watching: {}/{} workspaces{}", status.watching_workspaces, status.known_workspaces, if status.watch_limited { " (limited)" } else { "" }));
     tooltip.push(format!("Last event: {}", last_event));
@@ -164,7 +187,7 @@ pub fn execute_activity_status_waybar() -> Result<(), String> {
         tooltip.push("Sync: ok".to_string());
     }
 
-    let pct = ((total_active.min(8 * 3600) as f64 / (8.0 * 3600.0)) * 100.0).round().clamp(0.0, 100.0) as u8;
+    let pct = ((headline_secs.min(8 * 3600) as f64 / (8.0 * 3600.0)) * 100.0).round().clamp(0.0, 100.0) as u8;
     let out = ws_core::activity::model::WaybarStatus {
         text,
         alt,
@@ -182,6 +205,8 @@ pub fn execute_activity_snapshot(range: &str, project: Option<&str>, json: bool)
     let db = open_db(&paths)?;
     let cfg = ActivityConfig::load().unwrap_or_default();
     let _ = ws_core::activity::rollup::rollup_all(&db, &cfg);
+    let _ = ws_core::activity::presence::rollup_presence(&db, &cfg, now_ms());
+    let _ = ws_core::activity::focus::rollup_focus(&db, now_ms());
     let status = db.basic_status(&paths)?;
     let snapshot = ws_core::activity::snapshot::build_snapshot(&db, status, range, now_ms(), project)?;
 
@@ -192,12 +217,28 @@ pub fn execute_activity_snapshot(range: &str, project: Option<&str>, json: bool)
 
     let t = &snapshot.totals;
     println!("Activity snapshot · {}\n{}", snapshot.range, "─".repeat(40));
-    println!(
-        "  Active:      {}   Wall clock: {}   Sessions: {}",
-        format_duration_human(t.active_seconds),
-        format_duration_human(t.wall_clock_seconds),
-        t.session_count
-    );
+    if let Some(p) = &snapshot.presence {
+        println!(
+            "  Work (event): {}   Active work: {}   Focus work: {}",
+            format_duration_human(p.event_work_seconds),
+            format_duration_human(p.active_work_seconds),
+            format_duration_human(p.focused_work_seconds),
+        );
+        println!(
+            "  Present:      {}   Presence-only: {}   Background: {}   Away: {}",
+            format_duration_human(p.totals.present_seconds),
+            format_duration_human(p.presence_only_seconds),
+            format_duration_human(p.background_seconds),
+            format_duration_human(p.totals.away_seconds),
+        );
+    } else {
+        println!(
+            "  Active:      {}   Wall clock: {}   Sessions: {}",
+            format_duration_human(t.active_seconds),
+            format_duration_human(t.wall_clock_seconds),
+            t.session_count
+        );
+    }
     println!(
         "  Events:      {} total (file {} · git {} · command {})",
         t.file_events + t.git_events + t.command_events,
@@ -210,6 +251,32 @@ pub fn execute_activity_snapshot(range: &str, project: Option<&str>, json: bool)
         if snapshot.status.daemon_running { "running" } else { "not running" },
         snapshot.status.daemon_pid.map(|p| format!(" (pid {})", p)).unwrap_or_default()
     );
+
+    if let Some(p) = &snapshot.presence {
+        let pt = &p.totals;
+        println!(
+            "  Presence:    {} present (active {} · idle {})  away {}  locked {}  asleep {}  [{}]",
+            format_duration_human(pt.present_seconds),
+            format_duration_human(pt.active_seconds),
+            format_duration_human(pt.idle_seconds),
+            format_duration_human(pt.away_seconds),
+            format_duration_human(pt.locked_seconds),
+            format_duration_human(pt.asleep_seconds),
+            p.state,
+        );
+        println!(
+            "  Focus work:  {} (active {})  leisure {}  neutral {}  unattributed {}{}",
+            format_duration_human(pt.work_seconds),
+            format_duration_human(pt.active_work_seconds),
+            format_duration_human(pt.leisure_seconds),
+            format_duration_human(pt.neutral_seconds),
+            format_duration_human(pt.unattributed_seconds),
+            p.override_category.as_ref().map(|c| format!("  [override: {}]", c)).unwrap_or_default()
+        );
+        if let Some(fp) = &p.focus_project {
+            println!("  Focus:       {}{}{}", fp, p.focus_workspace.as_ref().map(|w| format!(" / {}", w)).unwrap_or_default(), p.focus_repo.as_ref().map(|r| format!(" / {}", r)).unwrap_or_default());
+        }
+    }
 
     if !snapshot.series.is_empty() {
         let values: Vec<i64> = snapshot.series.iter().map(|p| p.active_seconds).collect();
@@ -245,6 +312,184 @@ fn sparkline(values: &[i64]) -> String {
             BARS[idx.min(BARS.len() - 1)]
         })
         .collect()
+}
+
+pub fn execute_activity_presence(range: &str, json: bool) -> Result<(), String> {
+    let paths = ActivityPaths::discover();
+    paths.ensure_dirs()?;
+    let db = open_db(&paths)?;
+    let cfg = ActivityConfig::load().unwrap_or_default();
+    let now = now_ms();
+    let _ = ws_core::activity::presence::rollup_presence(&db, &cfg, now);
+    let _ = ws_core::activity::focus::rollup_focus(&db, now);
+
+    let today = chrono::Local::now().date_naive();
+    let (start_date, label) = match range {
+        "today" | "day" | "" => (today, "Today"),
+        "week" => (today - chrono::Duration::days(6), "Last 7 days"),
+        "month" => (today - chrono::Duration::days(29), "Last 30 days"),
+        _ => return Err("Invalid --range. Use 'today', 'week' or 'month'.".to_string()),
+    };
+    let from_ms = start_date.and_hms_opt(0,0,0).unwrap().and_local_timezone(chrono::Local).single().unwrap().timestamp_millis();
+    let to_ms = (today + chrono::Duration::days(1)).and_hms_opt(0,0,0).unwrap().and_local_timezone(chrono::Local).single().unwrap().timestamp_millis();
+    let from_hour = (from_ms / 1000 / 3600) * 3600;
+    let to_hour = ((to_ms + 999) / 1000 / 3600) * 3600;
+
+    let totals = ws_core::activity::presence::presence_totals_for_range(&db, from_hour, to_hour, now)?;
+    let (state, source, _ts) = db.latest_presence_state()?.unwrap_or_else(|| ("unknown".to_string(), "none".to_string(), 0));
+
+    if json {
+        let out = serde_json::json!({
+            "range": range,
+            "from_ms": from_ms,
+            "to_ms": to_ms,
+            "state": state,
+            "source": source,
+            "totals": totals,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).map_err(|e| e.to_string())?);
+        return Ok(());
+    }
+
+    println!("Presence ({})", label);
+    println!("  State:    {} ({})", state, source);
+    let focus = db.current_focus_interval().ok().flatten();
+    let ovr = db.active_category_override(now, focus.as_ref()).ok().flatten();
+    println!("  Present:      {}", format_duration_human(totals.present_seconds));
+    println!("  Active:       {}", format_duration_human(totals.active_seconds));
+    println!("  Idle:         {}", format_duration_human(totals.idle_seconds));
+    println!("  Away:         {}", format_duration_human(totals.away_seconds));
+    println!("  Locked:       {}", format_duration_human(totals.locked_seconds));
+    println!("  Asleep:       {}", format_duration_human(totals.asleep_seconds));
+    println!("  Focus work:   {} (active {})", format_duration_human(totals.work_seconds), format_duration_human(totals.active_work_seconds));
+    println!("  Leisure:      {}", format_duration_human(totals.leisure_seconds));
+    println!("  Neutral:      {}", format_duration_human(totals.neutral_seconds));
+    println!("  Unattributed: {}", format_duration_human(totals.unattributed_seconds));
+    if let Some(o) = ovr { println!("  Override:     {} ({})", o.category, o.scope); }
+    if let Some(f) = focus {
+        if !f.project_name.is_empty() || !f.category.is_empty() || !f.app.is_empty() {
+            let ctx = if !f.domain.is_empty() { format!(" · {}", f.domain) } else if !f.app.is_empty() { format!(" · {}", f.app) } else { String::new() };
+            println!("  Focus:        {}{}{}{} [{} / {}]", f.project_name, if f.workspace.is_empty() { String::new() } else { format!(" / {}", f.workspace) }, if f.repo.is_empty() { String::new() } else { format!(" / {}", f.repo) }, ctx, f.category, f.category_source);
+        }
+    }
+    Ok(())
+}
+
+pub fn execute_activity_presence_set(state: &str) -> Result<(), String> {
+    let valid = ["active", "idle", "away", "locked", "asleep"];
+    if !valid.contains(&state) {
+        return Err(format!("Invalid state '{}'. Use: {}", state, valid.join(", ")));
+    }
+    let paths = ActivityPaths::discover();
+    paths.ensure_dirs()?;
+    let record = serde_json::json!({
+        "type": "presence_set",
+        "state": state,
+        "ts": now_ms(),
+    });
+    let line = serde_json::to_string(&record).map_err(|e| e.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::io::Write as _;
+        use std::os::unix::net::UnixStream;
+        if let Ok(mut stream) = UnixStream::connect(&paths.socket_path) {
+            let _ = stream.write_all(line.as_bytes());
+            let _ = stream.write_all(b"\n");
+            let _ = stream.flush();
+            OutputHandler::print_success(&format!("Presence set to '{}'.", state));
+            return Ok(());
+        }
+    }
+    // Fallback: write directly to DB (daemon will reconcile on next start; may conflict with running monitor)
+    let db = open_db(&paths)?;
+    let now = now_ms();
+    if let Ok(Some(cur)) = db.current_presence_interval() {
+        let _ = db.close_presence_interval(cur.id, now);
+    }
+    let _ = db.open_presence_interval(now, state, "manual");
+    OutputHandler::print_success(&format!("Presence set to '{}' (direct DB write; restart daemon if running for consistency).", state));
+    Ok(())
+}
+
+pub fn execute_activity_presence_category(category: &str, duration: Option<&str>, current: bool) -> Result<(), String> {
+    let paths = ActivityPaths::discover();
+    paths.ensure_dirs()?;
+    let db = open_db(&paths)?;
+    let now = now_ms();
+
+    if category == "auto" || category == "clear" {
+        let n = db.clear_active_category_overrides(now)?;
+        OutputHandler::print_success(&format!("Cleared {} active category override(s).", n));
+        return Ok(());
+    }
+
+    let valid = ["work", "leisure", "neutral"];
+    if !valid.contains(&category) {
+        return Err(format!("Invalid category '{}'. Use: work, leisure, neutral, auto", category));
+    }
+
+    let end_ts = if let Some(dur) = duration {
+        let secs = ws_core::utils::parse_duration(dur);
+        if secs == 0 { return Err("Invalid --for duration".to_string()); }
+        Some(now + (secs as i64 * 1000))
+    } else {
+        None
+    };
+
+    let scope = if current { "focus" } else { "global" };
+    let focus = db.current_focus_interval().ok().flatten();
+    // Clear existing active overrides first (simple behavior)
+    let _ = db.clear_active_category_overrides(now);
+    let mut ovr = ws_core::activity::model::CategoryOverride {
+        start_ts: now, end_ts, category: category.to_string(), scope: scope.to_string(), ..Default::default()
+    };
+    if current {
+        if let Some(f) = focus {
+            ovr.match_project = f.project_id.clone();
+            ovr.match_repo = f.repo.clone();
+            ovr.match_workspace = f.workspace.clone();
+            ovr.match_domain = f.domain.clone();
+            ovr.match_app = f.app.clone();
+        }
+    }
+    let _ = db.insert_category_override(&ovr)?;
+    OutputHandler::print_success(&format!(
+        "Category override: {} (scope={}, {})",
+        category, scope,
+        end_ts.map(|e| format!("until {}s from now", (e-now)/1000)).unwrap_or_else(|| "until cleared".to_string())
+    ));
+    Ok(())
+}
+
+pub fn execute_activity_presence_explain(json: bool) -> Result<(), String> {
+    let cfg = ActivityConfig::load().unwrap_or_default();
+    let val = ws_core::activity::focus::explain_current(&cfg)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?);
+    } else {
+        let w = &val["window"];
+        let c = &val["context"];
+        let r = &val["resolved"];
+        let cat = &val["category"];
+        println!("Focus explain");
+        println!("  Window:   {} / {}  pid={}", w["class"].as_str().unwrap_or(""), w["initial_class"].as_str().unwrap_or(""), w["pid"]);
+        println!("  Title:    {}", w["title"].as_str().unwrap_or(""));
+        println!("  App:      {} ({})", c["app"].as_str().unwrap_or(""), c["app_kind"].as_str().unwrap_or(""));
+        if !c["domain"].as_str().unwrap_or("").is_empty() { println!("  Domain:   {}", c["domain"].as_str().unwrap_or("")); }
+        if !c["tmux_session"].as_str().unwrap_or("").is_empty() { println!("  Tmux:     {} / {}", c["tmux_session"].as_str().unwrap_or(""), c["tmux_window"].as_str().unwrap_or("")); }
+        if !r["project_name"].as_str().unwrap_or("").is_empty() {
+            println!("  Project:  {}{}{}", r["project_name"].as_str().unwrap_or(""), if r["workspace"].as_str().unwrap_or("").is_empty() { "".to_string() } else { format!(" / {}", r["workspace"].as_str().unwrap_or("")) }, if r["repo"].as_str().unwrap_or("").is_empty() { "".to_string() } else { format!(" / {}", r["repo"].as_str().unwrap_or("")) });
+        }
+        println!("  Source:   {} ({})", r["source"].as_str().unwrap_or(""), r["confidence"].as_str().unwrap_or(""));
+        println!("  Category: {} [{}] rule={}", cat["value"].as_str().unwrap_or(""), cat["source"].as_str().unwrap_or(""), cat["rule"].as_str().unwrap_or("-"));
+        if let Some(hits) = val["matches"].as_array() {
+            if !hits.is_empty() {
+                println!("  Matches:");
+                for h in hits { println!("    - {} {} ({})", h["kind"].as_str().unwrap_or(""), h["name"].as_str().unwrap_or(""), h["category"].as_str().unwrap_or("")); }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn execute_activity_series(
@@ -766,6 +1011,16 @@ pub fn execute_activity(action: Option<ActivityAction>) -> Result<(), String> {
         act @ ActivityAction::Report { .. } => execute_activity_report(&act),
         ActivityAction::Snapshot { range, project, json } => {
             execute_activity_snapshot(&range, project.as_deref(), json)
+        }
+        ActivityAction::Presence { range, json, action } => {
+            match action {
+                Some(crate::cli::ActivityPresenceAction::Set { state }) => execute_activity_presence_set(&state),
+                Some(crate::cli::ActivityPresenceAction::Category { category, r#for, current }) => {
+                    execute_activity_presence_category(&category, r#for.as_deref(), current)
+                }
+                Some(crate::cli::ActivityPresenceAction::Explain { json: ej }) => execute_activity_presence_explain(json || ej),
+                None => execute_activity_presence(&range, json),
+            }
         }
         ActivityAction::Series { day, week, month, from, to, step, project, repo, workspace, group_by, json } => {
             execute_activity_series(day, week, month, from.as_deref(), to.as_deref(), &step, project.as_deref(), repo.as_deref(), workspace.as_deref(), &group_by, json)

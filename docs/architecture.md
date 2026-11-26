@@ -232,4 +232,13 @@ for the Waybar module, `ws activity snapshot --range today|week|month --json` fo
 the Quickshell hover panel (`~/.config/quickshell/ws-activity/`, overlay anchored
 to the fixed Waybar `custom/ws` slot), and `ws activity dashboard` for the
 optional GTK4/libadwaita `ws-dashboard` crate.
-See `ws activity --help` and [Configuration](configuration.md#activity-tracking-configwsactivityyml).
+
+Presence tracking (`ext-idle-notify-v1` + logind) records active/idle/away/locked/asleep
+intervals in `presence_buckets`. Focus attribution resolves the active Hyprland window through
+tmux pane cwd/session, browser domain (Firefox sessionstore/history/title, local-only),
+`/proc` cwd/process tree, and class/title/domain rules. It records `focus_intervals`/
+`focus_buckets` with work/leisure/neutral categories. Precedence is manual override > project
+mapping > explicit work rule > explicit leisure rule > default neutral; unmapped windows
+default to neutral.
+
+Work metrics are kept separate: **Event work** is raw event-session active time (file/git/command/heartbeats, tail credit, and presence-confirmed extensions) and is the headline metric; it is not capped by presence. **Active work** is input-active time while focused on a work context. **Focus work** is present (active+idle) time while focused on a work context. Never add event seconds to presence seconds. When `extend_sessions` is enabled, open event sessions can be extended only while presence is active/idle and focus category is `work` on the same project/repo or same work-capable app (terminal/editor/office). Use `ws activity presence explain` to debug classification. Hub sync for presence/work is still pending. See `ws activity --help` and [Configuration](configuration.md#activity-tracking-configwsactivityyml).

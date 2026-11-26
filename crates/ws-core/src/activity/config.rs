@@ -17,6 +17,9 @@ fn default_raw_retention_days() -> u64 { 365 }
 fn default_watch_reconcile() -> u64 { 60 }
 fn default_sync_interval() -> u64 { 600 }
 fn default_backfill() -> String { "none".to_string() }
+fn default_idle_timeout() -> u64 { 120 }
+fn default_away_timeout() -> u64 { 900 }
+fn default_presence_source() -> String { "auto".to_string() }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivitySyncConfig {
@@ -27,6 +30,107 @@ pub struct ActivitySyncConfig {
 
 impl Default for ActivitySyncConfig {
     fn default() -> Self { Self { enabled: true, interval: 600, backfill: "none".to_string() } }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(untagged)]
+pub enum StringOrList {
+    #[default]
+    None,
+    One(String),
+    Many(Vec<String>),
+}
+
+impl StringOrList {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::None => true,
+            Self::One(s) => s.trim().is_empty(),
+            Self::Many(v) => v.is_empty() || v.iter().all(|s| s.trim().is_empty()),
+        }
+    }
+    pub fn matches(&self, value: &str, glob: fn(&str, &str) -> bool) -> bool {
+        match self {
+            Self::None => true,
+            Self::One(p) => glob(p, value),
+            Self::Many(v) => v.iter().any(|p| glob(p, value)),
+        }
+    }
+}
+
+
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PresenceRuleMatch {
+    #[serde(default)] pub class: StringOrList,
+    #[serde(default)] pub title: StringOrList,
+    #[serde(default)] pub initial_class: StringOrList,
+    #[serde(default)] pub domain: StringOrList,
+    #[serde(default)] pub url: StringOrList,
+    #[serde(default)] pub app_kind: StringOrList,
+    #[serde(default)] pub tmux_session: StringOrList,
+    #[serde(default)] pub tmux_window: StringOrList,
+    #[serde(default)] pub path: StringOrList,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceRule {
+    #[serde(default)] pub name: Option<String>,
+    #[serde(rename = "match")]
+    pub match_: PresenceRuleMatch,
+    #[serde(default)] pub category: Option<String>, // work | leisure | neutral
+    #[serde(default)] pub project: Option<String>,
+    #[serde(default)] pub workspace: Option<String>,
+    #[serde(default)] pub repo: Option<String>,
+    #[serde(default)] pub require: Option<String>, // project
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceBrowserConfig {
+    #[serde(default = "default_browser_inspect")] pub inspect: String, // auto|sessionstore|history|title|off
+    #[serde(default = "default_browser_profiles")] pub profiles: String, // auto|<path>
+}
+
+fn default_browser_inspect() -> String { "auto".to_string() }
+fn default_browser_profiles() -> String { "auto".to_string() }
+
+impl Default for PresenceBrowserConfig {
+    fn default() -> Self { Self { inspect: default_browser_inspect(), profiles: default_browser_profiles() } }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityPresenceConfig {
+    #[serde(default = "default_true")] pub enabled: bool,
+    #[serde(default = "default_presence_source")] pub source: String,
+    #[serde(default = "default_idle_timeout")] pub idle_timeout: u64,
+    #[serde(default = "default_away_timeout")] pub away_timeout: u64,
+    #[serde(default = "default_true")] pub lock_aware: bool,
+    #[serde(default = "default_true")] pub sleep_aware: bool,
+    #[serde(default = "default_true")] pub attribution: bool,
+    #[serde(default = "default_true")] pub hyprland: bool,
+    #[serde(default = "default_true")] pub terminal_process_tree: bool,
+    #[serde(default = "default_true")] pub extend_sessions: bool,
+    #[serde(default)] pub browser: PresenceBrowserConfig,
+    #[serde(default)] pub rules: Vec<PresenceRule>,
+}
+
+impl Default for ActivityPresenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            source: default_presence_source(),
+            idle_timeout: default_idle_timeout(),
+            away_timeout: default_away_timeout(),
+            lock_aware: true,
+            sleep_aware: true,
+            attribution: true,
+            hyprland: true,
+            terminal_process_tree: true,
+            extend_sessions: true,
+            browser: PresenceBrowserConfig::default(),
+            rules: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,6 +147,7 @@ pub struct ActivityConfig {
     #[serde(default = "default_raw_retention_days", alias = "raw_retention")] pub raw_retention_days: u64,
     #[serde(default = "default_watch_reconcile")] pub watch_reconcile: u64,
     #[serde(default)] pub sync: ActivitySyncConfig,
+    #[serde(default)] pub presence: ActivityPresenceConfig,
     #[serde(default)] pub exclude: Vec<String>,
 }
 
@@ -53,7 +158,8 @@ impl Default for ActivityConfig {
             idle_gap: default_idle_gap(), session_cap: default_session_cap(), tail_credit: default_tail_credit(),
             heartbeat_interval: default_heartbeat_interval(), heartbeat_window: default_heartbeat_window(),
             debounce: default_debounce(), raw_retention_days: default_raw_retention_days(),
-            watch_reconcile: default_watch_reconcile(), sync: ActivitySyncConfig::default(), exclude: Vec::new(),
+            watch_reconcile: default_watch_reconcile(), sync: ActivitySyncConfig::default(),
+            presence: ActivityPresenceConfig::default(), exclude: Vec::new(),
         }
     }
 }
@@ -90,6 +196,11 @@ impl ActivityConfig {
             }
             if let Some(sync) = obj.get_mut("sync").and_then(|v| v.as_object_mut()) {
                 if let Some(v) = sync.get("interval") { if let Some(s) = v.as_str() { sync.insert("interval".to_string(), serde_json::Value::from(parse_duration(s))); } }
+            }
+            if let Some(pres) = obj.get_mut("presence").and_then(|v| v.as_object_mut()) {
+                for key in ["idle_timeout", "away_timeout"] {
+                    if let Some(v) = pres.get(key) { if let Some(s) = v.as_str() { pres.insert(key.to_string(), serde_json::Value::from(parse_duration(s))); } }
+                }
             }
         }
         serde_json::from_value(json).map_err(|e| format!("Invalid activity config: {e}"))

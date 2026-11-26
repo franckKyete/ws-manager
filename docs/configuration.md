@@ -539,6 +539,32 @@ sync:
   enabled: true
   interval: 600
   backfill: none
+presence:
+  enabled: true
+  source: auto           # auto | wayland | logind | none
+  idle_timeout: 120s
+  away_timeout: 900s
+  lock_aware: true
+  sleep_aware: true
+  attribution: true
+  hyprland: true
+  terminal_process_tree: true
+  extend_sessions: true      # extend event sessions while present and focused on work (same project/repo or work-capable app)
+  browser:
+    inspect: auto            # auto | sessionstore | history | title | off
+    profiles: auto
+  rules:
+    - name: github-work
+      match: { domain: ["github.com", "*.github.com"] }
+      category: work
+    - name: youtube-leisure
+      match: { domain: ["youtube.com", "*.youtube.com"] }
+      category: leisure
+    - match: { class: "mpv" }
+      category: leisure
+    - match: { class: "firefox", title: "*project-docs*" }
+      category: work
+      project: myproject
 exclude: []
 ```
 

@@ -86,6 +86,10 @@ pub struct ActivityCollector {
     needs_rescan: bool,
     pending_by_key: HashMap<(usize, String, String), PendingEvent>, // (target_idx, rel_path, kind) -> pending
     recent_moves: VecDeque<(u32, MoveFrom)>, // cookie -> from
+
+    // presence
+    presence: super::presence::PresenceMonitor,
+    focus: super::focus::FocusMonitor,
 }
 
 impl ActivityCollector {
@@ -94,6 +98,11 @@ impl ActivityCollector {
         paths.ensure_dirs()?;
         let cfg = ActivityConfig::load().unwrap_or_default();
         let db = ActivityDb::open(&paths.db_path)?;
+        let mut presence = super::presence::PresenceMonitor::new(&db, &cfg);
+        if cfg.presence.enabled && (cfg.presence.source == "auto" || cfg.presence.source == "wayland") {
+            presence.rx = super::presence_wayland::spawn_wayland_watcher(&cfg.presence);
+        }
+        let focus = super::focus::FocusMonitor::new(&db);
         let mut c = Self {
             cfg,
             paths,
@@ -115,6 +124,8 @@ impl ActivityCollector {
             needs_rescan: true,
             pending_by_key: HashMap::new(),
             recent_moves: VecDeque::new(),
+            presence,
+            focus,
         };
         c.init_socket();
         c.init_inotify();
@@ -165,6 +176,14 @@ impl ActivityCollector {
         self.cfg = ActivityConfig::load().unwrap_or(self.cfg.clone());
         let _ = self.accept_socket_records();
         let _ = self.drain_spool();
+
+        // Presence runs even when activity collection is paused? No - tied to enabled.
+        // But we still want presence to be tracked when enabled; pause only pauses event collection.
+        if self.cfg.enabled {
+            self.presence.tick(&self.db, &self.cfg);
+            let pstate = self.presence.current_state();
+            self.focus.tick(&self.db, &self.cfg, pstate);
+        }
 
         if !self.cfg.enabled || self.cfg.paused {
             self.flush_pending_events(true);
@@ -269,14 +288,20 @@ impl ActivityCollector {
             let _ = self.db.upsert_project(&state);
         }
 
-        // heartbeats for active workspaces
+        // heartbeats for active workspaces (gated by focus when attribution is available)
         let now = now_ms();
         let heartbeat_ms = (self.cfg.heartbeat_interval.max(15) * 1000) as i64;
         let mut emitted_ws: HashSet<String> = HashSet::new();
+        let focus = self.focus.current().cloned();
+        let presence_ok = self.presence.current_state().is_present();
         for t in &self.targets {
             if !t.active { continue; }
             let key = format!("{}::{}", t.project_id, t.workspace);
             if !emitted_ws.insert(key.clone()) { continue; }
+            if self.cfg.presence.attribution && self.cfg.presence.enabled {
+                let focused = focus.as_ref().map(|f| f.project_id == t.project_id && (f.workspace.is_empty() || f.workspace == t.workspace)).unwrap_or(false);
+                if !focused || !presence_ok { continue; }
+            }
             let last = self.last_heartbeat.get(&key).copied().unwrap_or(0);
             if now - last < heartbeat_ms { continue; }
             self.last_heartbeat.insert(key, now);
@@ -763,6 +788,15 @@ impl ActivityCollector {
                     let _ = stream.set_nonblocking(false);
                     let reader = BufReader::new(&stream);
                     for line in reader.lines().flatten() {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                            if v.get("type").and_then(|x| x.as_str()) == Some("presence_set") {
+                                let state = v.get("state").and_then(|x| x.as_str()).unwrap_or("active");
+                                let ts = v.get("ts").and_then(|x| x.as_i64()).unwrap_or_else(now_ms);
+                                let ps = super::presence::PresenceState::from_str(state);
+                                self.presence.set_manual_state(&self.db, ts, ps);
+                                continue;
+                            }
+                        }
                         let _ = self.ingest_record_line(&line);
                     }
                     let _ = stream.write_all(b"ok\n");

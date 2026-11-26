@@ -147,6 +147,72 @@ pub struct ActivityTotals {
     pub session_count: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PresenceTotals {
+    pub present_seconds: i64,
+    pub active_seconds: i64,
+    pub idle_seconds: i64,
+    pub away_seconds: i64,
+    pub locked_seconds: i64,
+    pub asleep_seconds: i64,
+    #[serde(default)]
+    pub work_seconds: i64,
+    #[serde(default)]
+    pub active_work_seconds: i64,
+    #[serde(default)]
+    pub leisure_seconds: i64,
+    #[serde(default)]
+    pub neutral_seconds: i64,
+    #[serde(default)]
+    pub unattributed_seconds: i64,
+    #[serde(default)]
+    pub unassigned_work_seconds: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PresenceSnapshot {
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub source: String,
+    #[serde(default)]
+    pub category: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub override_category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_project: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_repo: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_app: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_domain: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_rule: Option<String>,
+    #[serde(default)]
+    pub category_source: String,
+    #[serde(default)]
+    pub totals: PresenceTotals,
+    /// Raw event-session active time (headline). Not capped by presence.
+    #[serde(default)]
+    pub event_work_seconds: i64,
+    /// Input-active time while focused on a work context.
+    #[serde(default)]
+    pub active_work_seconds: i64,
+    /// Present (active+idle) time while focused on a work context.
+    #[serde(default)]
+    pub focused_work_seconds: i64,
+    /// Compatibility alias for event_work_seconds.
+    #[serde(default)]
+    pub event_seconds: i64,
+    #[serde(default)]
+    pub presence_only_seconds: i64,
+    #[serde(default)]
+    pub background_seconds: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ActivitySnapshot {
     pub range: String,
@@ -155,9 +221,91 @@ pub struct ActivitySnapshot {
     pub to_ms: i64,
     pub status: ActivityStatus,
     pub totals: ActivityTotals,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<PresenceSnapshot>,
     pub series: Vec<ActivitySnapshotPoint>,
     pub projects: Vec<ActivityBreakdownRow>,
     pub repos: Vec<ActivityBreakdownRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_projects: Vec<ActivityBreakdownRow>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub work_repos: Vec<ActivityBreakdownRow>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PresenceInterval {
+    pub id: i64,
+    pub start_ts: i64,
+    pub end_ts: Option<i64>,
+    pub state: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PresenceBucket {
+    pub hour: i64,
+    pub active_seconds: i64,
+    pub idle_seconds: i64,
+    pub away_seconds: i64,
+    pub locked_seconds: i64,
+    pub asleep_seconds: i64,
+    #[serde(default)]
+    pub work_seconds: i64,
+    #[serde(default)]
+    pub active_work_seconds: i64,
+    #[serde(default)]
+    pub leisure_seconds: i64,
+    #[serde(default)]
+    pub neutral_seconds: i64,
+    #[serde(default)]
+    pub unattributed_seconds: i64,
+    #[serde(default)]
+    pub unassigned_work_seconds: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FocusInterval {
+    pub id: i64,
+    pub start_ts: i64,
+    pub end_ts: Option<i64>,
+    #[serde(default)] pub project_id: String,
+    #[serde(default)] pub project_name: String,
+    #[serde(default)] pub workspace: String,
+    #[serde(default)] pub repo: String,
+    #[serde(default)] pub source: String,      // cwd|process|rule|manual|unattributed|tmux|browser|file
+    #[serde(default)] pub confidence: String,
+    #[serde(default)] pub category: String,     // work|leisure|neutral|unknown
+    #[serde(default)] pub category_source: String, // manual|target|work_rule|leisure_rule|default
+    #[serde(default)] pub app: String,
+    #[serde(default)] pub app_kind: String,    // terminal|browser|editor|media|game|chat|office|file_manager|system|unknown
+    #[serde(default)] pub domain: String,
+    #[serde(default)] pub rule: String,
+    #[serde(default)] pub evidence: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FocusBucket {
+    pub project_id: String,
+    pub project_name: String,
+    pub hour: i64,
+    #[serde(default)] pub workspace: String,
+    #[serde(default)] pub repo: String,
+    pub work_seconds: i64,
+    pub input_seconds: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CategoryOverride {
+    pub id: i64,
+    pub start_ts: i64,
+    pub end_ts: Option<i64>,
+    pub category: String,
+    pub scope: String, // global|focus
+    #[serde(default)] pub match_project: String,
+    #[serde(default)] pub match_repo: String,
+    #[serde(default)] pub match_workspace: String,
+    #[serde(default)] pub match_domain: String,
+    #[serde(default)] pub match_app: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -1023,6 +1023,15 @@ pub enum ActivityAction {
         #[arg(long, help = "Output JSON")]
         json: bool,
     },
+    #[command(about = "Show presence state and computer usage totals")]
+    Presence {
+        #[arg(long, default_value = "today", help = "Range: today, week or month")]
+        range: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[command(subcommand)]
+        action: Option<ActivityPresenceAction>,
+    },
     #[command(about = "Show time-series activity buckets")]
     Series {
         #[arg(long, help = "Report today (default)")]
@@ -1161,6 +1170,29 @@ pub enum ActivityShellAction {
         shell: Option<String>,
         #[arg(long)]
         file: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityPresenceAction {
+    #[command(about = "Set manual presence state (for hooks/testing)")]
+    Set {
+        #[arg(help = "State: active, idle, away, locked, asleep")]
+        state: String,
+    },
+    #[command(about = "Set or clear a work/leisure/neutral category override")]
+    Category {
+        #[arg(help = "Category: work, leisure, neutral, auto")]
+        category: String,
+        #[arg(long, help = "Duration (e.g. 30m, 1h, 2h). Omit for until cleared")]
+        r#for: Option<String>,
+        #[arg(long, help = "Apply to current focus interval only (default: global)")]
+        current: bool,
+    },
+    #[command(about = "Explain how the current focused window is classified")]
+    Explain {
+        #[arg(long, help = "Output JSON")]
+        json: bool,
     },
 }
 
