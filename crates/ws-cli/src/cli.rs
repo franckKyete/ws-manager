@@ -1088,6 +1088,15 @@ pub enum ActivityAction {
         #[arg(long, help = "Show what would be deleted")]
         dry_run: bool,
     },
+    #[command(about = "Recompute activity buckets/spans from raw events (fixes overlap double-counting)")]
+    Recompute {
+        #[arg(long, default_value = "today", help = "Range to recompute: today")]
+        range: String,
+        #[arg(long, help = "Show what would change without writing")]
+        dry_run: bool,
+        #[arg(long, help = "Proceed even if the daemon appears to be running")]
+        force: bool,
+    },
     #[command(about = "Install or uninstall shell command hooks")]
     Shell {
         #[command(subcommand)]

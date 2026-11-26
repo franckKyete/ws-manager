@@ -7,7 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::model::{ActivityEvent, ActivityStatus, Bucket, ProjectState, ReportRow};
 use super::ActivityPaths;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 pub const PRIVACY_NOTICE_VERSION: &str = "1";
 
 pub struct ActivityDb {
@@ -52,7 +52,10 @@ impl ActivityDb {
              CREATE INDEX IF NOT EXISTS focus_intervals_end ON focus_intervals(end_ts);
              CREATE TABLE IF NOT EXISTS focus_buckets(project_id TEXT NOT NULL, project_name TEXT NOT NULL, hour INTEGER NOT NULL, workspace TEXT NOT NULL DEFAULT '', repo TEXT NOT NULL DEFAULT '', work_seconds INTEGER NOT NULL DEFAULT 0, input_seconds INTEGER NOT NULL DEFAULT 0, dirty INTEGER NOT NULL DEFAULT 1, synced_hour INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(project_id, hour, workspace, repo));
              CREATE INDEX IF NOT EXISTS focus_buckets_dirty ON focus_buckets(dirty, hour);
-             CREATE TABLE IF NOT EXISTS category_overrides(id INTEGER PRIMARY KEY, start_ts INTEGER NOT NULL, end_ts INTEGER, category TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'global', created_at INTEGER NOT NULL DEFAULT 0, match_project TEXT NOT NULL DEFAULT '', match_repo TEXT NOT NULL DEFAULT '', match_workspace TEXT NOT NULL DEFAULT '', match_domain TEXT NOT NULL DEFAULT '', match_app TEXT NOT NULL DEFAULT '');",
+             CREATE TABLE IF NOT EXISTS category_overrides(id INTEGER PRIMARY KEY, start_ts INTEGER NOT NULL, end_ts INTEGER, category TEXT NOT NULL, scope TEXT NOT NULL DEFAULT 'global', created_at INTEGER NOT NULL DEFAULT 0, match_project TEXT NOT NULL DEFAULT '', match_repo TEXT NOT NULL DEFAULT '', match_workspace TEXT NOT NULL DEFAULT '', match_domain TEXT NOT NULL DEFAULT '', match_app TEXT NOT NULL DEFAULT '');
+             CREATE TABLE IF NOT EXISTS event_spans(project_id TEXT NOT NULL, project_name TEXT NOT NULL DEFAULT '', workspace TEXT NOT NULL DEFAULT '', repo TEXT NOT NULL DEFAULT '', start_ts INTEGER NOT NULL, end_ts INTEGER NOT NULL, PRIMARY KEY(project_id, workspace, repo, start_ts));
+             CREATE INDEX IF NOT EXISTS event_spans_range ON event_spans(start_ts, end_ts);
+             CREATE INDEX IF NOT EXISTS event_spans_proj ON event_spans(project_id, start_ts);",
         ).map_err(|e| e.to_string())?;
         let _ = self.conn.execute("ALTER TABLE rollup_state ADD COLUMN through_event_id INTEGER NOT NULL DEFAULT 0", []);
         let _ = self.conn.execute("ALTER TABLE rollup_state ADD COLUMN session_state TEXT", []);
@@ -189,7 +192,7 @@ impl ActivityDb {
     }
 
     pub fn clear_all(&self) -> Result<(), String> {
-        self.conn.execute_batch("DELETE FROM events; DELETE FROM buckets; DELETE FROM projects; DELETE FROM rollup_state;").map_err(|e| e.to_string())?;
+        self.conn.execute_batch("DELETE FROM events; DELETE FROM buckets; DELETE FROM projects; DELETE FROM rollup_state; DELETE FROM event_spans;").map_err(|e| e.to_string())?;
         Ok(())
     }
 
@@ -258,6 +261,83 @@ impl ActivityDb {
             params![b.project_id,b.project_name,b.hour,b.workspace,b.repo,b.active_seconds,b.file_events,b.git_events,b.command_events,b.session_count],
         ).map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    /// Insert a credited active span, merging with an adjacent/overlapping span for the same key.
+    pub fn insert_event_span(&self, project_id: &str, project_name: &str, workspace: &str, repo: &str, start_ts: i64, end_ts: i64) -> Result<(), String> {
+        if end_ts <= start_ts { return Ok(()); }
+        let existing: Option<(i64, i64, i64)> = self.conn.query_row(
+            "SELECT rowid, start_ts, end_ts FROM event_spans WHERE project_id=?1 AND workspace=?2 AND repo=?3 AND start_ts <= ?5 AND end_ts >= ?4 ORDER BY start_ts DESC LIMIT 1",
+            params![project_id, workspace, repo, start_ts, end_ts],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).optional().map_err(|e| e.to_string())?;
+        if let Some((rowid, s, e)) = existing {
+            let ns = s.min(start_ts);
+            let ne = e.max(end_ts);
+            self.conn.execute("UPDATE event_spans SET start_ts=?1, end_ts=?2, project_name=CASE WHEN ?3!='' THEN ?3 ELSE project_name END WHERE rowid=?4",
+                params![ns, ne, project_name, rowid]).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        // also merge into a span that starts exactly at end_ts (adjacent forward) - rare, but keep compact
+        let forward: Option<(i64, i64, i64)> = self.conn.query_row(
+            "SELECT rowid, start_ts, end_ts FROM event_spans WHERE project_id=?1 AND workspace=?2 AND repo=?3 AND start_ts=?4 LIMIT 1",
+            params![project_id, workspace, repo, end_ts],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).optional().map_err(|e| e.to_string())?;
+        if let Some((rowid, _s, e)) = forward {
+            self.conn.execute("UPDATE event_spans SET start_ts=?1, project_name=CASE WHEN ?2!='' THEN ?2 ELSE project_name END WHERE rowid=?3",
+                params![start_ts, project_name, rowid]).map_err(|e| e.to_string())?;
+            let _ = e;
+            return Ok(());
+        }
+        self.conn.execute(
+            "INSERT INTO event_spans(project_id,project_name,workspace,repo,start_ts,end_ts) VALUES(?1,?2,?3,?4,?5,?6)
+             ON CONFLICT(project_id,workspace,repo,start_ts) DO UPDATE SET end_ts=MAX(event_spans.end_ts, excluded.end_ts), project_name=CASE WHEN excluded.project_name!='' THEN excluded.project_name ELSE event_spans.project_name END",
+            params![project_id, project_name, workspace, repo, start_ts, end_ts],
+        ).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn event_spans_in_range(&self, from_ms: i64, to_ms: i64) -> Result<Vec<(String, String, String, String, i64, i64)>, String> {
+        let mut stmt = self.conn.prepare(
+            "SELECT project_id, project_name, workspace, repo, start_ts, end_ts FROM event_spans WHERE start_ts < ?2 AND end_ts > ?1 ORDER BY start_ts ASC"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![from_ms, to_ms], |r| Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1).unwrap_or_default(),
+            r.get::<_, String>(2).unwrap_or_default(),
+            r.get::<_, String>(3).unwrap_or_default(),
+            r.get::<_, i64>(4)?,
+            r.get::<_, i64>(5)?,
+        ))).map_err(|e| e.to_string())?;
+        rows.map(|r| r.map_err(|e| e.to_string())).collect()
+    }
+
+    pub fn delete_event_spans_in_range(&self, from_ms: i64, to_ms: i64) -> Result<usize, String> {
+        // delete spans fully inside; for overlapping spans, trim or split
+        // Simple approach: load overlapping, delete them, reinsert trimmed parts outside range.
+        let spans = self.event_spans_in_range(from_ms, to_ms)?;
+        let mut deleted = 0usize;
+        for (pid, pname, ws, repo, s, e) in spans {
+            self.conn.execute(
+                "DELETE FROM event_spans WHERE project_id=?1 AND workspace=?2 AND repo=?3 AND start_ts=?4",
+                params![pid, ws, repo, s],
+            ).map_err(|e| e.to_string())?;
+            deleted += 1;
+            if s < from_ms {
+                let _ = self.conn.execute(
+                    "INSERT OR REPLACE INTO event_spans(project_id,project_name,workspace,repo,start_ts,end_ts) VALUES(?1,?2,?3,?4,?5,?6)",
+                    params![pid, pname, ws, repo, s, from_ms],
+                );
+            }
+            if e > to_ms {
+                let _ = self.conn.execute(
+                    "INSERT OR REPLACE INTO event_spans(project_id,project_name,workspace,repo,start_ts,end_ts) VALUES(?1,?2,?3,?4,?5,?6)",
+                    params![pid, pname, ws, repo, to_ms, e],
+                );
+            }
+        }
+        Ok(deleted)
     }
 
 
@@ -348,7 +428,7 @@ impl ActivityDb {
 
         let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| &**b as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+        let mut out: Vec<super::model::ActivitySeriesPoint> = stmt.query_map(params_refs.as_slice(), |r| {
             let project_id: String = r.get::<_, String>(1).unwrap_or_default();
             let project_name: String = r.get::<_, String>(2).unwrap_or_default();
             Ok(super::model::ActivitySeriesPoint {
@@ -363,8 +443,47 @@ impl ActivityDb {
                 command_events: r.get::<_, i64>(8).unwrap_or(0),
                 session_count: r.get::<_, i64>(9).unwrap_or(0),
             })
-        }).map_err(|e| e.to_string())?;
-        rows.map(|r| r.map_err(|e| e.to_string())).collect()
+        }).map_err(|e| e.to_string())?.map(|r| r.map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
+
+        // Dedupe active_seconds across overlapping sessions. Legacy hours without spans fall back to raw.
+        if repo.is_none() && workspace.is_none() {
+            let union_by_hour = self.event_work_union_by_hour(from_hour, to_hour, project).unwrap_or_default();
+            if !group_by_project {
+                let mut by_bucket: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+                for (&h, &s) in &union_by_hour {
+                    let b = if step == "day" { (h / 86400) * 86400 } else { h };
+                    *by_bucket.entry(b).or_insert(0) += s;
+                }
+                for row in &mut out {
+                    if let Some(s) = by_bucket.get(&row.bucket_start) { row.active_seconds = *s; }
+                    else { row.active_seconds = 0; }
+                }
+            } else {
+                // proportional allocation by raw share within bucket
+                let mut bucket_union: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+                let mut bucket_raw: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+                for (&h, &s) in &union_by_hour { let b = if step == "day" { (h / 86400) * 86400 } else { h }; *bucket_union.entry(b).or_insert(0) += s; }
+                for row in &out { *bucket_raw.entry(row.bucket_start).or_insert(0) += row.active_seconds.max(0); }
+                for row in &mut out {
+                    let u = bucket_union.get(&row.bucket_start).copied().unwrap_or(0);
+                    let raw_sum = bucket_raw.get(&row.bucket_start).copied().unwrap_or(0);
+                    row.active_seconds = if raw_sum > 0 { ((row.active_seconds.max(0) as f64 / raw_sum as f64) * u as f64).round() as i64 } else { 0 };
+                }
+                // reconcile rounding to exact union
+                let mut bucket_alloc: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+                for row in &out { *bucket_alloc.entry(row.bucket_start).or_insert(0) += row.active_seconds; }
+                for (b, u) in &bucket_union {
+                    let alloc = bucket_alloc.get(b).copied().unwrap_or(0);
+                    let mut diff = *u - alloc;
+                    for row in out.iter_mut().filter(|r| r.bucket_start == *b) {
+                        if diff == 0 { break; }
+                        let adj = if diff > 0 { 1 } else { -1 };
+                        if row.active_seconds + adj >= 0 { row.active_seconds += adj; diff -= adj; }
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 
     pub fn report_breakdown(
@@ -407,22 +526,14 @@ impl ActivityDb {
 
         let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
         let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| &**b as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), |r| {
+        let mut out: Vec<super::model::ActivityBreakdownRow> = stmt.query_map(params_refs.as_slice(), |r| {
             let key: String = r.get::<_, String>(0).unwrap_or_default();
             let project_id: String = r.get::<_, String>(1).unwrap_or_default();
             let project_name: String = r.get::<_, String>(2).unwrap_or_default();
             let ws: String = r.get::<_, String>(3).unwrap_or_default();
             let rp: String = r.get::<_, String>(4).unwrap_or_default();
             Ok(super::model::ActivityBreakdownRow {
-                key: if key.is_empty() {
-                    match group_by {
-                        "workspace" => "(root)".to_string(),
-                        "repo" => "(none)".to_string(),
-                        _ => project_name.clone(),
-                    }
-                } else {
-                    key
-                },
+                key: if key.is_empty() { match group_by { "workspace" => "(root)".to_string(), "repo" => "(none)".to_string(), _ => project_name.clone() } } else { key },
                 project_id: if group_by == "project" { Some(project_id) } else { None },
                 project_name: if group_by == "project" { Some(project_name) } else { None },
                 workspace: if group_by == "workspace" { Some(ws) } else { None },
@@ -433,11 +544,209 @@ impl ActivityDb {
                 command_events: r.get::<_, i64>(8).unwrap_or(0),
                 session_count: r.get::<_, i64>(9).unwrap_or(0),
             })
-        }).map_err(|e| e.to_string())?;
-        rows.map(|r| r.map_err(|e| e.to_string())).collect()
+        }).map_err(|e| e.to_string())?.map(|r| r.map_err(|e| e.to_string())).collect::<Result<Vec<_>, _>>()?;
+
+        if repo.is_none() && workspace.is_none() {
+            let dedup = self.event_work_report_totals(from_hour, to_hour, project).unwrap_or_default();
+            let mut alloc: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
+            for r in &dedup {
+                let k = match group_by { "workspace" => if r.workspace.is_empty() { "(root)".to_string() } else { r.workspace.clone() }, "repo" => if r.repo.is_empty() { "(none)".to_string() } else { r.repo.clone() }, _ => r.project_name.clone() };
+                *alloc.entry(k).or_insert(0) += r.active_seconds;
+            }
+            for row in &mut out { row.active_seconds = alloc.get(&row.key).copied().unwrap_or(0); }
+            out.sort_by(|a,b| b.active_seconds.cmp(&a.active_seconds).then(a.key.cmp(&b.key)));
+        }
+        Ok(out)
     }
 
-    // --- Presence ---
+    // --- Event-work union (deduped spans) ---
+
+    fn raw_hour_sums(&self, from_hour: i64, to_hour: i64, project: Option<&str>) -> Result<std::collections::BTreeMap<i64, i64>, String> {
+        let mut sql = String::from("SELECT hour, SUM(active_seconds) FROM buckets WHERE hour >= ?1 AND hour < ?2");
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(from_hour), Box::new(to_hour)];
+        if let Some(p) = project { sql.push_str(" AND (project_name = ?3 OR project_id = ?3)"); params_vec.push(Box::new(p.to_string())); }
+        sql.push_str(" GROUP BY hour");
+        let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| &**b as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1).unwrap_or(0)))).map_err(|e| e.to_string())?;
+        let mut out = std::collections::BTreeMap::new();
+        for r in rows { let (h, s) = r.map_err(|e| e.to_string())?; out.insert(h, s.max(0)); }
+        Ok(out)
+    }
+
+    /// Returns per-hour deduped union seconds, falling back to raw bucket sum for hours with no spans.
+    fn event_work_union_by_hour(&self, from_hour: i64, to_hour: i64, project: Option<&str>) -> Result<std::collections::BTreeMap<i64, i64>, String> {
+        let from_ms = from_hour.saturating_mul(1000);
+        let to_ms = to_hour.saturating_mul(1000);
+        let spans = self.event_spans_in_range(from_ms, to_ms)?;
+        let spans: Vec<_> = spans.into_iter().filter(|(pid, pname, _, _, _, _)| match project { None => true, Some(p) => pid == p || pname == p }).collect();
+        let raw_hours = self.raw_hour_sums(from_hour, to_hour, project)?;
+        let mut by_hour: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+        if spans.is_empty() {
+            return Ok(raw_hours);
+        }
+        let mut boundaries: Vec<i64> = Vec::with_capacity(spans.len() * 4);
+        let mut min_h = i64::MAX;
+        let mut max_h = i64::MIN;
+        for (_, _, _, _, s, e) in &spans {
+            let s = (*s).max(from_ms); let e = (*e).min(to_ms);
+            if e > s {
+                boundaries.push(s); boundaries.push(e);
+                let hs = (s / 1000 / 3600) * 3600;
+                let he = ((e - 1) / 1000 / 3600) * 3600;
+                if hs < min_h { min_h = hs; }
+                if he > max_h { max_h = he; }
+            }
+        }
+        if min_h <= max_h {
+            let mut h = min_h;
+            while h <= max_h.saturating_add(3600) && h < to_hour {
+                boundaries.push((h * 1000).max(from_ms).min(to_ms));
+                h = h.saturating_add(3600);
+            }
+        }
+        boundaries.sort(); boundaries.dedup();
+        let mut span_idx = 0usize;
+        let mut active: Vec<usize> = Vec::new();
+        for w in boundaries.windows(2) {
+            let a = w[0]; let b = w[1];
+            if b <= a { continue; }
+            while span_idx < spans.len() && spans[span_idx].4 < b { let e = spans[span_idx].5.min(to_ms); let s = spans[span_idx].4.max(from_ms); if e > a && s < b { active.push(span_idx); } span_idx += 1; }
+            active.retain(|&i| { let e = spans[i].5.min(to_ms); let s = spans[i].4.max(from_ms); e > a && s < b });
+            if active.is_empty() { continue; }
+            let hour = (a / 1000 / 3600) * 3600;
+            *by_hour.entry(hour).or_insert(0) += b - a; // ms
+        }
+        // convert ms->s and fill legacy hours
+        let mut out: std::collections::BTreeMap<i64, i64> = std::collections::BTreeMap::new();
+        for (&h, &ms) in &by_hour {
+            if ms > 0 { out.insert(h, (ms / 1000).max(0)); }
+        }
+        for (&h, &raw) in &raw_hours {
+            if raw > 0 && !by_hour.contains_key(&h) {
+                out.insert(h, raw);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn event_work_union(&self, from_hour: i64, to_hour: i64, project: Option<&str>) -> Result<i64, String> {
+        let by_hour = self.event_work_union_by_hour(from_hour, to_hour, project)?;
+        Ok(by_hour.values().sum())
+    }
+
+    /// Compute deduped event-work totals with proportional per-key allocation.
+    /// Hybrid: hours with span data are deduped/allocated; legacy hours without spans use raw bucket sums.
+    pub fn event_work_report_totals(&self, from_hour: i64, to_hour: i64, project: Option<&str>) -> Result<Vec<ReportRow>, String> {
+        let from_ms = from_hour.saturating_mul(1000);
+        let to_ms = to_hour.saturating_mul(1000);
+        let spans = self.event_spans_in_range(from_ms, to_ms)?;
+        let spans: Vec<_> = spans.into_iter().filter(|(pid, pname, _, _, _, _)| match project { None => true, Some(p) => pid == p || pname == p }).collect();
+        let raw = self.report_totals(from_hour, to_hour, project)?;
+        if spans.is_empty() {
+            return Ok(raw);
+        }
+
+        #[derive(Clone, Default)]
+        struct Acc { project_id: String, project_name: String, workspace: String, repo: String, ms: i64 }
+        let mut acc: std::collections::BTreeMap<(String,String,String), Acc> = std::collections::BTreeMap::new();
+        let mut span_hours: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+        let mut boundaries: Vec<i64> = Vec::with_capacity(spans.len() * 4);
+        let mut min_h = i64::MAX;
+        let mut max_h = i64::MIN;
+        for (_, _, _, _, s, e) in &spans {
+            let s = (*s).max(from_ms); let e = (*e).min(to_ms);
+            if e > s {
+                boundaries.push(s); boundaries.push(e);
+                let hs = (s / 1000 / 3600) * 3600;
+                let he = ((e - 1) / 1000 / 3600) * 3600;
+                span_hours.insert(hs);
+                span_hours.insert(he);
+                if hs < min_h { min_h = hs; }
+                if he > max_h { max_h = he; }
+            }
+        }
+        if min_h <= max_h {
+            let mut h = min_h;
+            while h <= max_h.saturating_add(3600) && h < to_hour {
+                boundaries.push((h * 1000).max(from_ms).min(to_ms));
+                h = h.saturating_add(3600);
+            }
+        }
+        boundaries.sort(); boundaries.dedup();
+        let mut span_idx = 0usize;
+        let mut active: Vec<usize> = Vec::new();
+        for w in boundaries.windows(2) {
+            let a = w[0]; let b = w[1];
+            if b <= a { continue; }
+            while span_idx < spans.len() && spans[span_idx].4 < b { let e = spans[span_idx].5.min(to_ms); let s = spans[span_idx].4.max(from_ms); if e > a && s < b { active.push(span_idx); } span_idx += 1; }
+            active.retain(|&i| { let e = spans[i].5.min(to_ms); let s = spans[i].4.max(from_ms); e > a && s < b });
+            if active.is_empty() { continue; }
+            let mut keys: Vec<(String,String,String)> = active.iter().map(|&i| (spans[i].0.clone(), spans[i].2.clone(), spans[i].3.clone())).collect();
+            keys.sort(); keys.dedup();
+            let n = keys.len() as i64;
+            let seg_ms = b - a;
+            let share = seg_ms / n;
+            let mut rem = seg_ms % n;
+            for k in &keys {
+                let add = share + if rem > 0 { rem -= 1; 1 } else { 0 };
+                let e = acc.entry(k.clone()).or_insert_with(|| {
+                    let sp = active.iter().find_map(|&i| { let si = &spans[i]; if si.0 == k.0 && si.2 == k.1 && si.3 == k.2 { Some(si) } else { None } }).unwrap();
+                    Acc { project_id: sp.0.clone(), project_name: sp.1.clone(), workspace: sp.2.clone(), repo: sp.3.clone(), ms: 0 }
+                });
+                e.ms += add;
+            }
+        }
+
+        // start from raw for counts and for legacy-hour active_seconds
+        let mut count_map: std::collections::BTreeMap<(String,String,String), ReportRow> = std::collections::BTreeMap::new();
+        for r in &raw {
+            let k = (r.project_id.clone(), r.workspace.clone(), r.repo.clone());
+            let e = count_map.entry(k).or_insert_with(|| ReportRow { active_seconds: 0, ..r.clone() });
+            e.file_events += r.file_events; e.git_events += r.git_events; e.command_events += r.command_events; e.session_count += r.session_count;
+            if e.project_name.is_empty() { e.project_name = r.project_name.clone(); }
+        }
+        // For legacy hours without spans, keep raw active seconds; for span hours, use allocated.
+        // We need per-key raw seconds by hour to split this. Query raw per hour per key.
+        let mut raw_hour_key: std::collections::BTreeMap<(i64,String,String,String), i64> = std::collections::BTreeMap::new();
+        {
+            let mut sql = String::from("SELECT hour, project_id, workspace, repo, SUM(active_seconds) FROM buckets WHERE hour >= ?1 AND hour < ?2");
+            let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(from_hour), Box::new(to_hour)];
+            if let Some(p) = project { sql.push_str(" AND (project_name = ?3 OR project_id = ?3)"); params_vec.push(Box::new(p.to_string())); }
+            sql.push_str(" GROUP BY hour, project_id, workspace, repo");
+            let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+            let params_refs: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| &**b as &dyn rusqlite::ToSql).collect();
+            let rows = stmt.query_map(params_refs.as_slice(), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2).unwrap_or_default(), r.get::<_, String>(3).unwrap_or_default(), r.get::<_, i64>(4).unwrap_or(0)))).map_err(|e| e.to_string())?;
+            for row in rows { let (hh,pid,ws,rp,sec) = row.map_err(|e| e.to_string())?; raw_hour_key.insert((hh,pid,ws,rp), sec.max(0)); }
+        }
+        // zero active_seconds, then fill: span hours from alloc, legacy hours from raw
+        for e in count_map.values_mut() { e.active_seconds = 0; }
+        // convert allocated ms to seconds, distributing remainder so sum == union seconds
+        let total_alloc_ms: i64 = acc.values().map(|a| a.ms).sum();
+        let target_s = (total_alloc_ms / 1000).max(0);
+        let mut alloc_secs: Vec<((String,String,String), i64, i64)> = acc.iter().map(|(k,a)| (k.clone(), (a.ms/1000).max(0), a.ms % 1000)).collect();
+        let mut sum_s: i64 = alloc_secs.iter().map(|x| x.1).sum();
+        alloc_secs.sort_by(|a,b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+        for x in &mut alloc_secs { if sum_s >= target_s { break; } x.1 += 1; sum_s += 1; }
+        for (k, secs, _) in alloc_secs {
+            let a = acc.get(&k).unwrap();
+            let e = count_map.entry(k.clone()).or_insert_with(|| ReportRow { project_id: a.project_id.clone(), project_name: a.project_name.clone(), workspace: a.workspace.clone(), repo: a.repo.clone(), active_seconds: 0, file_events: 0, git_events: 0, command_events: 0, session_count: 0 });
+            e.active_seconds += secs;
+            if e.project_name.is_empty() { e.project_name = a.project_name.clone(); }
+        }
+        for ((hh,pid,ws,rp), sec) in &raw_hour_key {
+            if span_hours.contains(hh) { continue; } // span hour handled by allocation
+            let k = (pid.clone(), ws.clone(), rp.clone());
+            let e = count_map.entry(k.clone()).or_insert_with(|| ReportRow { project_id: pid.clone(), project_name: String::new(), workspace: ws.clone(), repo: rp.clone(), active_seconds: 0, file_events: 0, git_events: 0, command_events: 0, session_count: 0 });
+            e.active_seconds += *sec;
+        }
+        // fix project names for legacy-only keys
+        for r in &raw { let k = (r.project_id.clone(), r.workspace.clone(), r.repo.clone()); if let Some(e) = count_map.get_mut(&k) { if e.project_name.is_empty() { e.project_name = r.project_name.clone(); } } }
+
+        let mut rows: Vec<ReportRow> = count_map.into_values().collect();
+        rows.sort_by(|a,b| a.project_name.cmp(&b.project_name).then(a.workspace.cmp(&b.workspace)).then(a.repo.cmp(&b.repo)));
+        Ok(rows)
+    }
 
     pub fn current_presence_interval(&self) -> Result<Option<super::model::PresenceInterval>, String> {
         self.conn.query_row(

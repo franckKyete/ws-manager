@@ -549,7 +549,7 @@ presence:
   attribution: true
   hyprland: true
   terminal_process_tree: true
-  extend_sessions: true      # extend event sessions while present and focused on work (same project/repo or work-capable app)
+  extend_sessions: true      # extend event sessions while present and focused on work (same project/repo or unmapped work-capable app)
   browser:
     inspect: auto            # auto | sessionstore | history | title | off
     profiles: auto

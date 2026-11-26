@@ -61,8 +61,11 @@ pub fn build_snapshot(
         accumulate(point, &row);
     }
 
+    let raw_rows = db.report_totals(from_hour, to_hour, project).unwrap_or_default();
+    let raw_active_seconds: i64 = raw_rows.iter().map(|r| r.active_seconds).sum();
     let totals = ActivityTotals {
         active_seconds: series.iter().map(|p| p.active_seconds).sum(),
+        raw_active_seconds,
         wall_clock_seconds: db.report_wall_clock(from_hour, to_hour, project, None, None)?,
         file_events: series.iter().map(|p| p.file_events).sum(),
         git_events: series.iter().map(|p| p.git_events).sum(),
@@ -75,7 +78,7 @@ pub fn build_snapshot(
     let work_projects = db.report_focus_breakdown(from_hour, to_hour, "project").unwrap_or_default();
     let work_repos = db.report_focus_breakdown(from_hour, to_hour, "repo").unwrap_or_default();
 
-    let presence = build_presence_snapshot(db, from_hour, to_hour, now, totals.active_seconds);
+    let presence = build_presence_snapshot(db, from_hour, to_hour, now, totals.active_seconds, totals.raw_active_seconds);
 
     Ok(ActivitySnapshot {
         range: range.to_string(),
@@ -172,7 +175,7 @@ pub fn local_day_start_ms(now: i64) -> i64 {
 
 pub const SNAPSHOT_RANGES: [&str; 3] = ["today", "week", "month"];
 
-fn build_presence_snapshot(db: &ActivityDb, from_hour: i64, to_hour: i64, now: i64, event_seconds: i64) -> PresenceSnapshot {
+fn build_presence_snapshot(db: &ActivityDb, from_hour: i64, to_hour: i64, now: i64, event_seconds: i64, raw_event_seconds: i64) -> PresenceSnapshot {
     let totals = super::presence::presence_totals_for_range(db, from_hour, to_hour, now)
         .unwrap_or_default();
     let (state, source) = db.latest_presence_state()
@@ -212,6 +215,7 @@ fn build_presence_snapshot(db: &ActivityDb, from_hour: i64, to_hour: i64, now: i
         category_source,
         totals,
         event_work_seconds,
+        raw_event_seconds,
         active_work_seconds,
         focused_work_seconds,
         event_seconds: event_work_seconds,

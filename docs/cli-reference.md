@@ -1044,6 +1044,7 @@ ws activity presence category <work|leisure|neutral|auto> [--for <duration>] [--
 ws activity presence explain [--json]
 ws activity export --raw [--from <date>] [--to <date>] [--json|--csv]
 ws activity prune [--before <date>] [--dry-run]
+ws activity recompute --range today [--dry-run] [--force]
 
 # Shell command hooks (opt-in)
 ws activity shell install [--shell bash|zsh|fish] [--file <path>]
@@ -1059,7 +1060,12 @@ ws activity device rename <name>
 
 # Dashboard
 ws activity dashboard
+
+# Recompute (fixes overlap double-counting, today only)
+ws activity recompute --range today [--dry-run] [--force]
 ```
+
+**Event work** is the deduped union of credited event-session spans across projects (overlaps count once; cannot exceed wall clock). **Raw session sum** is diagnostic. After overlap-fix upgrades, run `ws activity recompute --range today` with `ws.service` stopped to rebuild today's buckets/spans from retained raw events.
 
 ### Waybar Module
 

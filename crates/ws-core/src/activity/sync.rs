@@ -93,15 +93,28 @@ pub fn sync_projects(db: &ActivityDb, cfg: &ActivityConfig, force: bool, project
             continue;
         }
 
+        let mut dedup_cache: std::collections::HashMap<i64, std::collections::HashMap<(String,String), i64>> = std::collections::HashMap::new();
         let payload: Vec<serde_json::Value> = buckets.iter().map(|(hour, ws, repo, active, file_ev, git_ev, cmd_ev, sess)| {
             let hour_iso = chrono_like_iso(*hour);
+            let active_dedup = if db.event_spans_in_range(*hour * 1000, (*hour + 3600) * 1000).map(|v| !v.is_empty()).unwrap_or(false) {
+                let hour_map = dedup_cache.entry(*hour).or_insert_with(|| {
+                    let mut m = std::collections::HashMap::new();
+                    if let Ok(rows) = db.event_work_report_totals(*hour, *hour + 3600, Some(&p.project_id)) {
+                        for r in rows { m.insert((r.workspace.clone(), r.repo.clone()), r.active_seconds); }
+                    }
+                    m
+                });
+                hour_map.get(&(ws.clone(), repo.clone())).copied().unwrap_or(*active)
+            } else {
+                *active
+            };
             json!({
                 "deviceId": device_id,
                 "deviceName": device_name,
                 "hourUtc": hour_iso,
                 "repo": repo,
                 "workspace": ws,
-                "activeSeconds": active,
+                "activeSeconds": active_dedup,
                 "fileEvents": file_ev,
                 "gitEvents": git_ev,
                 "commandEvents": cmd_ev,

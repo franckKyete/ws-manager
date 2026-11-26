@@ -128,13 +128,16 @@ pub fn execute_activity_status_waybar() -> Result<(), String> {
     let from_ms = local_day_start_ms();
     let from_hour = hour_floor_secs(from_ms);
     let to_hour = hour_floor_secs(now) + 3600;
-    let rows = db.report_totals(from_hour, to_hour, None)?;
-    let total_active: i64 = rows.iter().map(|r| r.active_seconds).sum();
+    let total_active = db.event_work_union(from_hour, to_hour, None).unwrap_or_else(|_| {
+        db.report_totals(from_hour, to_hour, None).map(|rows| rows.iter().map(|r| r.active_seconds).sum()).unwrap_or(0)
+    });
+    let raw_active: i64 = db.report_totals(from_hour, to_hour, None).map(|rows| rows.iter().map(|r| r.active_seconds).sum()).unwrap_or(0);
 
     let week_from_ms = local_day_start_ms() - 6 * 86_400_000;
     let week_from_hour = hour_floor_secs(week_from_ms);
-    let week_rows = db.report_totals(week_from_hour, to_hour, None)?;
-    let week_active: i64 = week_rows.iter().map(|r| r.active_seconds).sum();
+    let week_active = db.event_work_union(week_from_hour, to_hour, None).unwrap_or_else(|_| {
+        db.report_totals(week_from_hour, to_hour, None).map(|rows| rows.iter().map(|r| r.active_seconds).sum()).unwrap_or(0)
+    });
 
     let today_presence = ws_core::activity::presence::presence_totals_for_range(&db, from_hour, to_hour, now).unwrap_or_default();
     let week_presence = ws_core::activity::presence::presence_totals_for_range(&db, week_from_hour, to_hour, now).unwrap_or_default();
@@ -174,7 +177,8 @@ pub fn execute_activity_status_waybar() -> Result<(), String> {
     }
 
     let mut tooltip = Vec::new();
-    tooltip.push(format!("Work (event): {} · active {}", format_duration_human(total_active), format_duration_human(today_presence.active_work_seconds)));
+    let raw_note = if raw_active > total_active { format!(" (raw {})", format_duration_human(raw_active)) } else { String::new() };
+    tooltip.push(format!("Work (event): {}{} · active {}", format_duration_human(total_active), raw_note, format_duration_human(today_presence.active_work_seconds)));
     tooltip.push(format!("Focus work: {}  present {}", format_duration_human(today_presence.work_seconds), format_duration_human(today_presence.present_seconds)));
     tooltip.push(format!("Week work (event): {} · active {}", format_duration_human(week_active), format_duration_human(week_presence.active_work_seconds)));
     tooltip.push(format!("Presence: {}", pstate));
@@ -646,6 +650,92 @@ pub fn execute_activity_prune(before: Option<&str>, dry_run: bool) -> Result<(),
     Ok(())
 }
 
+pub fn execute_activity_recompute(range: &str, dry_run: bool, force: bool) -> Result<(), String> {
+    if range != "today" {
+        return Err("Only --range today is supported for recompute right now.".to_string());
+    }
+    let paths = ActivityPaths::discover();
+    paths.ensure_dirs()?;
+    let (daemon_running, pid) = ws_core::daemon::is_standalone_daemon_running();
+    if daemon_running && !force {
+        return Err(format!(
+            "ws daemon is running (pid {}). Stop it before recompute to avoid races: `systemctl --user stop ws` (or pass --force to override).",
+            pid.map(|p| p.to_string()).unwrap_or_else(|| "?".to_string())
+        ));
+    }
+
+    let db = open_db(&paths)?;
+    let cfg = ActivityConfig::load().unwrap_or_default();
+    let now = now_ms();
+    let from_ms = local_day_start_ms();
+    let to_ms = local_ms_next_day(now);
+    let from_hour = hour_floor_secs(from_ms);
+    let to_hour = hour_floor_secs(to_ms);
+
+    let before_union = db.event_work_union(from_hour, to_hour, None).unwrap_or(0);
+    let before_raw: i64 = db.report_totals(from_hour, to_hour, None).unwrap_or_default().iter().map(|r| r.active_seconds).sum();
+
+    let affected_projects: Vec<String> = {
+        let mut stmt = db.conn.prepare("SELECT DISTINCT project_id FROM buckets WHERE hour >= ?1 AND hour < ?2 UNION SELECT DISTINCT project_id FROM events WHERE ts >= ?3 AND ts < ?4").map_err(|e| e.to_string())?;
+        let rows = stmt.query_map((from_hour, to_hour, from_ms, to_ms), |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    if dry_run {
+        println!("Recompute dry-run (today)");
+        println!("  Range:           {}..{} (local day)", from_hour, to_hour);
+        println!("  Affected projects: {}", affected_projects.len());
+        for p in &affected_projects { println!("    - {}", p); }
+        println!("  Current union:   {}s", before_union);
+        println!("  Current raw:     {}s", before_raw);
+        println!("  No changes written.");
+        return Ok(());
+    }
+
+    db.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);").map_err(|e| e.to_string())?;
+    let backup = paths.db_path.with_file_name(format!("activity.db.bak-{}", now));
+    std::fs::copy(&paths.db_path, &backup).map_err(|e| format!("Failed to backup DB: {e}"))?;
+
+    db.conn.execute("DELETE FROM buckets WHERE hour >= ?1 AND hour < ?2", (from_hour, to_hour)).map_err(|e| e.to_string())?;
+    let _ = db.delete_event_spans_in_range(from_ms, to_ms);
+
+    for pid in &affected_projects {
+        let last_before: i64 = db.conn.query_row(
+            "SELECT COALESCE(MAX(id), 0) FROM events WHERE project_id = ?1 AND ts < ?2",
+            (pid.as_str(), from_ms),
+            |r| r.get(0),
+        ).unwrap_or(0);
+        let through_id = last_before;
+        let through_hour = if through_id > 0 { from_hour.saturating_sub(3600) } else { 0 };
+        db.set_rollup_state(pid, through_id, through_hour, None)?;
+    }
+
+    let _ = ws_core::activity::rollup::rollup_all(&db, &cfg);
+    let _ = ws_core::activity::presence::rollup_presence(&db, &cfg, now);
+    let _ = ws_core::activity::focus::rollup_focus(&db, now);
+
+    let after_union = db.event_work_union(from_hour, to_hour, None).unwrap_or(0);
+    let after_raw: i64 = db.report_totals(from_hour, to_hour, None).unwrap_or_default().iter().map(|r| r.active_seconds).sum();
+
+    println!("Recompute complete (today)");
+    println!("  Backup:          {}", backup.display());
+    println!("  Projects:        {}", affected_projects.len());
+    println!("  Before union:    {} ({})", before_union, format_duration_human(before_union));
+    println!("  After union:     {} ({})", after_union, format_duration_human(after_union));
+    println!("  Before raw:      {} ({})", before_raw, format_duration_human(before_raw));
+    println!("  After raw:       {} ({})", after_raw, format_duration_human(after_raw));
+    if daemon_running {
+        println!("  Note: daemon was running (--force). Restart recommended: `systemctl --user restart ws`");
+    } else {
+        println!("  Restart ws service if needed: `systemctl --user start ws`");
+    }
+    Ok(())
+}
+
+fn local_ms_next_day(_now: i64) -> i64 {
+    local_day_start_ms() + 86_400_000
+}
+
 pub fn execute_activity_report(action: &ActivityAction) -> Result<(), String> {
     let ActivityAction::Report { day, week, month, from, to, project, repo, workspace, device, tz, json, csv } = action else {
         return execute_activity_report_basic_range(None, None, None, None, None, false, false, None, None);
@@ -697,11 +787,13 @@ fn execute_activity_report_basic_range(from_ms: Option<i64>, to_ms: Option<i64>,
     let to_ms = to_ms.unwrap_or(now);
     let from_hour = hour_floor_secs(from_ms);
     let to_hour = hour_floor_secs(to_ms) + 3600;
-    let mut rows = db.report_totals(from_hour, to_hour, project)?;
+    let mut rows = db.event_work_report_totals(from_hour, to_hour, project)?;
     if let Some(rf) = repo { rows.retain(|r| r.repo == rf); }
     if let Some(wf) = workspace { rows.retain(|r| r.workspace == wf); }
 
     let total_active: i64 = rows.iter().map(|r| r.active_seconds).sum();
+    let raw_rows = db.report_totals(from_hour, to_hour, project).unwrap_or_default();
+    let raw_total: i64 = raw_rows.iter().filter(|r| repo.map(|x| r.repo == x).unwrap_or(true) && workspace.map(|x| r.workspace == x).unwrap_or(true)).map(|r| r.active_seconds).sum();
     let wall_clock = db.report_wall_clock(from_hour, to_hour, project, repo, workspace)?;
 
     if json {
@@ -728,6 +820,9 @@ fn execute_activity_report_basic_range(from_ms: Option<i64>, to_ms: Option<i64>,
     }
     println!("Activity report (bucket totals)\n{}", "─".repeat(40));
     println!("  Total active:     {} ({}s)", format_duration_human(total_active), total_active);
+    if raw_total > total_active {
+        println!("  Raw session sum:  {} ({}s) [overlap removed]", format_duration_human(raw_total), raw_total);
+    }
     println!("  Wall-clock (est): {} ({}s)", format_duration_human(wall_clock), wall_clock);
     let mut by_project: BTreeMap<String, i64> = BTreeMap::new();
     for r in &rows { *by_project.entry(r.project_name.clone()).or_default() += r.active_seconds; }
@@ -1008,6 +1103,7 @@ pub fn execute_activity(action: Option<ActivityAction>) -> Result<(), String> {
         ActivityAction::Resume => execute_activity_resume(),
         ActivityAction::Clear { yes } => execute_activity_clear(yes),
         ActivityAction::Prune { before, dry_run } => execute_activity_prune(before.as_deref(), dry_run),
+        ActivityAction::Recompute { range, dry_run, force } => execute_activity_recompute(&range, dry_run, force),
         act @ ActivityAction::Report { .. } => execute_activity_report(&act),
         ActivityAction::Snapshot { range, project, json } => {
             execute_activity_snapshot(&range, project.as_deref(), json)

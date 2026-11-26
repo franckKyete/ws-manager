@@ -139,7 +139,11 @@ pub struct ActivitySnapshotPoint {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ActivityTotals {
+    /// Deduped event-work seconds (union of credited spans). Headline metric.
     pub active_seconds: i64,
+    /// Raw per-session sum before overlap dedupe; diagnostic only.
+    #[serde(default)]
+    pub raw_active_seconds: i64,
     pub wall_clock_seconds: i64,
     pub file_events: i64,
     pub git_events: i64,
@@ -195,9 +199,12 @@ pub struct PresenceSnapshot {
     pub category_source: String,
     #[serde(default)]
     pub totals: PresenceTotals,
-    /// Raw event-session active time (headline). Not capped by presence.
+    /// Raw event-session active time (headline). Deduped union of credited spans; not capped by presence.
     #[serde(default)]
     pub event_work_seconds: i64,
+    /// Raw per-session sum before overlap dedupe; diagnostic only.
+    #[serde(default)]
+    pub raw_event_seconds: i64,
     /// Input-active time while focused on a work context.
     #[serde(default)]
     pub active_work_seconds: i64,
