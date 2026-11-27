@@ -986,6 +986,10 @@ pub enum ActivityAction {
         json: bool,
         #[arg(long, help = "Output compact Waybar JSON")]
         waybar: bool,
+        #[arg(long, help = "Recompute rollups before reading (default: read-only)")]
+        fresh: bool,
+        #[arg(long, help = "Include daemon performance counters")]
+        stats: bool,
     },
     #[command(about = "Report time spent by project, workspace and repo")]
     Report {
@@ -1013,6 +1017,8 @@ pub enum ActivityAction {
         json: bool,
         #[arg(long, help = "Output CSV")]
         csv: bool,
+        #[arg(long, help = "Recompute rollups before reading (default: read-only)")]
+        fresh: bool,
     },
     #[command(about = "Show a dense local-aligned activity snapshot")]
     Snapshot {
@@ -1022,6 +1028,8 @@ pub enum ActivityAction {
         project: Option<String>,
         #[arg(long, help = "Output JSON")]
         json: bool,
+        #[arg(long, help = "Recompute rollups before reading (default: read-only)")]
+        fresh: bool,
     },
     #[command(about = "Show presence state and computer usage totals")]
     Presence {
@@ -1029,6 +1037,8 @@ pub enum ActivityAction {
         range: String,
         #[arg(long, help = "Output JSON")]
         json: bool,
+        #[arg(long, help = "Recompute rollups before reading (default: read-only)")]
+        fresh: bool,
         #[command(subcommand)]
         action: Option<ActivityPresenceAction>,
     },
@@ -1056,6 +1066,8 @@ pub enum ActivityAction {
         group_by: String,
         #[arg(long, help = "Output JSON (default)")]
         json: bool,
+        #[arg(long, help = "Recompute rollups before reading (default: read-only)")]
+        fresh: bool,
     },
     #[command(about = "Open the GTK activity dashboard (requires ws-dashboard build)")]
     Dashboard,

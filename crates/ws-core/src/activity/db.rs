@@ -28,6 +28,14 @@ impl ActivityDb {
         Ok(db)
     }
 
+    pub fn open_readonly(path: &Path) -> Result<Self, String> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
+            .map_err(|e| format!("Failed to open DB read-only {}: {e}", path.display()))?;
+        conn.execute_batch("PRAGMA busy_timeout=5000; PRAGMA query_only=ON;")
+            .map_err(|e| e.to_string())?;
+        Ok(Self { path: path.to_path_buf(), conn })
+    }
+
     fn init(&mut self) -> Result<(), String> {
         self.conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;",

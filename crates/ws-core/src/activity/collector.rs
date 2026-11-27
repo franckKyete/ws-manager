@@ -71,7 +71,9 @@ pub struct ActivityCollector {
     last_notice_check: Instant,
     file_state: HashMap<String, HashMap<String, FileState>>, // scope -> rel path -> state
     git_state: HashMap<String, GitState>,                   // scope -> git state
+    cfg_mtime: Option<std::time::SystemTime>,
     last_reconcile: Instant,
+    last_full_reconcile: Instant,
     last_light_scan: Instant,
     last_discovery: Instant,
     last_rollup: Instant,
@@ -90,6 +92,15 @@ pub struct ActivityCollector {
     // presence
     presence: super::presence::PresenceMonitor,
     focus: super::focus::FocusMonitor,
+
+    // perf counters
+    perf_tick_count: i64,
+    perf_last_tick_ms: i64,
+    perf_inotify_events: i64,
+    perf_watch_rebuilds: i64,
+    perf_full_reconciles: i64,
+    perf_focus_resolves: i64,
+    perf_last_report: Instant,
 }
 
 impl ActivityCollector {
@@ -100,10 +111,18 @@ impl ActivityCollector {
         let db = ActivityDb::open(&paths.db_path)?;
         let mut presence = super::presence::PresenceMonitor::new(&db, &cfg);
         if cfg.presence.enabled && (cfg.presence.source == "auto" || cfg.presence.source == "wayland") {
-            presence.rx = super::presence_wayland::spawn_wayland_watcher(&cfg.presence);
+            if let Some(rx) = super::presence_wayland::spawn_wayland_watcher(&cfg.presence) {
+                presence.rxs.push(rx);
+            }
+        }
+        if cfg.presence.enabled {
+            if let Some(rx) = super::presence::spawn_logind_dbus_watcher() {
+                presence.rxs.push(rx);
+            }
         }
         let focus = super::focus::FocusMonitor::new(&db);
         let mut c = Self {
+            cfg_mtime: std::fs::metadata(&paths.config_path).ok().and_then(|m| m.modified().ok()),
             cfg,
             paths,
             db,
@@ -112,6 +131,7 @@ impl ActivityCollector {
             file_state: HashMap::new(),
             git_state: HashMap::new(),
             last_reconcile: Instant::now() - Duration::from_secs(3600),
+            last_full_reconcile: Instant::now() - Duration::from_secs(3600),
             last_light_scan: Instant::now() - Duration::from_secs(3600),
             last_discovery: Instant::now() - Duration::from_secs(3600),
             last_rollup: Instant::now() - Duration::from_secs(3600),
@@ -126,6 +146,13 @@ impl ActivityCollector {
             recent_moves: VecDeque::new(),
             presence,
             focus,
+            perf_tick_count: 0,
+            perf_last_tick_ms: 0,
+            perf_inotify_events: 0,
+            perf_watch_rebuilds: 0,
+            perf_full_reconciles: 0,
+            perf_focus_resolves: 0,
+            perf_last_report: Instant::now(),
         };
         c.init_socket();
         c.init_inotify();
@@ -173,7 +200,12 @@ impl ActivityCollector {
     }
 
     pub fn tick(&mut self) {
-        self.cfg = ActivityConfig::load().unwrap_or(self.cfg.clone());
+        let tick_start = Instant::now();
+        let cfg_mtime = std::fs::metadata(&self.paths.config_path).ok().and_then(|m| m.modified().ok());
+        if cfg_mtime != self.cfg_mtime {
+            self.cfg = ActivityConfig::load().unwrap_or(self.cfg.clone());
+            self.cfg_mtime = cfg_mtime;
+        }
         let _ = self.accept_socket_records();
         let _ = self.drain_spool();
 
@@ -204,10 +236,16 @@ impl ActivityCollector {
 
         // reconcile watches/scans
         let reconcile_every = Duration::from_secs(self.cfg.watch_reconcile.max(30));
-        if self.needs_rescan || self.last_reconcile.elapsed() >= reconcile_every {
-            let _ = self.reconcile();
+        let full_every = Duration::from_secs(900); // slow full walk: correctness safety net
+        let needs_full = self.needs_rescan || self.last_full_reconcile.elapsed() >= full_every;
+        if needs_full || self.last_reconcile.elapsed() >= reconcile_every {
+            let full = needs_full;
+            let _ = self.reconcile(full);
             self.last_reconcile = Instant::now();
-            self.needs_rescan = false;
+            if full {
+                self.last_full_reconcile = Instant::now();
+                self.needs_rescan = false;
+            }
         } else if self.last_light_scan.elapsed() >= Duration::from_secs(120) {
             // periodic git/light correctness scan for active targets
             let _ = self.scan_git_and_light(false);
@@ -227,6 +265,19 @@ impl ActivityCollector {
             if let Some((_, from)) = self.recent_moves.pop_front() {
                 self.emit_move_from_as_delete(from);
             }
+        }
+
+        self.perf_tick_count += 1;
+        self.perf_last_tick_ms = tick_start.elapsed().as_millis() as i64;
+        if self.perf_last_report.elapsed() >= Duration::from_secs(15) {
+            let _ = self.db.set_meta("perf_last_tick_ms", &self.perf_last_tick_ms.to_string());
+            let _ = self.db.set_meta("perf_last_tick_at_ms", &super::db::now_ms().to_string());
+            let _ = self.db.set_meta("perf_tick_count", &self.perf_tick_count.to_string());
+            let _ = self.db.set_meta("perf_inotify_events", &self.perf_inotify_events.to_string());
+            let _ = self.db.set_meta("perf_watch_rebuilds", &self.perf_watch_rebuilds.to_string());
+            let _ = self.db.set_meta("perf_full_reconciles", &self.perf_full_reconciles.to_string());
+            let _ = self.db.set_meta("perf_focus_resolves", &self.perf_focus_resolves.to_string());
+            self.perf_last_report = Instant::now();
         }
     }
 
@@ -258,7 +309,12 @@ impl ActivityCollector {
 
     fn discover_and_heartbeat(&mut self) -> Result<(), String> {
         let (targets, known_ws, active_ws) = self.collect_targets()?;
+        let targets_changed = self.targets.len() != targets.len()
+            || self.targets.iter().zip(targets.iter()).any(|(a, b)| a.path != b.path || a.active != b.active);
         self.targets = targets;
+        if targets_changed {
+            self.refresh_watches();
+        }
 
         let _ = self.db.set_meta("known_workspaces", &known_ws.to_string());
         let _ = self.db.set_meta("watching_workspaces", &active_ws.to_string());
@@ -323,6 +379,8 @@ impl ActivityCollector {
         let mut targets = Vec::new();
         let mut known_ws_set: HashSet<String> = HashSet::new();
         let mut active_ws_set: HashSet<String> = HashSet::new();
+        let tmux_snap = crate::multiplexer::TmuxSnapshot::capture();
+        let zellij_snap = crate::multiplexer::ZellijSnapshot::capture();
 
         for p in list_registered_projects(None, true) {
             let mut cfg_file = p.join("ws-project.yml");
@@ -335,6 +393,8 @@ impl ActivityCollector {
             if !ws_root.is_dir() { continue; }
             let Ok(entries) = fs::read_dir(&ws_root) else { continue; };
             let manager = crate::workspace::WorkspaceManager::new(config.clone(), None);
+            let launch_sess = manager.get_launch_session_name();
+            let tmux_project_sess = crate::multiplexer::TmuxLauncher::session_name(&project_name);
             for entry in entries.flatten() {
                 let ws_dir = entry.path();
                 if !ws_dir.is_dir() { continue; }
@@ -346,7 +406,10 @@ impl ActivityCollector {
                 let Ok(meta) = crate::models::WorkspaceMetadata::from_yaml_str(&content) else { continue; };
                 let ws_key = format!("{}::{}", project_id, ws_name);
                 known_ws_set.insert(ws_key.clone());
-                let active = manager.is_session_running(&ws_name);
+                let active = tmux_snap.window_active(&launch_sess, &ws_name)
+                    || tmux_snap.window_active(&tmux_project_sess, &ws_name)
+                    || zellij_snap.session_running(&project_name)
+                    || manager.is_daemon_active(&ws_name);
                 if active { active_ws_set.insert(ws_key.clone()); }
                 for (repo_name, spec) in &meta.repositories {
                     let checkout = if spec.path.is_empty() { repo_name.clone() } else { spec.path.clone() };
@@ -368,14 +431,16 @@ impl ActivityCollector {
         Ok((targets, known_ws_set.len(), active_ws_set.len()))
     }
 
-    fn reconcile(&mut self) -> Result<(), String> {
-        // refresh targets/watches and do a correctness scan
-        let _ = self.discover_and_heartbeat();
-        self.refresh_watches();
-        // correctness scans (git + files) for all targets; active first
+    fn reconcile(&mut self, full: bool) -> Result<(), String> {
+        // discover_and_heartbeat is already run on its own cadence in tick().
+        if full {
+            self.perf_full_reconciles += 1;
+            self.refresh_watches();
+        }
         self.scan_git_and_light(true)?;
-        // full file scan (reconcile) for active targets; others opportunistic on later light scans
-        self.scan_files_full(true)?;
+        if full {
+            self.scan_files_full(true)?;
+        }
         let _ = self.db.set_meta("watch_limited", if self.watch_limited { "1" } else { "0" });
         Ok(())
     }
@@ -387,14 +452,7 @@ impl ActivityCollector {
             return;
         };
 
-        // drop existing watches and rebuild (simple and correct on dynamic changes)
-        for wd in self.watch_by_wd.keys().cloned().collect::<Vec<_>>() {
-            let _ = ino.watches().remove(wd);
-        }
-        self.watch_by_wd.clear();
-        self.wd_by_dir.clear();
-        self.watch_limited = false;
-
+        self.perf_watch_rebuilds += 1;
         let mask = WatchMask::CREATE
             | WatchMask::MODIFY
             | WatchMask::CLOSE_WRITE
@@ -405,13 +463,10 @@ impl ActivityCollector {
             | WatchMask::DELETE_SELF
             | WatchMask::ATTRIB;
 
-        let mut watch_count = 0usize;
+        let mut desired: HashMap<PathBuf, usize> = HashMap::new();
+        let mut limited = false;
         for (idx, target) in self.targets.iter().enumerate() {
-            if watch_count >= MAX_WATCHES {
-                self.watch_limited = true;
-                break;
-            }
-            // add recursive dir watches for this target repo
+            if desired.len() >= MAX_WATCHES { limited = true; break; }
             let walker = WalkBuilder::new(&target.path)
                 .hidden(false)
                 .git_ignore(true)
@@ -425,27 +480,44 @@ impl ActivityCollector {
                 })
                 .build();
             for dent in walker.flatten() {
-                if watch_count >= MAX_WATCHES { self.watch_limited = true; break; }
+                if desired.len() >= MAX_WATCHES { limited = true; break; }
                 let p = dent.path();
                 if !p.is_dir() { continue; }
-                // skip .git/.ws subtrees
                 if p.components().any(|c| c.as_os_str() == ".git" || c.as_os_str() == ".ws") { continue; }
-                if self.wd_by_dir.contains_key(p) { continue; }
-                match ino.watches().add(p, mask) {
-                    Ok(wd) => {
-                        let wd2 = wd.clone();
-                        let wd3 = wd.clone();
-                        self.wd_by_dir.insert(p.to_path_buf(), wd);
-                        let _ = wd3;
-                        self.watch_by_wd.insert(wd2, WatchCtx { target_idx: idx, dir: p.to_path_buf() });
-                        watch_count += 1;
-                    }
-                    Err(_) => {
-                        self.watch_limited = true;
-                    }
+                desired.entry(p.to_path_buf()).or_insert(idx);
+            }
+        }
+
+        let stale: Vec<PathBuf> = self.wd_by_dir.keys().filter(|p| !desired.contains_key(*p)).cloned().collect();
+        for p in stale {
+            if let Some(wd) = self.wd_by_dir.remove(&p) {
+                let _ = ino.watches().remove(wd.clone());
+                self.watch_by_wd.remove(&wd);
+            }
+        }
+
+        for (p, target_idx) in &desired {
+            if let Some(wd) = self.wd_by_dir.get(p) {
+                if let Some(ctx) = self.watch_by_wd.get_mut(wd) {
+                    ctx.target_idx = *target_idx;
                 }
             }
         }
+
+        for (p, target_idx) in &desired {
+            if self.wd_by_dir.contains_key(p) { continue; }
+            if self.wd_by_dir.len() >= MAX_WATCHES { limited = true; break; }
+            match ino.watches().add(p, mask) {
+                Ok(wd) => {
+                    let wd2 = wd.clone();
+                    self.wd_by_dir.insert(p.clone(), wd);
+                    self.watch_by_wd.insert(wd2, WatchCtx { target_idx: *target_idx, dir: p.clone() });
+                }
+                Err(_) => { limited = true; }
+            }
+        }
+
+        self.watch_limited = limited;
         let _ = self.db.set_meta("watch_limited", if self.watch_limited { "1" } else { "0" });
     }
 
@@ -479,6 +551,7 @@ impl ActivityCollector {
         if overflow {
             self.needs_rescan = true;
         }
+        self.perf_inotify_events += events_buf.len() as i64;
         for (wd, mask, cookie, name) in events_buf {
             self.handle_inotify_event(wd, mask, cookie, name);
         }

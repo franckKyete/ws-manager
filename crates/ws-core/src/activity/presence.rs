@@ -62,6 +62,81 @@ pub enum PresenceEvent {
     Manual { ts_ms: i64, state: PresenceState },
 }
 
+pub fn spawn_logind_dbus_watcher() -> Option<mpsc::Receiver<PresenceEvent>> {
+    let (tx, rx) = mpsc::channel::<PresenceEvent>();
+    let handle = std::thread::Builder::new()
+        .name("ws-presence-logind-dbus".to_string())
+        .spawn(move || {
+            loop {
+                let mut child = match std::process::Command::new("busctl")
+                    .args(["monitor", "--system", "--json=short", "org.freedesktop.login1"])
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                {
+                    Ok(c) => c,
+                    Err(_) => {
+                        std::thread::sleep(std::time::Duration::from_secs(30));
+                        continue;
+                    }
+                };
+                let Some(stdout) = child.stdout.take() else {
+                    let _ = child.kill();
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    continue;
+                };
+                let reader = std::io::BufReader::new(stdout);
+                use std::io::BufRead;
+                for line in reader.lines().flatten() {
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
+                    let member = v.get("member").and_then(|m| m.as_str()).unwrap_or("");
+                    let now = now_ms();
+                    match member {
+                        "PrepareForSleep" => {
+                            let payload = v.get("payload");
+                            let going = payload.and_then(|p| p.get(0)).and_then(|b| b.as_bool())
+                                .or_else(|| payload.and_then(|p| p.get("data")).and_then(|d| d.as_bool()))
+                                .or_else(|| payload.and_then(|p| p.get("data")).and_then(|d| d.get(0)).and_then(|b| b.as_bool()))
+                                .unwrap_or(false);
+                            let ev = if going { PresenceEvent::Sleep { ts_ms: now } } else { PresenceEvent::Wake { ts_ms: now } };
+                            if tx.send(ev).is_err() { let _ = child.kill(); return; }
+                        }
+                        "Lock" => {
+                            if tx.send(PresenceEvent::Locked { ts_ms: now }).is_err() { let _ = child.kill(); return; }
+                        }
+                        "Unlock" => {
+                            if tx.send(PresenceEvent::Unlocked { ts_ms: now }).is_err() { let _ = child.kill(); return; }
+                        }
+                        "PropertiesChanged" => {
+                            // Session LockedHint changes: payload is [iface, {LockedHint: <bool>, ...}, invalidated]
+                            let payload = v.get("payload");
+                            let iface = payload.and_then(|p| p.get(0)).and_then(|x| x.as_str())
+                                .or_else(|| payload.and_then(|p| p.get("data")).and_then(|d| d.get(0)).and_then(|x| x.as_str()))
+                                .unwrap_or("");
+                            if iface == "org.freedesktop.login1.Session" {
+                                let changed_raw = payload.and_then(|p| p.get(1))
+                                    .or_else(|| payload.and_then(|p| p.get("data")).and_then(|d| d.get(1)));
+                                let locked = changed_raw.and_then(|c| c.get("data").unwrap_or(c).get("LockedHint")).and_then(|v| {
+                                    v.as_bool().or_else(|| v.get("data").and_then(|d| d.as_bool()))
+                                });
+                                if let Some(locked) = locked {
+                                    let ev = if locked { PresenceEvent::Locked { ts_ms: now } } else { PresenceEvent::Unlocked { ts_ms: now } };
+                                    if tx.send(ev).is_err() { let _ = child.kill(); return; }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let _ = child.kill();
+                let _ = child.wait();
+                std::thread::sleep(std::time::Duration::from_secs(5));
+            }
+        });
+    if handle.is_err() { return None; }
+    Some(rx)
+}
+
 pub struct PresenceMonitor {
     current_state: PresenceState,
     current_source: String,
@@ -71,7 +146,7 @@ pub struct PresenceMonitor {
     last_rollup: Instant,
     last_logind_poll: Instant,
     last_logind_locked: Option<bool>,
-    pub rx: Option<mpsc::Receiver<PresenceEvent>>,
+    pub rxs: Vec<mpsc::Receiver<PresenceEvent>>,
 }
 
 impl PresenceMonitor {
@@ -85,7 +160,7 @@ impl PresenceMonitor {
             last_rollup: Instant::now() - Duration::from_secs(3600),
             last_logind_poll: Instant::now() - Duration::from_secs(3600),
             last_logind_locked: None,
-            rx: None,
+            rxs: Vec::new(),
         };
         m.repair_on_startup(db, cfg);
         m
@@ -137,7 +212,7 @@ impl PresenceMonitor {
 
         // Drain external events
         let mut events = Vec::new();
-        if let Some(rx) = &self.rx {
+        for rx in &self.rxs {
             while let Ok(ev) = rx.try_recv() {
                 events.push(ev);
             }
@@ -146,8 +221,8 @@ impl PresenceMonitor {
             self.handle_event(db, cfg, ev);
         }
 
-        // Poll logind periodically
-        if self.last_logind_poll.elapsed() >= Duration::from_secs(5) {
+        // Poll logind periodically (30s; idle-notify handles fast transitions)
+        if self.last_logind_poll.elapsed() >= Duration::from_secs(30) {
             self.poll_logind(db, cfg, now);
             self.last_logind_poll = Instant::now();
         }

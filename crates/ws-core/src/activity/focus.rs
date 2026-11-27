@@ -244,48 +244,76 @@ fn builtin_rules() -> Vec<PresenceRule> {
 fn read_cwd(pid: i32) -> Option<PathBuf> { fs::read_link(format!("/proc/{}/cwd", pid)).ok() }
 fn read_comm(pid: i32) -> String { fs::read_to_string(format!("/proc/{}/comm", pid)).unwrap_or_default().trim().to_string() }
 
-fn descendant_pids(pid: i32, depth: usize) -> Vec<i32> {
+#[derive(Default)]
+struct ProcScan {
+    ppid_map: Option<std::collections::HashMap<i32, Vec<i32>>>,
+}
+
+fn build_ppid_map() -> std::collections::HashMap<i32, Vec<i32>> {
+    let mut map: std::collections::HashMap<i32, Vec<i32>> = std::collections::HashMap::new();
+    let Ok(entries) = fs::read_dir("/proc") else { return map; };
+    for ent in entries.flatten() {
+        let Ok(cpid) = ent.file_name().to_string_lossy().parse::<i32>() else { continue; };
+        let Ok(stat) = fs::read_to_string(ent.path().join("stat")) else { continue; };
+        let Some(paren) = stat.rfind(')') else { continue; };
+        let rest = &stat[paren + 2..];
+        let mut parts = rest.split_whitespace();
+        let _state = parts.next();
+        let Some(ppid) = parts.next().and_then(|v| v.parse::<i32>().ok()) else { continue; };
+        map.entry(ppid).or_default().push(cpid);
+    }
+    map
+}
+
+fn descendant_pids(pid: i32, depth: usize, scan: &mut ProcScan) -> Vec<i32> {
     if depth == 0 { return Vec::new(); }
-    let mut out = Vec::new(); let mut queue = vec![pid];
+    let mut out = Vec::new();
+    let mut queue = vec![pid];
     for _ in 0..depth {
         let mut next = Vec::new();
         for p in &queue {
-            for child in child_pids(*p) { if !out.contains(&child) { out.push(child); next.push(child); } }
+            for child in child_pids(*p, scan) {
+                if !out.contains(&child) {
+                    out.push(child);
+                    next.push(child);
+                }
+            }
         }
         if next.is_empty() { break; }
         queue = next;
     }
     out
 }
-fn child_pids(pid: i32) -> Vec<i32> {
+
+fn child_pids(pid: i32, scan: &mut ProcScan) -> Vec<i32> {
     let mut children = Vec::new();
-    if let Ok(entries) = fs::read_dir(format!("/proc/{}/task", pid)) {
+    let mut saw_children_file = false;
+    if let Ok(entries) = fs::read_dir(format!("/proc/{pid}/task")) {
         for ent in entries.flatten() {
-            if let Ok(content) = fs::read_to_string(ent.path().join("children")) {
-                for tok in content.split_whitespace() { if let Ok(c) = tok.parse::<i32>() { children.push(c); } }
-            }
-        }
-    }
-    if !children.is_empty() { return children; }
-    if let Ok(entries) = fs::read_dir("/proc") {
-        for ent in entries.flatten() {
-            let Ok(cpid) = ent.file_name().to_string_lossy().parse::<i32>() else { continue; };
-            if let Ok(stat) = fs::read_to_string(ent.path().join("stat")) {
-                if let Some(paren) = stat.rfind(')') {
-                    let rest = &stat[paren+2..]; let parts: Vec<&str> = rest.split_whitespace().collect();
-                    if parts.len() > 1 && parts[1].parse::<i32>().ok() == Some(pid) { children.push(cpid); }
+            match fs::read_to_string(ent.path().join("children")) {
+                Ok(content) => {
+                    saw_children_file = true;
+                    for tok in content.split_whitespace() {
+                        if let Ok(c) = tok.parse::<i32>() { children.push(c); }
+                    }
                 }
+                Err(_) => {}
             }
         }
     }
-    children
+    if saw_children_file {
+        children.sort_unstable();
+        children.dedup();
+        return children;
+    }
+    let map = scan.ppid_map.get_or_insert_with(build_ppid_map);
+    map.get(&pid).cloned().unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Default)]
 struct TmuxContext { session: String, window: String, _pane_cmd: String, pane_path: PathBuf }
 
-fn resolve_tmux(window_pid: i32) -> Option<TmuxContext> {
-    let desc = descendant_pids(window_pid, 6);
+fn resolve_tmux(window_pid: i32, desc: &[i32]) -> Option<TmuxContext> {
     let has_tmux = desc.iter().any(|p| read_comm(*p) == "tmux");
     // Even without tmux in descendant tree, still try active client if this is a terminal - caller decides
     let out = std::process::Command::new("tmux").args(["list-clients","-F","#{client_pid}|#{client_tty}|#{client_session}|#{client_activity}"]).output().ok()?;
@@ -325,7 +353,7 @@ fn resolve_tmux(window_pid: i32) -> Option<TmuxContext> {
 #[derive(Debug, Clone, Default)]
 struct BrowserContext { domain: String, matched_by: String }
 #[derive(Debug, Clone, Default)]
-struct FirefoxCache { profile_path: Option<PathBuf>, profile_checked_at: Option<Instant>, session_mtime: Option<SystemTime>, session_size: u64, session_data: Option<serde_json::Value> }
+struct FirefoxCache { profile_path: Option<PathBuf>, profile_checked_at: Option<Instant>, session_mtime: Option<SystemTime>, session_size: u64, session_loaded_at: Option<Instant>, session_data: Option<serde_json::Value> }
 
 fn firefox_profile_for_pid(pid: i32) -> Option<PathBuf> {
     let home = dirs::home_dir()?; let ff = home.join(".mozilla/firefox");
@@ -380,19 +408,26 @@ fn extract_domain(url: &str) -> String {
 }
 
 fn load_firefox_session<'a>(profile: &Path, cache: &'a mut FirefoxCache) -> Option<&'a serde_json::Value> {
+    const SESSION_TTL: Duration = Duration::from_secs(10);
+    if cache.session_data.is_some() && cache.session_loaded_at.map(|t| t.elapsed() < SESSION_TTL).unwrap_or(false) {
+        return cache.session_data.as_ref();
+    }
     let sp = profile.join("sessionstore-backups/recovery.jsonlz4");
     let sp = if sp.exists() { sp } else { profile.join("sessionstore-backups/recovery.baklz4") };
     let meta = fs::metadata(&sp).ok()?;
     let mtime = meta.modified().ok();
     let size = meta.len();
-    if cache.session_mtime == mtime && cache.session_size == size && cache.session_data.is_some() { return cache.session_data.as_ref(); }
+    if cache.session_mtime == mtime && cache.session_size == size && cache.session_data.is_some() {
+        cache.session_loaded_at = Some(Instant::now());
+        return cache.session_data.as_ref();
+    }
     let raw = fs::read(&sp).ok()?;
     if raw.len() < 12 || &raw[0..8] != b"mozLz40\0" { return None; }
     let out_size = u32::from_le_bytes([raw[8],raw[9],raw[10],raw[11]]) as usize;
     if out_size > 64 * 1024 * 1024 { return None; }
     let decomp = lz4_flex::block::decompress(&raw[12..], out_size).ok()?;
     let v = serde_json::from_slice::<serde_json::Value>(&decomp).ok()?;
-    cache.session_mtime = mtime; cache.session_size = size; cache.session_data = Some(v);
+    cache.session_mtime = mtime; cache.session_size = size; cache.session_loaded_at = Some(Instant::now()); cache.session_data = Some(v);
     cache.session_data.as_ref()
 }
 
@@ -480,6 +515,51 @@ fn ensure_hyprland_env() {
     }
 }
 
+fn hyprland_socket2_path() -> Option<PathBuf> {
+    ensure_hyprland_env();
+    let runtime = std::env::var("XDG_RUNTIME_DIR").ok()?;
+    let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok()?;
+    let p = PathBuf::from(runtime).join("hypr").join(sig).join(".socket2.sock");
+    if p.exists() { Some(p) } else { None }
+}
+
+fn spawn_hyprland_focus_watcher() -> Option<std::sync::mpsc::Receiver<()>> {
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    let handle = std::thread::Builder::new()
+        .name("ws-focus-hyprland".to_string())
+        .spawn(move || {
+            loop {
+                let Some(path) = hyprland_socket2_path() else {
+                    std::thread::sleep(Duration::from_secs(15));
+                    continue;
+                };
+                let Ok(stream) = std::os::unix::net::UnixStream::connect(&path) else {
+                    std::thread::sleep(Duration::from_secs(5));
+                    continue;
+                };
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+                let reader = std::io::BufReader::new(stream);
+                use std::io::BufRead;
+                for line in reader.lines().flatten() {
+                    if line.starts_with("activewindow>>")
+                        || line.starts_with("activewindowv2>>")
+                        || line.starts_with("workspace>>")
+                        || line.starts_with("focusedmon>>")
+                        || line.starts_with("openwindow>>")
+                        || line.starts_with("closewindow>>")
+                        || line.starts_with("movewindow>>")
+                    {
+                        let _ = tx.send(());
+                    }
+                }
+                // socket closed / compositor restart
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        });
+    if handle.is_err() { return None; }
+    Some(rx)
+}
+
 fn query_active_window() -> Option<HyprWindow> {
     let out = std::process::Command::new("hyprctl").args(["activewindow","-j"]).output().ok()?;
     if !out.status.success() { return None; }
@@ -494,9 +574,13 @@ pub(crate) fn resolve_window_context(win: &HyprWindow, cfg: &ActivityConfig, idx
         ..Default::default()
     };
 
+    let mut proc_scan = ProcScan::default();
+    let need_desc = ctx.app_kind == "terminal" || cfg.presence.terminal_process_tree;
+    let desc = if need_desc { descendant_pids(win.pid, 6, &mut proc_scan) } else { Vec::new() };
+
     // Terminal: tmux active pane is authoritative
     if ctx.app_kind == "terminal" {
-        if let Some(tmux) = resolve_tmux(win.pid) {
+        if let Some(tmux) = resolve_tmux(win.pid, &desc) {
             ctx.tmux_session = tmux.session.clone();
             ctx.tmux_window = tmux.window.clone();
             ctx.path = tmux.pane_path.to_string_lossy().to_string();
@@ -536,7 +620,8 @@ pub(crate) fn resolve_window_context(win: &HyprWindow, cfg: &ActivityConfig, idx
 
     // Generic path attribution (cwd/process/fd) if not resolved
     if ctx.project_id.is_empty() {
-        if let Some((pid,pname,ws,repo,src,conf)) = attribute_pid_to_project(win.pid, cfg.presence.terminal_process_tree, idx) {
+        let attr_desc: &[i32] = if cfg.presence.terminal_process_tree { &desc } else { &[] };
+        if let Some((pid,pname,ws,repo,src,conf)) = attribute_pid_to_project(win.pid, attr_desc, idx) {
             ctx.project_id = pid; ctx.project_name = pname; ctx.workspace = ws; ctx.repo = repo;
             ctx.source = src; ctx.confidence = conf;
             if ctx.evidence.is_empty() { ctx.evidence = "proc".to_string(); }
@@ -573,14 +658,12 @@ fn project_from_title<'a>(title: &str, idx: &'a ProjectIndex) -> Option<&'a Proj
     best
 }
 
-fn attribute_pid_to_project(pid: i32, walk_tree: bool, idx: &ProjectIndex) -> Option<(String,String,String,String,String,String)> {
+fn attribute_pid_to_project(pid: i32, desc: &[i32], idx: &ProjectIndex) -> Option<(String,String,String,String,String,String)> {
     if pid <= 0 { return None; }
     let mut candidates: Vec<(PathBuf, String)> = Vec::new();
     if let Some(cwd) = read_cwd(pid) { candidates.push((cwd, "cwd".to_string())); }
-    if walk_tree {
-        for child in descendant_pids(pid, 5) {
-            if let Some(cwd) = read_cwd(child) { if !candidates.iter().any(|(p,_)| p == &cwd) { candidates.push((cwd, "process".to_string())); } }
-        }
+    for child in desc {
+        if let Some(cwd) = read_cwd(*child) { if !candidates.iter().any(|(p,_)| p == &cwd) { candidates.push((cwd, "process".to_string())); } }
     }
     for (path, src) in candidates {
         if let Some((id,name,ws,repo)) = idx.attribute_path(&path) {
@@ -678,6 +761,8 @@ pub struct FocusMonitor {
     project_index: ProjectIndex,
     last_index_refresh: Instant,
     firefox: FirefoxCache,
+    last_window_key: Option<(i32, String, String)>,
+    rx: Option<std::sync::mpsc::Receiver<()>>,
 }
 
 impl FocusMonitor {
@@ -693,6 +778,8 @@ impl FocusMonitor {
             project_index: ProjectIndex::refresh(),
             last_index_refresh: Instant::now(),
             firefox: FirefoxCache::default(),
+            last_window_key: None,
+            rx: spawn_hyprland_focus_watcher(),
         }
     }
 
@@ -709,11 +796,27 @@ impl FocusMonitor {
             self.last_index_refresh = Instant::now();
         }
         let present = presence_state.is_present();
-        if self.last_poll.elapsed() >= Duration::from_secs(2) {
+        let mut event_dirty = false;
+        if let Some(rx) = &self.rx {
+            while let Ok(_) = rx.try_recv() { event_dirty = true; }
+        }
+        let poll_every = if self.rx.is_some() { Duration::from_secs(15) } else { Duration::from_secs(2) };
+        let should_check = event_dirty || self.last_poll.elapsed() >= poll_every;
+        if should_check {
             if present {
-                let res = self.resolve_current(db, cfg, now);
-                self.update_focus(db, now, res);
+                if let Some(win) = query_active_window() {
+                    let key = (win.pid, win.class.clone(), win.title.clone());
+                    if event_dirty || self.last_window_key.as_ref() != Some(&key) || self.current.is_none() {
+                        self.last_window_key = Some(key);
+                        let res = self.resolve_current_for_window(db, cfg, now, &win);
+                        self.update_focus(db, now, res);
+                    }
+                } else {
+                    self.last_window_key = None;
+                    self.close_current(db, now);
+                }
             } else if self.current_interval_id.is_some() {
+                self.last_window_key = None;
                 self.close_current(db, now);
             }
             self.last_poll = Instant::now();
@@ -748,6 +851,21 @@ impl FocusMonitor {
         if let Ok(id) = db.open_focus_interval(&fi) { self.current_interval_id = Some(id); }
     }
 
+    fn resolve_current_for_window(&mut self, db: &ActivityDb, cfg: &ActivityConfig, now: i64, win: &HyprWindow) -> FocusResolution {
+        let mut res = resolve_focus(win, cfg, &self.project_index, &mut self.firefox);
+        let provisional = FocusInterval {
+            id: 0, start_ts: now, end_ts: None,
+            project_id: res.project_id.clone(), project_name: res.project_name.clone(), workspace: res.workspace.clone(), repo: res.repo.clone(),
+            source: res.source.clone(), confidence: res.confidence.clone(), category: res.category.clone(), category_source: res.category_source.clone(),
+            app: res.app.clone(), app_kind: res.app_kind.clone(), domain: res.domain.clone(), rule: res.rule.clone(), evidence: res.evidence.clone(),
+        };
+        if let Ok(Some(ovr)) = db.active_category_override(now, Some(&provisional)) {
+            res.category = ovr.category; res.category_source = "manual".to_string();
+        }
+        res
+    }
+
+    #[allow(dead_code)]
     fn resolve_current(&mut self, db: &ActivityDb, cfg: &ActivityConfig, now: i64) -> FocusResolution {
         let mut res = self.resolve_window(cfg);
         let provisional = FocusInterval {
@@ -762,6 +880,7 @@ impl FocusMonitor {
         res
     }
 
+    #[allow(dead_code)]
     fn resolve_window(&mut self, cfg: &ActivityConfig) -> FocusResolution {
         let Some(win) = query_active_window() else {
             return FocusResolution { category: "neutral".to_string(), category_source: "default".to_string(), source: "unattributed".to_string(), confidence: "low".to_string(), ..Default::default() };

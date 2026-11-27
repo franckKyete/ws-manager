@@ -1027,7 +1027,7 @@ Tracks local development activity (file changes, terminal commands via shell hoo
 
 ```bash
 # Status and control
-ws activity status [--json] [--waybar]
+ws activity status [--json] [--waybar] [--fresh] [--stats]
 ws activity enable [--yes]
 ws activity disable
 ws activity pause
@@ -1035,10 +1035,10 @@ ws activity resume
 ws activity clear [--yes]
 
 # Reports, series, snapshot, and export
-ws activity report [--day|--week|--month] [--from <date>] [--to <date>] [--project <name|id>] [--repo <name>] [--workspace <name>] [--json|--csv]
-ws activity series [--day|--week|--month] [--from <date>] [--to <date>] [--step hour|day] [--project <name|id>] [--repo <name>] [--workspace <name>] [--group-by none|project] [--json]
-ws activity snapshot [--range today|week|month] [--project <name|id>] [--json]
-ws activity presence [--range today|week|month] [--json]
+ws activity report [--day|--week|--month] [--from <date>] [--to <date>] [--project <name|id>] [--repo <name>] [--workspace <name>] [--json|--csv] [--fresh]
+ws activity series [--day|--week|--month] [--from <date>] [--to <date>] [--step hour|day] [--project <name|id>] [--repo <name>] [--workspace <name>] [--group-by none|project] [--json] [--fresh]
+ws activity snapshot [--range today|week|month] [--project <name|id>] [--json] [--fresh]
+ws activity presence [--range today|week|month] [--json] [--fresh]
 ws activity presence set <active|idle|away|locked|asleep>
 ws activity presence category <work|leisure|neutral|auto> [--for <duration>] [--current]
 ws activity presence explain [--json]
@@ -1066,6 +1066,8 @@ ws activity recompute --range today [--dry-run] [--force]
 ```
 
 **Event work** is the deduped union of credited event-session spans across projects (overlaps count once; cannot exceed wall clock). **Raw session sum** is diagnostic. After overlap-fix upgrades, run `ws activity recompute --range today` with `ws.service` stopped to rebuild today's buckets/spans from retained raw events.
+
+Read commands (`status`, `snapshot`, `report`, `series`, `presence`) are read-only by default and do not run rollups; the daemon owns periodic rollups. Pass `--fresh` to recompute rollups before reading (opens the DB read-write). `status --stats` includes daemon perf counters.
 
 ### Waybar Module
 

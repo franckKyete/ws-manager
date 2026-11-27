@@ -9,6 +9,7 @@ use crate::workspace::WorkspaceManager;
 pub struct ConfigFileWatcher {
     registry_path: Option<PathBuf>,
     file_hashes: HashMap<String, String>,
+    file_stats: HashMap<String, (std::time::SystemTime, u64)>,
     initialized: bool,
 }
 
@@ -23,6 +24,7 @@ impl ConfigFileWatcher {
         Self {
             registry_path,
             file_hashes: HashMap::new(),
+            file_stats: HashMap::new(),
             initialized: false,
         }
     }
@@ -53,10 +55,11 @@ impl ConfigFileWatcher {
                 cfg_file = p.join("ws-project.yaml");
             }
             if cfg_file.exists() {
-                if let Some(h) = Self::hash_file(&cfg_file) {
-                    if let Ok(canon) = cfg_file.canonicalize() {
-                        self.file_hashes
-                            .insert(canon.to_string_lossy().to_string(), h);
+                if let Ok(canon) = cfg_file.canonicalize() {
+                    if let Some(h) = Self::hash_file(&canon) {
+                        let key = canon.to_string_lossy().to_string();
+                        if let Ok(m) = std::fs::metadata(&canon) { if let Ok(t) = m.modified() { self.file_stats.insert(key.clone(), (t, m.len())); } }
+                        self.file_hashes.insert(key, h);
                     }
                 }
             }
@@ -72,10 +75,11 @@ impl ConfigFileWatcher {
                                 ws_file = path.join("workspace.yaml");
                             }
                             if ws_file.exists() {
-                                if let Some(h) = Self::hash_file(&ws_file) {
-                                    if let Ok(canon) = ws_file.canonicalize() {
-                                        self.file_hashes
-                                            .insert(canon.to_string_lossy().to_string(), h);
+                                if let Ok(canon) = ws_file.canonicalize() {
+                                    if let Some(h) = Self::hash_file(&canon) {
+                                        let key = canon.to_string_lossy().to_string();
+                                        if let Ok(m) = std::fs::metadata(&canon) { if let Ok(t) = m.modified() { self.file_stats.insert(key.clone(), (t, m.len())); } }
+                                        self.file_hashes.insert(key, h);
                                     }
                                 }
                             }
@@ -114,7 +118,13 @@ impl ConfigFileWatcher {
                     let cfg_str = canon.to_string_lossy().to_string();
                     seen_paths.insert(cfg_str.clone());
 
-                    if let Some(current_hash) = Self::hash_file(&canon) {
+                    let meta = std::fs::metadata(&canon).ok();
+                    let stat_sig = meta.as_ref().and_then(|m| m.modified().ok().map(|t| (t, m.len())));
+                    let stat_unchanged = stat_sig.as_ref().and_then(|(t,l)| self.file_stats.get(&cfg_str).map(|(st,sl)| st == t && *sl == *l)).unwrap_or(false);
+                    if stat_unchanged && self.file_hashes.contains_key(&cfg_str) {
+                        // unchanged
+                    } else if let Some(current_hash) = Self::hash_file(&canon) {
+                        if let Some(sig) = stat_sig.clone() { self.file_stats.insert(cfg_str.clone(), sig); }
                         let last_hash = self.file_hashes.get(&cfg_str).cloned();
                         match last_hash {
                             None => {
@@ -209,7 +219,13 @@ impl ConfigFileWatcher {
                             let ws_str = canon.to_string_lossy().to_string();
                             seen_paths.insert(ws_str.clone());
 
-                            if let Some(current_ws_hash) = Self::hash_file(&canon) {
+                            let meta = std::fs::metadata(&canon).ok();
+                            let stat_sig = meta.as_ref().and_then(|m| m.modified().ok().map(|t| (t, m.len())));
+                            let stat_unchanged = stat_sig.as_ref().and_then(|(t,l)| self.file_stats.get(&ws_str).map(|(st,sl)| st == t && *sl == *l)).unwrap_or(false);
+                            if stat_unchanged && self.file_hashes.contains_key(&ws_str) {
+                                // unchanged
+                            } else if let Some(current_ws_hash) = Self::hash_file(&canon) {
+                                if let Some(sig) = stat_sig.clone() { self.file_stats.insert(ws_str.clone(), sig); }
                                 let last_ws_hash = self.file_hashes.get(&ws_str).cloned();
                                 match last_ws_hash {
                                     None => {

@@ -534,7 +534,7 @@ heartbeat_interval: 60
 heartbeat_window: 900
 debounce: 2
 raw_retention: 365d
-watch_reconcile: 60
+watch_reconcile: 60        # seconds; light git/light scan cadence (full watch rebuild/file scan on overflow or ~15m)
 sync:
   enabled: true
   interval: 600

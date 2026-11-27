@@ -1,15 +1,111 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+
+fn resolve_binary(name: &str) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn command_for(bin: &Path) -> Command {
+    let mut cmd = Command::new(bin);
+    // Avoid re-inheriting a huge PATH for trivial probes; keep PATH minimal.
+    cmd.env("PATH", "/usr/bin:/bin");
+    cmd
+}
+
+pub struct TmuxSnapshot {
+    windows_by_session: HashMap<String, Vec<String>>,
+}
+
+impl TmuxSnapshot {
+    pub fn capture() -> Self {
+        let mut windows_by_session: HashMap<String, Vec<String>> = HashMap::new();
+        let Some(bin) = TmuxLauncher::binary() else { return Self { windows_by_session }; };
+        let Ok(out) = command_for(bin).args(["list-windows", "-a", "-F", "#{session_name}\t#{window_name}"]).output() else {
+            return Self { windows_by_session };
+        };
+        if !out.status.success() { return Self { windows_by_session }; }
+        for line in String::from_utf8_lossy(&out.stdout).lines() {
+            let mut parts = line.splitn(2, '\t');
+            let Some(session) = parts.next() else { continue; };
+            let Some(window) = parts.next() else { continue; };
+            windows_by_session.entry(session.to_string()).or_default().push(window.to_string());
+        }
+        Self { windows_by_session }
+    }
+
+    pub fn session_active(&self, session_name: &str) -> bool {
+        self.windows_by_session.contains_key(session_name)
+    }
+
+    pub fn window_active(&self, session_name: &str, window_name: &str) -> bool {
+        let Some(windows) = self.windows_by_session.get(session_name) else { return false; };
+        let clean = window_name.trim_start_matches('@');
+        let with_at = format!("@{clean}");
+        windows.iter().any(|t| t == window_name || t == clean || t == &with_at)
+    }
+}
+
+pub struct ZellijSnapshot {
+    sessions: Vec<String>,
+}
+
+impl ZellijSnapshot {
+    pub fn capture() -> Self {
+        let Some(bin) = ZellijLauncher::binary() else { return Self { sessions: Vec::new() }; };
+        let Ok(out) = command_for(bin).args(["list-sessions"]).output() else {
+            return Self { sessions: Vec::new() };
+        };
+        if !out.status.success() { return Self { sessions: Vec::new() }; }
+        let sessions = String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let t = l.trim();
+                if t.is_empty() { return None; }
+                // zellij list-sessions includes formatting/exit status; first token is session name
+                let name = t.split_whitespace().next().unwrap_or(t);
+                let name = name.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '@' && c != '.');
+                if name.is_empty() { None } else { Some(name.to_string()) }
+            })
+            .collect();
+        Self { sessions }
+    }
+
+    pub fn session_running(&self, session_name: &str) -> bool {
+        self.sessions.iter().any(|s| s == session_name || s.contains(session_name))
+    }
+}
 
 pub struct TmuxLauncher;
 
 impl TmuxLauncher {
+    fn binary() -> Option<&'static PathBuf> {
+        static BIN: OnceLock<Option<PathBuf>> = OnceLock::new();
+        BIN.get_or_init(|| resolve_binary("tmux")).as_ref()
+    }
+
+    fn raw_cmd() -> Command {
+        match Self::binary() {
+            Some(b) => command_for(b),
+            None => {
+                let mut c = Self::raw_cmd();
+                c.env("PATH", "/usr/bin:/bin");
+                c
+            }
+        }
+    }
+
     pub fn is_available() -> bool {
-        Command::new("tmux")
-            .arg("-V")
-            .output()
-            .is_ok_and(|o| o.status.success())
+        Self::binary().is_some()
     }
 
     pub fn session_name(project_name: &str) -> String {
@@ -20,7 +116,7 @@ impl TmuxLauncher {
         if !Self::is_available() {
             return false;
         }
-        Command::new("tmux")
+        Self::raw_cmd()
             .args(["has-session", "-t", session_name])
             .output()
             .is_ok_and(|o| o.status.success())
@@ -30,7 +126,7 @@ impl TmuxLauncher {
         if !Self::is_session_active(session_name) {
             return None;
         }
-        if let Ok(out) = Command::new("tmux")
+        if let Ok(out) = Self::raw_cmd()
             .args(["list-windows", "-t", session_name, "-F", "#{window_name}"])
             .output()
         {
@@ -84,7 +180,7 @@ impl TmuxLauncher {
             if let Some(cmd) = command {
                 args.push(cmd);
             }
-            if let Ok(out) = Command::new("tmux").args(&args).output() {
+            if let Ok(out) = Self::raw_cmd().args(&args).output() {
                 if !out.status.success() {
                     return false;
                 }
@@ -106,7 +202,7 @@ impl TmuxLauncher {
             if let Some(cmd) = command {
                 args.push(cmd);
             }
-            if let Ok(out) = Command::new("tmux").args(&args).output() {
+            if let Ok(out) = Self::raw_cmd().args(&args).output() {
                 if !out.status.success() {
                     return false;
                 }
@@ -118,11 +214,11 @@ impl TmuxLauncher {
         if switch {
             let target = format!("{}:{}", session_name, window_name);
             if std::env::var("TMUX").is_ok() {
-                let _ = Command::new("tmux")
+                let _ = Self::raw_cmd()
                     .args(["switch-client", "-t", &target])
                     .status();
             } else {
-                let _ = Command::new("tmux")
+                let _ = Self::raw_cmd()
                     .args(["select-window", "-t", &target])
                     .status();
             }
@@ -140,16 +236,16 @@ impl TmuxLauncher {
             None => window_name.to_string(),
         };
         let target = format!("{}:{}", session_name, target_win);
-        let _ = Command::new("tmux")
+        let _ = Self::raw_cmd()
             .args(["select-window", "-t", &target])
             .status();
         if std::env::var("TMUX").is_ok() {
-            let _ = Command::new("tmux")
+            let _ = Self::raw_cmd()
                 .args(["switch-client", "-t", &target])
                 .status();
             true
         } else {
-            Command::new("tmux")
+            Self::raw_cmd()
                 .args(["attach-session", "-t", &target])
                 .status()
                 .is_ok_and(|s| s.success())
@@ -164,7 +260,7 @@ impl TmuxLauncher {
             Some(w) => w,
             None => window_name.to_string(),
         };
-        let output = match Command::new("tmux")
+        let output = match Self::raw_cmd()
             .args(["display-message", "-p", "#S\t#{window_name}"])
             .output()
         {
@@ -195,7 +291,7 @@ impl TmuxLauncher {
             None => window_name.to_string(),
         };
         let target = format!("{}:{}", session_name, target_win);
-        Command::new("tmux")
+        Self::raw_cmd()
             .args(["kill-window", "-t", &target])
             .output()
             .is_ok_and(|o| o.status.success())
@@ -229,12 +325,12 @@ impl TmuxLauncher {
 
         let target_window = format!("{}:{}", session_name, workspace_name);
         for (_, cwd, cmd) in &launch_entries[1..] {
-            let _ = Command::new("tmux")
+            let _ = Self::raw_cmd()
                 .args(["split-window", "-h", "-t", &target_window, "-c", cwd, cmd])
                 .status();
         }
 
-        let _ = Command::new("tmux")
+        let _ = Self::raw_cmd()
             .args(["select-layout", "-t", &target_window, "even-horizontal"])
             .status();
 
@@ -250,7 +346,7 @@ impl TmuxLauncher {
             return false;
         }
 
-        let _ = Command::new("tmux")
+        let _ = Self::raw_cmd()
             .args(["kill-session", "-t", session_name])
             .output();
 
@@ -270,7 +366,7 @@ impl TmuxLauncher {
         };
 
         let initial_shell = build_cmd(first_cmd, first_env);
-        let status = Command::new("tmux")
+        let status = Self::raw_cmd()
             .args([
                 "new-session",
                 "-d",
@@ -292,7 +388,7 @@ impl TmuxLauncher {
         for (_, cmd, cwd, env) in &services[1..] {
             let pane_cwd = cwd.to_string_lossy();
             let pane_shell = build_cmd(cmd, env);
-            let _ = Command::new("tmux")
+            let _ = Self::raw_cmd()
                 .args([
                     "split-window",
                     "-h",
@@ -305,7 +401,7 @@ impl TmuxLauncher {
                 .status();
         }
 
-        let _ = Command::new("tmux")
+        let _ = Self::raw_cmd()
             .args(["select-layout", "-t", &target_window, "even-horizontal"])
             .status();
 
@@ -314,7 +410,7 @@ impl TmuxLauncher {
 
     pub fn list_panes(session_name: &str, window_name: &str) -> Vec<String> {
         let target = format!("{}:{}", session_name, window_name);
-        if let Ok(out) = Command::new("tmux")
+        if let Ok(out) = Self::raw_cmd()
             .args(["list-panes", "-t", &target, "-F", "#{pane_title}"])
             .output()
         {
@@ -342,14 +438,14 @@ impl TmuxLauncher {
             format!("{}:{}", project_name, workspace_name)
         };
         if std::env::var("TMUX").is_ok() {
-            let _ = Command::new("tmux")
+            let _ = Self::raw_cmd()
                 .args(["select-window", "-t", &target])
                 .status();
-            Command::new("tmux")
+            Self::raw_cmd()
                 .args(["switch-client", "-t", &target])
                 .status()
         } else {
-            Command::new("tmux")
+            Self::raw_cmd()
                 .args(["attach-session", "-t", &target])
                 .status()
         }
@@ -357,11 +453,11 @@ impl TmuxLauncher {
 
     pub fn attach_session(session_name: &str) -> std::io::Result<std::process::ExitStatus> {
         if std::env::var("TMUX").is_ok() {
-            Command::new("tmux")
+            Self::raw_cmd()
                 .args(["switch-client", "-t", session_name])
                 .status()
         } else {
-            Command::new("tmux")
+            Self::raw_cmd()
                 .args(["attach-session", "-t", session_name])
                 .status()
         }
@@ -371,6 +467,22 @@ impl TmuxLauncher {
 pub struct ZellijLauncher;
 
 impl ZellijLauncher {
+    fn binary() -> Option<&'static PathBuf> {
+        static BIN: OnceLock<Option<PathBuf>> = OnceLock::new();
+        BIN.get_or_init(|| resolve_binary("zellij")).as_ref()
+    }
+
+    fn raw_cmd() -> Command {
+        match Self::binary() {
+            Some(b) => command_for(b),
+            None => {
+                let mut c = Self::raw_cmd();
+                c.env("PATH", "/usr/bin:/bin");
+                c
+            }
+        }
+    }
+
     pub fn attach(
         _workspace_name: &str,
         project_name: &str,
@@ -378,23 +490,20 @@ impl ZellijLauncher {
         _all_panes: bool,
         _ws_dir: &Path,
     ) -> std::io::Result<std::process::ExitStatus> {
-        Command::new("zellij")
+        Self::raw_cmd()
             .args(["attach", project_name])
             .status()
     }
 
     pub fn is_available() -> bool {
-        Command::new("zellij")
-            .arg("--version")
-            .output()
-            .is_ok_and(|o| o.status.success())
+        Self::binary().is_some()
     }
 
     pub fn is_session_running(session_name: &str) -> bool {
         if !Self::is_available() {
             return false;
         }
-        if let Ok(out) = Command::new("zellij").args(["list-sessions"]).output() {
+        if let Ok(out) = Self::raw_cmd().args(["list-sessions"]).output() {
             if out.status.success() {
                 let stdout = String::from_utf8_lossy(&out.stdout);
                 return stdout.lines().any(|l| l.contains(session_name));
@@ -411,7 +520,7 @@ impl ZellijLauncher {
         if !Self::is_available() {
             return false;
         }
-        Command::new("zellij")
+        Self::raw_cmd()
             .args(["kill-session", project_name])
             .output()
             .is_ok_and(|o| o.status.success())
@@ -451,7 +560,7 @@ impl ZellijLauncher {
         }
         let _ = std::fs::write(&layout_file, kdl);
 
-        Command::new("zellij")
+        Self::raw_cmd()
             .args([
                 "--session",
                 project_name,

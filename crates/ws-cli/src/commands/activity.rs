@@ -42,14 +42,37 @@ fn local_day_start_ms() -> i64 {
 
 fn hour_floor_secs(ms: i64) -> i64 { (ms / 1000 / 3600) * 3600 }
 
-pub fn execute_activity_status(json: bool) -> Result<(), String> {
+fn open_activity_db(paths: &ActivityPaths, fresh: bool) -> Result<ws_core::activity::db::ActivityDb, String> {
+    if fresh { open_db(paths) } else { ws_core::activity::open_db_readonly(paths) }
+}
+
+fn maybe_rollup_activity(db: &ws_core::activity::db::ActivityDb, cfg: &ActivityConfig, fresh: bool) {
+    if !fresh { return; }
+    let _ = ws_core::activity::rollup::rollup_all(db, cfg);
+    let _ = ws_core::activity::presence::rollup_presence(db, cfg, now_ms());
+    let _ = ws_core::activity::focus::rollup_focus(db, now_ms());
+}
+
+pub fn execute_activity_status(json: bool, fresh: bool, stats: bool) -> Result<(), String> {
     let paths = ActivityPaths::discover();
-    paths.ensure_dirs()?;
-    let db = open_db(&paths)?;
+    if fresh { paths.ensure_dirs()?; }
+    let db = open_activity_db(&paths, fresh)?;
+    let cfg = ActivityConfig::load().unwrap_or_default();
+    maybe_rollup_activity(&db, &cfg, fresh);
     let status = db.basic_status(&paths)?;
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&status).map_err(|e| e.to_string())?);
+        let mut v = serde_json::to_value(&status).map_err(|e| e.to_string())?;
+        if stats {
+            if let Some(obj) = v.as_object_mut() {
+                let mut perf = serde_json::Map::new();
+                for k in ["perf_last_tick_ms","perf_last_tick_at_ms","perf_tick_count","perf_focus_resolves","perf_inotify_events","perf_watch_rebuilds","perf_full_reconciles","perf_child_execs"] {
+                    if let Ok(Some(val)) = db.get_meta_i64(k) { perf.insert(k.to_string(), serde_json::json!(val)); }
+                }
+                obj.insert("perf".to_string(), serde_json::Value::Object(perf));
+            }
+        }
+        println!("{}", serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?);
         return Ok(());
     }
 
@@ -86,11 +109,7 @@ pub fn execute_activity_status(json: bool) -> Result<(), String> {
         status.watching_workspaces, status.known_workspaces,
         if status.watch_limited { " (inotify budget)" } else { "" }
     );
-    // Presence
-    let cfg = ActivityConfig::load().unwrap_or_default();
     let now = now_ms();
-    let _ = ws_core::activity::presence::rollup_presence(&db, &cfg, now);
-    let _ = ws_core::activity::focus::rollup_focus(&db, now);
     let today_start_ms = chrono::Local::now().date_naive().and_hms_opt(0,0,0).unwrap().and_local_timezone(chrono::Local).single().unwrap().timestamp_millis();
     let today_end_ms = (chrono::Local::now().date_naive() + chrono::Duration::days(1)).and_hms_opt(0,0,0).unwrap().and_local_timezone(chrono::Local).single().unwrap().timestamp_millis();
     let from_h = (today_start_ms / 1000 / 3600) * 3600;
@@ -98,6 +117,11 @@ pub fn execute_activity_status(json: bool) -> Result<(), String> {
     if let Ok(pt) = ws_core::activity::presence::presence_totals_for_range(&db, from_h, to_h, now) {
         let (pstate, psource, _) = db.latest_presence_state().ok().flatten().unwrap_or_else(|| ("unknown".to_string(), "none".to_string(), 0));
         println!("  Presence:          {} ({})  present {} · away {}", pstate, psource, format_duration_human(pt.present_seconds), format_duration_human(pt.away_seconds));
+    }
+    if stats {
+        for k in ["perf_last_tick_ms","perf_tick_count","perf_focus_resolves","perf_inotify_events","perf_watch_rebuilds","perf_full_reconciles"] {
+            if let Ok(Some(val)) = db.get_meta_i64(k) { println!("  {}: {}", k, val); }
+        }
     }
     if !status.projects.is_empty() {
         println!("\nProjects:");
@@ -116,15 +140,9 @@ pub fn execute_activity_status(json: bool) -> Result<(), String> {
 
 pub fn execute_activity_status_waybar() -> Result<(), String> {
     let paths = ActivityPaths::discover();
-    paths.ensure_dirs()?;
-    let db = open_db(&paths)?;
-    let cfg = ActivityConfig::load().unwrap_or_default();
-    let _ = ws_core::activity::rollup::rollup_all(&db, &cfg);
+    let db = ws_core::activity::open_db_readonly(&paths)?;
     let status = db.basic_status(&paths)?;
-
     let now = now_ms();
-    let _ = ws_core::activity::presence::rollup_presence(&db, &cfg, now);
-    let _ = ws_core::activity::focus::rollup_focus(&db, now);
     let from_ms = local_day_start_ms();
     let from_hour = hour_floor_secs(from_ms);
     let to_hour = hour_floor_secs(now) + 3600;
@@ -203,14 +221,12 @@ pub fn execute_activity_status_waybar() -> Result<(), String> {
     Ok(())
 }
 
-pub fn execute_activity_snapshot(range: &str, project: Option<&str>, json: bool) -> Result<(), String> {
+pub fn execute_activity_snapshot(range: &str, project: Option<&str>, json: bool, fresh: bool) -> Result<(), String> {
     let paths = ActivityPaths::discover();
-    paths.ensure_dirs()?;
-    let db = open_db(&paths)?;
+    if fresh { paths.ensure_dirs()?; }
+    let db = open_activity_db(&paths, fresh)?;
     let cfg = ActivityConfig::load().unwrap_or_default();
-    let _ = ws_core::activity::rollup::rollup_all(&db, &cfg);
-    let _ = ws_core::activity::presence::rollup_presence(&db, &cfg, now_ms());
-    let _ = ws_core::activity::focus::rollup_focus(&db, now_ms());
+    maybe_rollup_activity(&db, &cfg, fresh);
     let status = db.basic_status(&paths)?;
     let snapshot = ws_core::activity::snapshot::build_snapshot(&db, status, range, now_ms(), project)?;
 
@@ -318,14 +334,13 @@ fn sparkline(values: &[i64]) -> String {
         .collect()
 }
 
-pub fn execute_activity_presence(range: &str, json: bool) -> Result<(), String> {
+pub fn execute_activity_presence(range: &str, json: bool, fresh: bool) -> Result<(), String> {
     let paths = ActivityPaths::discover();
-    paths.ensure_dirs()?;
-    let db = open_db(&paths)?;
+    if fresh { paths.ensure_dirs()?; }
+    let db = open_activity_db(&paths, fresh)?;
     let cfg = ActivityConfig::load().unwrap_or_default();
     let now = now_ms();
-    let _ = ws_core::activity::presence::rollup_presence(&db, &cfg, now);
-    let _ = ws_core::activity::focus::rollup_focus(&db, now);
+    maybe_rollup_activity(&db, &cfg, fresh);
 
     let today = chrono::Local::now().date_naive();
     let (start_date, label) = match range {
@@ -500,13 +515,13 @@ pub fn execute_activity_series(
     day: bool, week: bool, month: bool,
     from: Option<&str>, to: Option<&str>,
     step: &str, project: Option<&str>, repo: Option<&str>, workspace: Option<&str>,
-    group_by: &str, _json: bool,
+    group_by: &str, _json: bool, fresh: bool,
 ) -> Result<(), String> {
     let paths = ActivityPaths::discover();
-    paths.ensure_dirs()?;
-    let db = open_db(&paths)?;
+    if fresh { paths.ensure_dirs()?; }
+    let db = open_activity_db(&paths, fresh)?;
     let cfg = ActivityConfig::load().unwrap_or_default();
-    let _ = ws_core::activity::rollup::rollup_all(&db, &cfg);
+    maybe_rollup_activity(&db, &cfg, fresh);
 
     let now = now_ms();
     let (from_ms, to_ms) = if let (Some(f), Some(t)) = (from, to) {
@@ -737,8 +752,8 @@ fn local_ms_next_day(_now: i64) -> i64 {
 }
 
 pub fn execute_activity_report(action: &ActivityAction) -> Result<(), String> {
-    let ActivityAction::Report { day, week, month, from, to, project, repo, workspace, device, tz, json, csv } = action else {
-        return execute_activity_report_basic_range(None, None, None, None, None, false, false, None, None);
+    let ActivityAction::Report { day, week, month, from, to, project, repo, workspace, device, tz, json, csv, fresh } = action else {
+        return execute_activity_report_basic_range(None, None, None, None, None, false, false, None, None, false);
     };
 
     if let Some(tzname) = tz {
@@ -771,16 +786,15 @@ pub fn execute_activity_report(action: &ActivityAction) -> Result<(), String> {
         return Err("Invalid range: --to must be >= --from".to_string());
     }
 
-    execute_activity_report_basic_range(Some(from_ms), Some(to_ms), project.as_deref(), repo.as_deref(), workspace.as_deref(), *json, *csv, tz.as_deref(), device.as_deref())
+    execute_activity_report_basic_range(Some(from_ms), Some(to_ms), project.as_deref(), repo.as_deref(), workspace.as_deref(), *json, *csv, tz.as_deref(), device.as_deref(), *fresh)
 }
 
-fn execute_activity_report_basic_range(from_ms: Option<i64>, to_ms: Option<i64>, project: Option<&str>, repo: Option<&str>, workspace: Option<&str>, json: bool, csv: bool, _tz: Option<&str>, _device: Option<&str>) -> Result<(), String> {
+fn execute_activity_report_basic_range(from_ms: Option<i64>, to_ms: Option<i64>, project: Option<&str>, repo: Option<&str>, workspace: Option<&str>, json: bool, csv: bool, _tz: Option<&str>, _device: Option<&str>, fresh: bool) -> Result<(), String> {
     let paths = ActivityPaths::discover();
-    paths.ensure_dirs()?;
-    let db = open_db(&paths)?;
-    // ensure latest events are rolled up before reporting
+    if fresh { paths.ensure_dirs()?; }
+    let db = open_activity_db(&paths, fresh)?;
     let cfg = ActivityConfig::load().unwrap_or_default();
-    let _ = ws_core::activity::rollup::rollup_all(&db, &cfg);
+    maybe_rollup_activity(&db, &cfg, fresh);
 
     let now = now_ms();
     let from_ms = from_ms.unwrap_or_else(local_day_start_ms);
@@ -1093,9 +1107,9 @@ fn set_project_sync(project: Option<&str>, enabled: bool) -> Result<(), String> 
 }
 
 pub fn execute_activity(action: Option<ActivityAction>) -> Result<(), String> {
-    match action.unwrap_or(ActivityAction::Status { json: false, waybar: false }) {
-        ActivityAction::Status { json, waybar } => {
-            if waybar { execute_activity_status_waybar() } else { execute_activity_status(json) }
+    match action.unwrap_or(ActivityAction::Status { json: false, waybar: false, fresh: false, stats: false }) {
+        ActivityAction::Status { json, waybar, fresh, stats } => {
+            if waybar { execute_activity_status_waybar() } else { execute_activity_status(json, fresh, stats) }
         }
         ActivityAction::Enable { yes } => execute_activity_enable(yes),
         ActivityAction::Disable => execute_activity_disable(),
@@ -1105,21 +1119,21 @@ pub fn execute_activity(action: Option<ActivityAction>) -> Result<(), String> {
         ActivityAction::Prune { before, dry_run } => execute_activity_prune(before.as_deref(), dry_run),
         ActivityAction::Recompute { range, dry_run, force } => execute_activity_recompute(&range, dry_run, force),
         act @ ActivityAction::Report { .. } => execute_activity_report(&act),
-        ActivityAction::Snapshot { range, project, json } => {
-            execute_activity_snapshot(&range, project.as_deref(), json)
+        ActivityAction::Snapshot { range, project, json, fresh } => {
+            execute_activity_snapshot(&range, project.as_deref(), json, fresh)
         }
-        ActivityAction::Presence { range, json, action } => {
+        ActivityAction::Presence { range, json, fresh, action } => {
             match action {
                 Some(crate::cli::ActivityPresenceAction::Set { state }) => execute_activity_presence_set(&state),
                 Some(crate::cli::ActivityPresenceAction::Category { category, r#for, current }) => {
                     execute_activity_presence_category(&category, r#for.as_deref(), current)
                 }
                 Some(crate::cli::ActivityPresenceAction::Explain { json: ej }) => execute_activity_presence_explain(json || ej),
-                None => execute_activity_presence(&range, json),
+                None => execute_activity_presence(&range, json, fresh),
             }
         }
-        ActivityAction::Series { day, week, month, from, to, step, project, repo, workspace, group_by, json } => {
-            execute_activity_series(day, week, month, from.as_deref(), to.as_deref(), &step, project.as_deref(), repo.as_deref(), workspace.as_deref(), &group_by, json)
+        ActivityAction::Series { day, week, month, from, to, step, project, repo, workspace, group_by, json, fresh } => {
+            execute_activity_series(day, week, month, from.as_deref(), to.as_deref(), &step, project.as_deref(), repo.as_deref(), workspace.as_deref(), &group_by, json, fresh)
         }
         ActivityAction::Dashboard => execute_activity_dashboard(),
         ActivityAction::Sync { project, force, action } => execute_activity_sync(project.as_deref(), force, action.as_ref()),
