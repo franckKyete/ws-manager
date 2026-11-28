@@ -15,7 +15,9 @@ pub fn draw_breakdown(area: &DrawingArea, rows: &[ActivityBreakdownRow], title: 
     let rows: Vec<ActivityBreakdownRow> = rows.iter().take(8).cloned().collect();
     let title = title.to_string();
     area.set_draw_func(move |_area, cr, width, height| {
-        if width <= 10 || height <= 10 { return; }
+        if width <= 10 || height <= 10 {
+            return;
+        }
         // background
         cr.set_source_rgb(1.0, 1.0, 1.0);
         let _ = cr.paint();
@@ -35,7 +37,12 @@ pub fn draw_breakdown(area: &DrawingArea, rows: &[ActivityBreakdownRow], title: 
             return;
         }
 
-        let max_val = rows.iter().map(|r| r.active_seconds).max().unwrap_or(1).max(1) as f64;
+        let max_val = rows
+            .iter()
+            .map(|r| r.active_seconds)
+            .max()
+            .unwrap_or(1)
+            .max(1) as f64;
         let left = 140.0f64;
         let right_pad = 20.0f64;
         let bar_w_max = (width as f64 - left - right_pad).max(20.0);
@@ -64,7 +71,11 @@ pub fn draw_breakdown(area: &DrawingArea, rows: &[ActivityBreakdownRow], title: 
             let _ = cr.fill();
 
             let mins = row.active_seconds / 60;
-            let txt = if mins >= 60 { format!("{}h {}m", mins / 60, mins % 60) } else { format!("{}m", mins) };
+            let txt = if mins >= 60 {
+                format!("{}h {}m", mins / 60, mins % 60)
+            } else {
+                format!("{}m", mins)
+            };
             cr.set_source_rgb(0.3, 0.3, 0.3);
             cr.move_to(left + bw + 6.0, y + 12.0);
             let _ = cr.show_text(&txt);

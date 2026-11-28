@@ -29,12 +29,57 @@ pub fn list_candidates(db: &ActivityDb) -> Result<Vec<IdMigrationCandidate>, Str
     let mut out = Vec::new();
     for p in projects {
         let legacy = legacy_project_id_for_path(&p.path);
-        let legacy_events: i64 = db.conn.query_row("SELECT COUNT(*) FROM events WHERE project_id = ?1", params![legacy], |r| r.get(0)).unwrap_or(0);
-        let legacy_buckets: i64 = db.conn.query_row("SELECT COUNT(*) FROM buckets WHERE project_id = ?1", params![legacy], |r| r.get(0)).unwrap_or(0);
-        let legacy_state: i64 = db.conn.query_row("SELECT COUNT(*) FROM rollup_state WHERE project_id = ?1", params![legacy], |r| r.get(0)).unwrap_or(0);
-        let legacy_oldest_event: Option<i64> = db.conn.query_row("SELECT MIN(ts) FROM events WHERE project_id = ?1", params![legacy], |r| r.get(0)).ok().flatten();
-        let legacy_min_bucket_hour: Option<i64> = db.conn.query_row("SELECT MIN(hour) FROM buckets WHERE project_id = ?1", params![legacy], |r| r.get(0)).ok().flatten();
-        let canonical_oldest_event: Option<i64> = db.conn.query_row("SELECT MIN(ts) FROM events WHERE project_id = ?1", params![p.project_id], |r| r.get(0)).ok().flatten();
+        let legacy_events: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE project_id = ?1",
+                params![legacy],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let legacy_buckets: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM buckets WHERE project_id = ?1",
+                params![legacy],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let legacy_state: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM rollup_state WHERE project_id = ?1",
+                params![legacy],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        let legacy_oldest_event: Option<i64> = db
+            .conn
+            .query_row(
+                "SELECT MIN(ts) FROM events WHERE project_id = ?1",
+                params![legacy],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        let legacy_min_bucket_hour: Option<i64> = db
+            .conn
+            .query_row(
+                "SELECT MIN(hour) FROM buckets WHERE project_id = ?1",
+                params![legacy],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        let canonical_oldest_event: Option<i64> = db
+            .conn
+            .query_row(
+                "SELECT MIN(ts) FROM events WHERE project_id = ?1",
+                params![p.project_id],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
         out.push(IdMigrationCandidate {
             name: p.name,
             path: p.path,
@@ -54,7 +99,10 @@ pub fn list_candidates(db: &ActivityDb) -> Result<Vec<IdMigrationCandidate>, Str
 pub fn pending_candidates(db: &ActivityDb) -> Result<Vec<IdMigrationCandidate>, String> {
     Ok(list_candidates(db)?
         .into_iter()
-        .filter(|c| c.legacy != c.canonical && (c.legacy_events > 0 || c.legacy_buckets > 0 || c.legacy_state > 0))
+        .filter(|c| {
+            c.legacy != c.canonical
+                && (c.legacy_events > 0 || c.legacy_buckets > 0 || c.legacy_state > 0)
+        })
         .collect())
 }
 
@@ -93,8 +141,16 @@ pub fn migrate(
 
     for m in &todo {
         let tx = db.conn.unchecked_transaction().map_err(|e| e.to_string())?;
-        tx.execute("UPDATE events SET project_id = ?1 WHERE project_id = ?2", params![m.canonical, m.legacy]).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM projects WHERE project_id = ?1", params![m.legacy]).map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE events SET project_id = ?1 WHERE project_id = ?2",
+            params![m.canonical, m.legacy],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM projects WHERE project_id = ?1",
+            params![m.legacy],
+        )
+        .map_err(|e| e.to_string())?;
 
         if keep_aggregates {
             tx.execute(
@@ -111,10 +167,30 @@ pub fn migrate(
                    dirty=1",
                 params![m.canonical, m.legacy],
             ).map_err(|e| e.to_string())?;
-            tx.execute("DELETE FROM buckets WHERE project_id = ?1", params![m.legacy]).map_err(|e| e.to_string())?;
-            tx.execute("DELETE FROM rollup_state WHERE project_id = ?1", params![m.legacy]).map_err(|e| e.to_string())?;
-            let max_id: i64 = tx.query_row("SELECT COALESCE(MAX(id), 0) FROM events WHERE project_id = ?1", params![m.canonical], |r| r.get(0)).unwrap_or(0);
-            let max_hour: i64 = tx.query_row("SELECT COALESCE(MAX(hour), 0) FROM buckets WHERE project_id = ?1", params![m.canonical], |r| r.get(0)).unwrap_or(0);
+            tx.execute(
+                "DELETE FROM buckets WHERE project_id = ?1",
+                params![m.legacy],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM rollup_state WHERE project_id = ?1",
+                params![m.legacy],
+            )
+            .map_err(|e| e.to_string())?;
+            let max_id: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(id), 0) FROM events WHERE project_id = ?1",
+                    params![m.canonical],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            let max_hour: i64 = tx
+                .query_row(
+                    "SELECT COALESCE(MAX(hour), 0) FROM buckets WHERE project_id = ?1",
+                    params![m.canonical],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
             tx.execute(
                 "INSERT INTO rollup_state(project_id, through_hour, through_event_id, session_state) VALUES(?1,?2,?3,NULL)
                  ON CONFLICT(project_id) DO UPDATE SET through_hour=excluded.through_hour, through_event_id=excluded.through_event_id, session_state=NULL",
@@ -122,8 +198,16 @@ pub fn migrate(
             ).map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
         } else {
-            tx.execute("DELETE FROM buckets WHERE project_id = ?1 OR project_id = ?2", params![m.canonical, m.legacy]).map_err(|e| e.to_string())?;
-            tx.execute("DELETE FROM rollup_state WHERE project_id = ?1 OR project_id = ?2", params![m.canonical, m.legacy]).map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM buckets WHERE project_id = ?1 OR project_id = ?2",
+                params![m.canonical, m.legacy],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "DELETE FROM rollup_state WHERE project_id = ?1 OR project_id = ?2",
+                params![m.canonical, m.legacy],
+            )
+            .map_err(|e| e.to_string())?;
             tx.commit().map_err(|e| e.to_string())?;
             super::rollup::rerollup_project(db, cfg, &m.canonical)?;
         }
@@ -131,7 +215,6 @@ pub fn migrate(
 
     Ok((todo, backup))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -170,7 +253,8 @@ mod tests {
         let path = "/tmp/example-project";
         let legacy = format!("path:{}", path);
         let canonical = "act_canonical".to_string();
-        db.upsert_project(&project(canonical.as_str(), path, "example")).unwrap();
+        db.upsert_project(&project(canonical.as_str(), path, "example"))
+            .unwrap();
 
         db.conn.execute(
             "INSERT INTO events(ts,kind,project_id,project_name,workspace,repo,rel_path,cmd,exit_code,duration_ms,count,meta) VALUES(1000,'file.modify',?1,'example','ws','repo',NULL,NULL,NULL,NULL,1,NULL)",
@@ -194,10 +278,38 @@ mod tests {
         let (migrated, _backup) = migrate(&db, &cfg, true, db.path.as_path()).unwrap();
         assert_eq!(migrated.len(), 1);
 
-        let legacy_events: i64 = db.conn.query_row("SELECT COUNT(*) FROM events WHERE project_id=?1", params![legacy], |r| r.get(0)).unwrap();
-        let canonical_events: i64 = db.conn.query_row("SELECT COUNT(*) FROM events WHERE project_id=?1", params![canonical], |r| r.get(0)).unwrap();
-        let legacy_buckets: i64 = db.conn.query_row("SELECT COUNT(*) FROM buckets WHERE project_id=?1", params![legacy], |r| r.get(0)).unwrap();
-        let canonical_buckets: i64 = db.conn.query_row("SELECT COUNT(*) FROM buckets WHERE project_id=?1", params![canonical], |r| r.get(0)).unwrap();
+        let legacy_events: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE project_id=?1",
+                params![legacy],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let canonical_events: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE project_id=?1",
+                params![canonical],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let legacy_buckets: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM buckets WHERE project_id=?1",
+                params![legacy],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let canonical_buckets: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM buckets WHERE project_id=?1",
+                params![canonical],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(legacy_events, 0);
         assert_eq!(canonical_events, 1);
         assert_eq!(legacy_buckets, 0);

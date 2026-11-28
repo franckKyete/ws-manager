@@ -30,6 +30,9 @@ jobs:
       - name: Install Node/Bun dependencies
         run: bun install
 
+      - name: Install GTK/Adwaita development libraries
+        run: sudo apt-get update && sudo apt-get install -y libgtk-4-dev libadwaita-1-dev
+
       - name: Check Markdown formatting
         run: bun run format:check
 

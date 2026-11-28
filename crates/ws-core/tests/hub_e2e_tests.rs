@@ -278,7 +278,7 @@ fn test_e2e_clone_from_hub_wshub_format() {
     assert!(status.success());
 
     let blueprint_content = format!(
-        "repositories:\n  backend:\n    url: {}\n    bare: bares/backend.git\n    checkout: backend\n",
+        "schema_version: 3\nrepositories:\n  backend:\n    url: {}\n    bare: bares/backend.git\n    checkout: backend\n",
         upstream_bare.display()
     );
 
@@ -356,7 +356,7 @@ fn test_e2e_clone_from_hub_legacy_fallback_format() {
     assert!(status.success());
 
     let blueprint_content = format!(
-        "repositories:\n  frontend:\n    url: {}\n    bare: bares/frontend.git\n    checkout: frontend\n",
+        "schema_version: 3\nrepositories:\n  frontend:\n    url: {}\n    bare: bares/frontend.git\n    checkout: frontend\n",
         upstream_bare.display()
     );
 
@@ -569,7 +569,7 @@ fn test_e2e_hub_state_restore_recreates_workspace_with_named_repos() {
         .unwrap();
 
     let repo_yml_content = format!(
-        "repositories:\n  mono:\n    bare: {}\n    checkout: mono\n",
+        "schema_version: 3\nrepositories:\n  mono:\n    bare: {}\n    checkout: mono\n",
         bare_repo.display()
     );
     let repo_yml = proj_dir.path().join("ws-project.yml");

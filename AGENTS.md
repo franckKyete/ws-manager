@@ -6,7 +6,8 @@ Issues live in this repo's GitHub Issues. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
-Five canonical roles mapped to default label strings. See `docs/agents/triage-labels.md`.
+Five canonical roles mapped to default label strings. See
+`docs/agents/triage-labels.md`.
 
 ### Domain docs
 

@@ -829,9 +829,16 @@ impl HubClient {
     ) -> Result<serde_json::Value> {
         let mut ep = format!("projects/{}/{}/activity/summary", namespace, name);
         let mut params = Vec::new();
-        if let Some(f) = from { params.push(format!("from={}", f)); }
-        if let Some(t) = to { params.push(format!("to={}", t)); }
-        if !params.is_empty() { ep.push('?'); ep.push_str(&params.join("&")); }
+        if let Some(f) = from {
+            params.push(format!("from={}", f));
+        }
+        if let Some(t) = to {
+            params.push(format!("to={}", t));
+        }
+        if !params.is_empty() {
+            ep.push('?');
+            ep.push_str(&params.join("&"));
+        }
         self.request(reqwest::Method::GET, &ep, None, None, None)
     }
 

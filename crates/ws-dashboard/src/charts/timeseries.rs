@@ -17,23 +17,34 @@ pub fn draw_timeseries(area: &DrawingArea, series: &[ActivitySeriesPoint], step:
     let series = series.to_vec();
     let step = step.to_string();
     area.set_draw_func(move |_area, cr, width, height| {
-        if width <= 10 || height <= 10 { return; }
+        if width <= 10 || height <= 10 {
+            return;
+        }
         let backend = CairoBackend::new(cr, (width as u32, height as u32)).ok();
-        let Some(backend) = backend else { return; };
+        let Some(backend) = backend else {
+            return;
+        };
         let root = backend.into_drawing_area();
         let _ = root.fill(&WHITE);
 
         if series.is_empty() {
             let _ = root.draw_text(
                 "No activity in selected range",
-                &("sans-serif", 14).into_font().color(&RGBColor(120, 120, 120)),
+                &("sans-serif", 14)
+                    .into_font()
+                    .color(&RGBColor(120, 120, 120)),
                 (width / 2 - 90, height / 2),
             );
             let _ = root.present();
             return;
         }
 
-        let max_val = series.iter().map(|p| p.active_seconds).max().unwrap_or(1).max(1);
+        let max_val = series
+            .iter()
+            .map(|p| p.active_seconds)
+            .max()
+            .unwrap_or(1)
+            .max(1);
         let x_max = series.len().max(1);
         let y_max = ((max_val as f64 * 1.15) / 60.0).ceil().max(1.0) as i32; // minutes
 
@@ -44,10 +55,14 @@ pub fn draw_timeseries(area: &DrawingArea, series: &[ActivitySeriesPoint], step:
             .build_cartesian_2d(0i32..(x_max as i32), 0i32..y_max)
         {
             Ok(c) => c,
-            Err(_) => { let _ = root.present(); return; }
+            Err(_) => {
+                let _ = root.present();
+                return;
+            }
         };
 
-        let _ = chart.configure_mesh()
+        let _ = chart
+            .configure_mesh()
             .disable_x_mesh()
             .y_desc("Active minutes")
             .label_style(("sans-serif", 12))
@@ -68,7 +83,9 @@ pub fn draw_timeseries(area: &DrawingArea, series: &[ActivitySeriesPoint], step:
                 let x = (width as f64) * ((idx as f64 + 0.5) / x_max as f64);
                 let _ = root.draw_text(
                     &text,
-                    &("sans-serif", 10).into_font().color(&RGBColor(100, 100, 100)),
+                    &("sans-serif", 10)
+                        .into_font()
+                        .color(&RGBColor(100, 100, 100)),
                     (x as i32 - 20, height - 18),
                 );
             }
@@ -84,7 +101,11 @@ fn format_bucket_label(epoch_secs: i64, step: &str) -> String {
     match dt {
         Some(dt) => {
             let local = dt.with_timezone(&chrono::Local);
-            if step == "day" { local.format("%m-%d").to_string() } else { local.format("%H:%M").to_string() }
+            if step == "day" {
+                local.format("%m-%d").to_string()
+            } else {
+                local.format("%H:%M").to_string()
+            }
         }
         None => "".to_string(),
     }

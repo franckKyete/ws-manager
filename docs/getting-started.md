@@ -118,8 +118,8 @@ ws project init server=git@github.com:example-org/api-server.git \
 This command:
 
 1. Clones bare repositories into `bares/server.git` and `bares/mobile.git`.
-2. Generates a root `ws-project.yml` configuration file with sensible `tmux`
-   and `hub` defaults.
+2. Generates a root `ws-project.yml` configuration file with sensible `tmux` and
+   `hub` defaults.
 3. Detects each repository's default branch (`origin/HEAD`, bare `HEAD`, then
    `main`/`develop`/`master`) and prompts for a `base_branch`, prefilled with
    that default. Press Enter to accept; the choice is saved for future

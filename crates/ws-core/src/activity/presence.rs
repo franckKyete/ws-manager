@@ -29,7 +29,7 @@ impl PresenceState {
             Self::Unknown => "unknown",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         match s {
             "active" => Self::Active,
             "idle" => Self::Idle,
@@ -69,7 +69,12 @@ pub fn spawn_logind_dbus_watcher() -> Option<mpsc::Receiver<PresenceEvent>> {
         .spawn(move || {
             loop {
                 let mut child = match std::process::Command::new("busctl")
-                    .args(["monitor", "--system", "--json=short", "org.freedesktop.login1"])
+                    .args([
+                        "monitor",
+                        "--system",
+                        "--json=short",
+                        "org.freedesktop.login1",
+                    ])
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::null())
                     .spawn()
@@ -87,41 +92,85 @@ pub fn spawn_logind_dbus_watcher() -> Option<mpsc::Receiver<PresenceEvent>> {
                 };
                 let reader = std::io::BufReader::new(stdout);
                 use std::io::BufRead;
-                for line in reader.lines().flatten() {
-                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
+                for line in reader.lines().map_while(Result::ok) {
+                    let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
+                        continue;
+                    };
                     let member = v.get("member").and_then(|m| m.as_str()).unwrap_or("");
                     let now = now_ms();
                     match member {
                         "PrepareForSleep" => {
                             let payload = v.get("payload");
-                            let going = payload.and_then(|p| p.get(0)).and_then(|b| b.as_bool())
-                                .or_else(|| payload.and_then(|p| p.get("data")).and_then(|d| d.as_bool()))
-                                .or_else(|| payload.and_then(|p| p.get("data")).and_then(|d| d.get(0)).and_then(|b| b.as_bool()))
+                            let going = payload
+                                .and_then(|p| p.get(0))
+                                .and_then(|b| b.as_bool())
+                                .or_else(|| {
+                                    payload
+                                        .and_then(|p| p.get("data"))
+                                        .and_then(|d| d.as_bool())
+                                })
+                                .or_else(|| {
+                                    payload
+                                        .and_then(|p| p.get("data"))
+                                        .and_then(|d| d.get(0))
+                                        .and_then(|b| b.as_bool())
+                                })
                                 .unwrap_or(false);
-                            let ev = if going { PresenceEvent::Sleep { ts_ms: now } } else { PresenceEvent::Wake { ts_ms: now } };
-                            if tx.send(ev).is_err() { let _ = child.kill(); return; }
+                            let ev = if going {
+                                PresenceEvent::Sleep { ts_ms: now }
+                            } else {
+                                PresenceEvent::Wake { ts_ms: now }
+                            };
+                            if tx.send(ev).is_err() {
+                                let _ = child.kill();
+                                return;
+                            }
                         }
                         "Lock" => {
-                            if tx.send(PresenceEvent::Locked { ts_ms: now }).is_err() { let _ = child.kill(); return; }
+                            if tx.send(PresenceEvent::Locked { ts_ms: now }).is_err() {
+                                let _ = child.kill();
+                                return;
+                            }
                         }
                         "Unlock" => {
-                            if tx.send(PresenceEvent::Unlocked { ts_ms: now }).is_err() { let _ = child.kill(); return; }
+                            if tx.send(PresenceEvent::Unlocked { ts_ms: now }).is_err() {
+                                let _ = child.kill();
+                                return;
+                            }
                         }
                         "PropertiesChanged" => {
                             // Session LockedHint changes: payload is [iface, {LockedHint: <bool>, ...}, invalidated]
                             let payload = v.get("payload");
-                            let iface = payload.and_then(|p| p.get(0)).and_then(|x| x.as_str())
-                                .or_else(|| payload.and_then(|p| p.get("data")).and_then(|d| d.get(0)).and_then(|x| x.as_str()))
+                            let iface = payload
+                                .and_then(|p| p.get(0))
+                                .and_then(|x| x.as_str())
+                                .or_else(|| {
+                                    payload
+                                        .and_then(|p| p.get("data"))
+                                        .and_then(|d| d.get(0))
+                                        .and_then(|x| x.as_str())
+                                })
                                 .unwrap_or("");
                             if iface == "org.freedesktop.login1.Session" {
-                                let changed_raw = payload.and_then(|p| p.get(1))
-                                    .or_else(|| payload.and_then(|p| p.get("data")).and_then(|d| d.get(1)));
-                                let locked = changed_raw.and_then(|c| c.get("data").unwrap_or(c).get("LockedHint")).and_then(|v| {
-                                    v.as_bool().or_else(|| v.get("data").and_then(|d| d.as_bool()))
+                                let changed_raw = payload.and_then(|p| p.get(1)).or_else(|| {
+                                    payload.and_then(|p| p.get("data")).and_then(|d| d.get(1))
                                 });
+                                let locked = changed_raw
+                                    .and_then(|c| c.get("data").unwrap_or(c).get("LockedHint"))
+                                    .and_then(|v| {
+                                        v.as_bool()
+                                            .or_else(|| v.get("data").and_then(|d| d.as_bool()))
+                                    });
                                 if let Some(locked) = locked {
-                                    let ev = if locked { PresenceEvent::Locked { ts_ms: now } } else { PresenceEvent::Unlocked { ts_ms: now } };
-                                    if tx.send(ev).is_err() { let _ = child.kill(); return; }
+                                    let ev = if locked {
+                                        PresenceEvent::Locked { ts_ms: now }
+                                    } else {
+                                        PresenceEvent::Unlocked { ts_ms: now }
+                                    };
+                                    if tx.send(ev).is_err() {
+                                        let _ = child.kill();
+                                        return;
+                                    }
                                 }
                             }
                         }
@@ -133,7 +182,9 @@ pub fn spawn_logind_dbus_watcher() -> Option<mpsc::Receiver<PresenceEvent>> {
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
         });
-    if handle.is_err() { return None; }
+    if handle.is_err() {
+        return None;
+    }
     Some(rx)
 }
 
@@ -186,13 +237,17 @@ impl PresenceMonitor {
         let away_ms = (cfg.presence.away_timeout.max(60) * 1000) as i64;
         // Close any open intervals at last known tick or now-away_timeout bound
         if let Ok(Some(open)) = db.current_presence_interval() {
-            let last_tick = db.get_meta_i64("presence_last_tick_ms").ok().flatten().unwrap_or(open.start_ts);
+            let last_tick = db
+                .get_meta_i64("presence_last_tick_ms")
+                .ok()
+                .flatten()
+                .unwrap_or(open.start_ts);
             let end = (last_tick + away_ms).min(now).max(open.start_ts);
             let _ = db.close_presence_interval(open.id, end);
         }
         // Also close any other dangling open intervals
         let _ = db.close_open_presence_intervals(now.min(now)); // no-op safety; current should be closed
-        // Start fresh as unknown; first tick will resolve
+                                                                // Start fresh as unknown; first tick will resolve
         self.current_state = PresenceState::Unknown;
         self.current_interval_id = None;
         self.last_transition_ts = now;
@@ -232,7 +287,9 @@ impl PresenceMonitor {
 
         // Ensure we have an interval if state is known
         if self.current_interval_id.is_none() && self.current_state != PresenceState::Unknown {
-            if let Ok(id) = db.open_presence_interval(now, self.current_state.as_str(), &self.current_source) {
+            if let Ok(id) =
+                db.open_presence_interval(now, self.current_state.as_str(), &self.current_source)
+            {
                 self.current_interval_id = Some(id);
             }
         }
@@ -248,7 +305,9 @@ impl PresenceMonitor {
         match ev {
             PresenceEvent::Resumed { ts_ms } => {
                 self.last_input_ts = ts_ms;
-                if self.current_state == PresenceState::Locked || self.current_state == PresenceState::Asleep {
+                if self.current_state == PresenceState::Locked
+                    || self.current_state == PresenceState::Asleep
+                {
                     return; // unlock/wake events handle these
                 }
                 if self.current_state != PresenceState::Active {
@@ -282,30 +341,49 @@ impl PresenceMonitor {
                 if self.current_state == PresenceState::Asleep {
                     // After wake, check lock; default to active
                     let locked = self.last_logind_locked.unwrap_or(false);
-                    let next = if locked { PresenceState::Locked } else { PresenceState::Active };
+                    let next = if locked {
+                        PresenceState::Locked
+                    } else {
+                        PresenceState::Active
+                    };
                     self.transition(db, ts_ms, next, "logind");
-                    if next == PresenceState::Active { self.last_input_ts = ts_ms; }
+                    if next == PresenceState::Active {
+                        self.last_input_ts = ts_ms;
+                    }
                 }
             }
             PresenceEvent::Manual { ts_ms, state } => {
                 self.transition(db, ts_ms, state, "manual");
-                if state == PresenceState::Active { self.last_input_ts = ts_ms; }
+                if state == PresenceState::Active {
+                    self.last_input_ts = ts_ms;
+                }
             }
         }
     }
 
     fn poll_logind(&mut self, db: &ActivityDb, cfg: &ActivityConfig, now: i64) {
-        if !cfg.presence.lock_aware && !cfg.presence.sleep_aware { return; }
-        let Some((locked, active)) = query_logind_session() else { return; };
+        if !cfg.presence.lock_aware && !cfg.presence.sleep_aware {
+            return;
+        }
+        let Some((locked, active)) = query_logind_session() else {
+            return;
+        };
         let was_locked = self.last_logind_locked;
         self.last_logind_locked = Some(locked);
 
-        if cfg.presence.sleep_aware && !active && self.current_state != PresenceState::Asleep && self.current_state != PresenceState::Locked {
+        if cfg.presence.sleep_aware
+            && !active
+            && self.current_state != PresenceState::Asleep
+            && self.current_state != PresenceState::Locked
+        {
             self.transition(db, now, PresenceState::Asleep, "logind");
             return;
         }
         if cfg.presence.lock_aware {
-            if locked && self.current_state != PresenceState::Locked && self.current_state != PresenceState::Asleep {
+            if locked
+                && self.current_state != PresenceState::Locked
+                && self.current_state != PresenceState::Asleep
+            {
                 self.transition(db, now, PresenceState::Locked, "logind");
                 return;
             }
@@ -316,15 +394,25 @@ impl PresenceMonitor {
             }
         }
         if cfg.presence.sleep_aware && active && self.current_state == PresenceState::Asleep {
-            let next = if locked { PresenceState::Locked } else { PresenceState::Active };
+            let next = if locked {
+                PresenceState::Locked
+            } else {
+                PresenceState::Active
+            };
             self.transition(db, now, next, "logind");
-            if next == PresenceState::Active { self.last_input_ts = now; }
+            if next == PresenceState::Active {
+                self.last_input_ts = now;
+            }
         }
     }
 
     fn apply_timeouts(&mut self, db: &ActivityDb, cfg: &ActivityConfig, now: i64) {
         let idle_ms = (cfg.presence.idle_timeout.max(30) * 1000) as i64;
-        let away_ms = (cfg.presence.away_timeout.max(cfg.presence.idle_timeout.max(30)) * 1000) as i64;
+        let away_ms = (cfg
+            .presence
+            .away_timeout
+            .max(cfg.presence.idle_timeout.max(30))
+            * 1000) as i64;
 
         match self.current_state {
             PresenceState::Active => {
@@ -332,29 +420,42 @@ impl PresenceMonitor {
                 // only if we haven't received input recently. This is a safety net; the
                 // primary idle signal is the ext-idle-notify idled event.
                 if now - self.last_input_ts >= away_ms {
-                    self.transition(db, self.last_input_ts + away_ms, PresenceState::Away, "timeout");
+                    self.transition(
+                        db,
+                        self.last_input_ts + away_ms,
+                        PresenceState::Away,
+                        "timeout",
+                    );
                 } else if now - self.last_input_ts >= idle_ms {
                     // Don't auto-transition to idle if wayland source is active; the idled event
                     // is more accurate. Only use timeout fallback when source is not wayland.
                     if self.current_source != "wayland" {
-                        self.transition(db, self.last_input_ts + idle_ms, PresenceState::Idle, "timeout");
+                        self.transition(
+                            db,
+                            self.last_input_ts + idle_ms,
+                            PresenceState::Idle,
+                            "timeout",
+                        );
                     }
                 }
             }
             PresenceState::Idle => {
                 let idle_since = self.last_transition_ts;
                 if now - idle_since >= (away_ms - idle_ms).max(0) {
-                    self.transition(db, idle_since + (away_ms - idle_ms).max(0), PresenceState::Away, "timeout");
+                    self.transition(
+                        db,
+                        idle_since + (away_ms - idle_ms).max(0),
+                        PresenceState::Away,
+                        "timeout",
+                    );
                 }
             }
-            PresenceState::Unknown => {
-                // Resolve unknown to active as a conservative startup default when presence is enabled
-                // but no source has reported yet. Better to be slightly over-present than to miss time;
-                // lock/sleep/idle will correct it.
-                if cfg.presence.enabled {
-                    self.transition(db, now, PresenceState::Active, "init");
-                    self.last_input_ts = now;
-                }
+            // Resolve unknown to active as a conservative startup default when presence is enabled
+            // but no source has reported yet. Better to be slightly over-present than to miss time;
+            // lock/sleep/idle will correct it.
+            PresenceState::Unknown if cfg.presence.enabled => {
+                self.transition(db, now, PresenceState::Active, "init");
+                self.last_input_ts = now;
             }
             _ => {}
         }
@@ -387,7 +488,9 @@ fn query_logind_session() -> Option<(bool, bool)> {
         cmd.args(["show-session", "self", "-p", "LockedHint", "-p", "Active"]);
     }
     let out = cmd.output().ok()?;
-    if !out.status.success() { return None; }
+    if !out.status.success() {
+        return None;
+    }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut locked = false;
     let mut active = true;
@@ -401,9 +504,17 @@ fn query_logind_session() -> Option<(bool, bool)> {
     Some((locked, active))
 }
 
-pub fn rollup_presence(db: &ActivityDb, cfg: &ActivityConfig, now_ms_val: i64) -> Result<(), String> {
+pub fn rollup_presence(
+    db: &ActivityDb,
+    cfg: &ActivityConfig,
+    now_ms_val: i64,
+) -> Result<(), String> {
     // Recompute last 2 hours by default; on first run or gaps compute wider range.
-    let last_rollup_hour = db.get_meta_i64("presence_rollup_hour").ok().flatten().unwrap_or(0);
+    let last_rollup_hour = db
+        .get_meta_i64("presence_rollup_hour")
+        .ok()
+        .flatten()
+        .unwrap_or(0);
     let from_hour = if last_rollup_hour > 0 {
         last_rollup_hour - 3600
     } else {
@@ -437,7 +548,9 @@ pub fn rollup_presence(db: &ActivityDb, cfg: &ActivityConfig, now_ms_val: i64) -
         for iv in &intervals {
             let start = iv.start_ts.max(hour_start);
             let end = iv.end_ts.unwrap_or(now_ms_val).min(hour_end);
-            if end <= start { continue; }
+            if end <= start {
+                continue;
+            }
             let secs = ((end - start + 999) / 1000).max(0);
             match iv.state.as_str() {
                 "active" => b.active_seconds += secs,
@@ -449,7 +562,11 @@ pub fn rollup_presence(db: &ActivityDb, cfg: &ActivityConfig, now_ms_val: i64) -
             }
         }
         // Clamp to hour
-        let sum = b.active_seconds + b.idle_seconds + b.away_seconds + b.locked_seconds + b.asleep_seconds;
+        let sum = b.active_seconds
+            + b.idle_seconds
+            + b.away_seconds
+            + b.locked_seconds
+            + b.asleep_seconds;
         if sum > 3600 {
             // Scale down proportionally to avoid rounding overflow
             let scale = 3600.0 / sum as f64;
@@ -457,7 +574,9 @@ pub fn rollup_presence(db: &ActivityDb, cfg: &ActivityConfig, now_ms_val: i64) -
             b.idle_seconds = (b.idle_seconds as f64 * scale).round() as i64;
             b.away_seconds = (b.away_seconds as f64 * scale).round() as i64;
             b.locked_seconds = (b.locked_seconds as f64 * scale).round() as i64;
-            b.asleep_seconds = (3600 - b.active_seconds - b.idle_seconds - b.away_seconds - b.locked_seconds).max(0);
+            b.asleep_seconds =
+                (3600 - b.active_seconds - b.idle_seconds - b.away_seconds - b.locked_seconds)
+                    .max(0);
         }
         db.upsert_presence_bucket(&b)?;
         hour += 3600;
@@ -467,7 +586,12 @@ pub fn rollup_presence(db: &ActivityDb, cfg: &ActivityConfig, now_ms_val: i64) -
     Ok(())
 }
 
-pub fn presence_totals_for_range(db: &ActivityDb, from_hour: i64, to_hour: i64, now_ms_val: i64) -> Result<PresenceTotals, String> {
+pub fn presence_totals_for_range(
+    db: &ActivityDb,
+    from_hour: i64,
+    to_hour: i64,
+    now_ms_val: i64,
+) -> Result<PresenceTotals, String> {
     // Ensure recent buckets are rolled up for open interval accuracy
     // (caller should have rolled up; this is just a read)
     let mut totals = db.presence_totals(from_hour, to_hour)?;
@@ -478,11 +602,16 @@ pub fn presence_totals_for_range(db: &ActivityDb, from_hour: i64, to_hour: i64, 
         let hour_start = cur_hour * 1000;
         let hour_end = (cur_hour + 3600) * 1000;
         let intervals = db.presence_intervals_in_range(hour_start, hour_end)?;
-        let mut cur = PresenceBucket { hour: cur_hour, ..Default::default() };
+        let mut cur = PresenceBucket {
+            hour: cur_hour,
+            ..Default::default()
+        };
         for iv in &intervals {
             let start = iv.start_ts.max(hour_start);
             let end = iv.end_ts.unwrap_or(now_ms_val).min(hour_end);
-            if end <= start { continue; }
+            if end <= start {
+                continue;
+            }
             let secs = ((end - start + 999) / 1000).max(0);
             match iv.state.as_str() {
                 "active" => cur.active_seconds += secs,
@@ -496,11 +625,14 @@ pub fn presence_totals_for_range(db: &ActivityDb, from_hour: i64, to_hour: i64, 
         // Replace current hour contribution: subtract stored, add live
         if let Ok(stored) = db.presence_buckets_in_range(cur_hour, cur_hour + 3600) {
             if let Some(s) = stored.first() {
-                totals.active_seconds = totals.active_seconds - s.active_seconds + cur.active_seconds;
+                totals.active_seconds =
+                    totals.active_seconds - s.active_seconds + cur.active_seconds;
                 totals.idle_seconds = totals.idle_seconds - s.idle_seconds + cur.idle_seconds;
                 totals.away_seconds = totals.away_seconds - s.away_seconds + cur.away_seconds;
-                totals.locked_seconds = totals.locked_seconds - s.locked_seconds + cur.locked_seconds;
-                totals.asleep_seconds = totals.asleep_seconds - s.asleep_seconds + cur.asleep_seconds;
+                totals.locked_seconds =
+                    totals.locked_seconds - s.locked_seconds + cur.locked_seconds;
+                totals.asleep_seconds =
+                    totals.asleep_seconds - s.asleep_seconds + cur.asleep_seconds;
                 totals.present_seconds = totals.active_seconds + totals.idle_seconds;
             }
         }
@@ -509,7 +641,9 @@ pub fn presence_totals_for_range(db: &ActivityDb, from_hour: i64, to_hour: i64, 
 }
 
 fn hour_floor(ts_ms: i64) -> i64 {
-    if ts_ms <= 0 { return 0; }
+    if ts_ms <= 0 {
+        return 0;
+    }
     let secs = ts_ms / 1000;
     (secs / 3600) * 3600
 }

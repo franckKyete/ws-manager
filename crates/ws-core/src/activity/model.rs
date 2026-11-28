@@ -6,24 +6,41 @@ pub struct ActivityEvent {
     pub kind: String,
     pub project_id: String,
     pub project_name: String,
-    #[serde(default)] pub workspace: String,
-    #[serde(default)] pub repo: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub rel_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub cmd: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub exit_code: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub duration_ms: Option<i64>,
-    #[serde(default = "default_count")] pub count: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")] pub meta: Option<String>,
+    #[serde(default)]
+    pub workspace: String,
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rel_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_code: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<i64>,
+    #[serde(default = "default_count")]
+    pub count: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<String>,
 }
-fn default_count() -> i64 { 1 }
+fn default_count() -> i64 {
+    1
+}
 
 impl ActivityEvent {
-    pub fn is_real(&self) -> bool { self.kind != "heartbeat" }
+    pub fn is_real(&self) -> bool {
+        self.kind != "heartbeat"
+    }
     pub fn category(&self) -> &'static str {
-        if self.kind.starts_with("file.") { "file" }
-        else if self.kind.starts_with("git.") { "git" }
-        else if self.kind == "command" { "command" }
-        else { "heartbeat" }
+        if self.kind.starts_with("file.") {
+            "file"
+        } else if self.kind.starts_with("git.") {
+            "git"
+        } else if self.kind == "command" {
+            "command"
+        } else {
+            "heartbeat"
+        }
     }
 }
 
@@ -32,8 +49,10 @@ pub struct Bucket {
     pub project_id: String,
     pub project_name: String,
     pub hour: i64,
-    #[serde(default)] pub workspace: String,
-    #[serde(default)] pub repo: String,
+    #[serde(default)]
+    pub workspace: String,
+    #[serde(default)]
+    pub repo: String,
     pub active_seconds: i64,
     pub file_events: i64,
     pub git_events: i64,
@@ -47,7 +66,8 @@ pub struct ProjectState {
     pub path: String,
     pub name: String,
     pub hub_project: Option<String>,
-    #[serde(default)] pub hub_auto_created: bool,
+    #[serde(default)]
+    pub hub_auto_created: bool,
     pub sync_enabled: bool,
     pub disabled_reason: Option<String>,
     pub linked_at: Option<i64>,
@@ -275,19 +295,32 @@ pub struct FocusInterval {
     pub id: i64,
     pub start_ts: i64,
     pub end_ts: Option<i64>,
-    #[serde(default)] pub project_id: String,
-    #[serde(default)] pub project_name: String,
-    #[serde(default)] pub workspace: String,
-    #[serde(default)] pub repo: String,
-    #[serde(default)] pub source: String,      // cwd|process|rule|manual|unattributed|tmux|browser|file
-    #[serde(default)] pub confidence: String,
-    #[serde(default)] pub category: String,     // work|leisure|neutral|unknown
-    #[serde(default)] pub category_source: String, // manual|target|work_rule|leisure_rule|default
-    #[serde(default)] pub app: String,
-    #[serde(default)] pub app_kind: String,    // terminal|browser|editor|media|game|chat|office|file_manager|system|unknown
-    #[serde(default)] pub domain: String,
-    #[serde(default)] pub rule: String,
-    #[serde(default)] pub evidence: String,
+    #[serde(default)]
+    pub project_id: String,
+    #[serde(default)]
+    pub project_name: String,
+    #[serde(default)]
+    pub workspace: String,
+    #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub source: String, // cwd|process|rule|manual|unattributed|tmux|browser|file
+    #[serde(default)]
+    pub confidence: String,
+    #[serde(default)]
+    pub category: String, // work|leisure|neutral|unknown
+    #[serde(default)]
+    pub category_source: String, // manual|target|work_rule|leisure_rule|default
+    #[serde(default)]
+    pub app: String,
+    #[serde(default)]
+    pub app_kind: String, // terminal|browser|editor|media|game|chat|office|file_manager|system|unknown
+    #[serde(default)]
+    pub domain: String,
+    #[serde(default)]
+    pub rule: String,
+    #[serde(default)]
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -295,8 +328,10 @@ pub struct FocusBucket {
     pub project_id: String,
     pub project_name: String,
     pub hour: i64,
-    #[serde(default)] pub workspace: String,
-    #[serde(default)] pub repo: String,
+    #[serde(default)]
+    pub workspace: String,
+    #[serde(default)]
+    pub repo: String,
     pub work_seconds: i64,
     pub input_seconds: i64,
 }
@@ -308,11 +343,16 @@ pub struct CategoryOverride {
     pub end_ts: Option<i64>,
     pub category: String,
     pub scope: String, // global|focus
-    #[serde(default)] pub match_project: String,
-    #[serde(default)] pub match_repo: String,
-    #[serde(default)] pub match_workspace: String,
-    #[serde(default)] pub match_domain: String,
-    #[serde(default)] pub match_app: String,
+    #[serde(default)]
+    pub match_project: String,
+    #[serde(default)]
+    pub match_repo: String,
+    #[serde(default)]
+    pub match_workspace: String,
+    #[serde(default)]
+    pub match_domain: String,
+    #[serde(default)]
+    pub match_app: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

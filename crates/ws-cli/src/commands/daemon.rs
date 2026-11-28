@@ -1,6 +1,4 @@
-use ws_core::daemon::{
-    get_daemon_pid_file, is_standalone_daemon_running, run_daemon_loop,
-};
+use ws_core::daemon::{get_daemon_pid_file, is_standalone_daemon_running, run_daemon_loop};
 use ws_core::utils::ensure_directory;
 
 pub fn execute_daemon(interval: Option<u64>) -> Result<(), String> {

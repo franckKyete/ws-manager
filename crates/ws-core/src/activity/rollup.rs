@@ -26,8 +26,10 @@ struct SessionState {
     cur_workspace: String,
     cur_repo: String,
     project_name: String,
-    #[serde(default)] last_app: String,
-    #[serde(default)] last_app_kind: String,
+    #[serde(default)]
+    last_app: String,
+    #[serde(default)]
+    last_app_kind: String,
 }
 
 pub fn rollup_all(db: &ActivityDb, cfg: &ActivityConfig) -> Result<(), String> {
@@ -38,7 +40,11 @@ pub fn rollup_all(db: &ActivityDb, cfg: &ActivityConfig) -> Result<(), String> {
     Ok(())
 }
 
-pub fn rerollup_project(db: &ActivityDb, cfg: &ActivityConfig, project_id: &str) -> Result<(), String> {
+pub fn rerollup_project(
+    db: &ActivityDb,
+    cfg: &ActivityConfig,
+    project_id: &str,
+) -> Result<(), String> {
     db.set_rollup_state(project_id, 0, 0, None)?;
     rollup_project(db, cfg, project_id)
 }
@@ -119,15 +125,46 @@ fn rollup_project(db: &ActivityDb, cfg: &ActivityConfig, project_id: &str) -> Re
             if st.session_open {
                 let gap = ev.ts.saturating_sub(st.last_activity_ts);
                 if st.session_credited_ms >= session_cap_ms {
-                    close_session(&mut st, tail_ms, session_cap_ms, &mut pending, &mut pending_spans, project_id);
+                    close_session(
+                        &mut st,
+                        tail_ms,
+                        session_cap_ms,
+                        &mut pending,
+                        &mut pending_spans,
+                        project_id,
+                    );
                 } else if gap > idle_gap_ms {
-                    let extended = extend_session_with_presence(db, cfg, project_id, &mut st, &mut pending, &mut pending_spans, ev.ts, idle_gap_ms, session_cap_ms);
+                    let extended = extend_session_with_presence(
+                        db,
+                        cfg,
+                        project_id,
+                        &mut st,
+                        &mut pending,
+                        &mut pending_spans,
+                        ev.ts,
+                        idle_gap_ms,
+                        session_cap_ms,
+                    );
                     let gap2 = ev.ts.saturating_sub(st.last_activity_ts);
                     if gap2 > idle_gap_ms && !extended {
-                        close_session(&mut st, tail_ms, session_cap_ms, &mut pending, &mut pending_spans, project_id);
+                        close_session(
+                            &mut st,
+                            tail_ms,
+                            session_cap_ms,
+                            &mut pending,
+                            &mut pending_spans,
+                            project_id,
+                        );
                     } else if gap2 > idle_gap_ms && extended {
                         // extended partially; close remainder
-                        close_session(&mut st, tail_ms, session_cap_ms, &mut pending, &mut pending_spans, project_id);
+                        close_session(
+                            &mut st,
+                            tail_ms,
+                            session_cap_ms,
+                            &mut pending,
+                            &mut pending_spans,
+                            project_id,
+                        );
                     }
                 }
             }
@@ -141,7 +178,10 @@ fn rollup_project(db: &ActivityDb, cfg: &ActivityConfig, project_id: &str) -> Re
                 st.cur_workspace = ev.workspace.clone();
                 st.cur_repo = ev.repo.clone();
                 st.project_name = ev.project_name.clone();
-                if let Ok(Some(fi)) = db.focus_interval_at(ev.ts) { st.last_app = fi.app.clone(); st.last_app_kind = fi.app_kind.clone(); }
+                if let Ok(Some(fi)) = db.focus_interval_at(ev.ts) {
+                    st.last_app = fi.app.clone();
+                    st.last_app_kind = fi.app_kind.clone();
+                }
                 let hour = hour_floor(ev.ts);
                 let key = (hour, st.cur_workspace.clone(), st.cur_repo.clone());
                 let b = pending.entry(key.clone()).or_insert_with(|| Bucket {
@@ -185,7 +225,14 @@ fn rollup_project(db: &ActivityDb, cfg: &ActivityConfig, project_id: &str) -> Re
                 }
 
                 if st.session_credited_ms >= session_cap_ms {
-                    close_session(&mut st, 0, session_cap_ms, &mut pending, &mut pending_spans, project_id);
+                    close_session(
+                        &mut st,
+                        0,
+                        session_cap_ms,
+                        &mut pending,
+                        &mut pending_spans,
+                        project_id,
+                    );
                     // start new session on this real event
                     if is_real {
                         st.session_open = true;
@@ -195,7 +242,10 @@ fn rollup_project(db: &ActivityDb, cfg: &ActivityConfig, project_id: &str) -> Re
                         st.cur_workspace = ev.workspace.clone();
                         st.cur_repo = ev.repo.clone();
                         st.project_name = ev.project_name.clone();
-                        if let Ok(Some(fi)) = db.focus_interval_at(ev.ts) { st.last_app = fi.app.clone(); st.last_app_kind = fi.app_kind.clone(); }
+                        if let Ok(Some(fi)) = db.focus_interval_at(ev.ts) {
+                            st.last_app = fi.app.clone();
+                            st.last_app_kind = fi.app_kind.clone();
+                        }
                         let hour = hour_floor(ev.ts);
                         let key = (hour, st.cur_workspace.clone(), st.cur_repo.clone());
                         let b = pending.entry(key.clone()).or_insert_with(|| Bucket {
@@ -233,10 +283,21 @@ fn rollup_project(db: &ActivityDb, cfg: &ActivityConfig, project_id: &str) -> Re
             let _ = db.add_bucket_active(b);
         }
         for s in &pending_spans {
-            let _ = db.insert_event_span(&s.project_id, &s.project_name, &s.workspace, &s.repo, s.start_ts, s.end_ts);
+            let _ = db.insert_event_span(
+                &s.project_id,
+                &s.project_name,
+                &s.workspace,
+                &s.repo,
+                s.start_ts,
+                s.end_ts,
+            );
         }
         through_id = last_batch_id;
-        let through_hour = hour_floor(if st.last_activity_ts > 0 { st.last_activity_ts } else { 0 });
+        let through_hour = hour_floor(if st.last_activity_ts > 0 {
+            st.last_activity_ts
+        } else {
+            0
+        });
         let state_str = serde_json::to_string(&st).ok();
         db.set_rollup_state(project_id, through_id, through_hour, state_str.as_deref())?;
 
@@ -249,10 +310,31 @@ fn rollup_project(db: &ActivityDb, cfg: &ActivityConfig, project_id: &str) -> Re
         let now = super::db::now_ms();
         let mut pending2: HashMap<(i64, String, String), Bucket> = HashMap::new();
         let mut spans2: Vec<PendingSpan> = Vec::new();
-        let extended = extend_session_with_presence(db, cfg, project_id, &mut st, &mut pending2, &mut spans2, now, idle_gap_ms, session_cap_ms);
+        let extended = extend_session_with_presence(
+            db,
+            cfg,
+            project_id,
+            &mut st,
+            &mut pending2,
+            &mut spans2,
+            now,
+            idle_gap_ms,
+            session_cap_ms,
+        );
         if extended || !pending2.is_empty() {
-            for b in pending2.values() { let _ = db.add_bucket_active(b); }
-            for s in &spans2 { let _ = db.insert_event_span(&s.project_id, &s.project_name, &s.workspace, &s.repo, s.start_ts, s.end_ts); }
+            for b in pending2.values() {
+                let _ = db.add_bucket_active(b);
+            }
+            for s in &spans2 {
+                let _ = db.insert_event_span(
+                    &s.project_id,
+                    &s.project_name,
+                    &s.workspace,
+                    &s.repo,
+                    s.start_ts,
+                    s.end_ts,
+                );
+            }
             let through_hour = hour_floor(st.last_activity_ts);
             let state_str = serde_json::to_string(&st).ok();
             let _ = db.set_rollup_state(project_id, through_id, through_hour, state_str.as_deref());
@@ -261,7 +343,6 @@ fn rollup_project(db: &ActivityDb, cfg: &ActivityConfig, project_id: &str) -> Re
 
     Ok(())
 }
-
 
 fn extend_session_with_presence(
     db: &ActivityDb,
@@ -274,59 +355,116 @@ fn extend_session_with_presence(
     idle_gap_ms: i64,
     session_cap_ms: i64,
 ) -> bool {
-    if !cfg.presence.extend_sessions { return false; }
-    if !st.session_open { return false; }
+    if !cfg.presence.extend_sessions {
+        return false;
+    }
+    if !st.session_open {
+        return false;
+    }
     let start = st.last_activity_ts;
     let end = next_event_ts;
-    if end <= start { return false; }
+    if end <= start {
+        return false;
+    }
 
-    let focus = match db.focus_intervals_in_range(start, end) { Ok(v) => v, Err(_) => return false };
-    let presence = match db.presence_intervals_in_range(start, end) { Ok(v) => v, Err(_) => return false };
-    if focus.is_empty() || presence.is_empty() { return false; }
+    let focus = match db.focus_intervals_in_range(start, end) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let presence = match db.presence_intervals_in_range(start, end) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    if focus.is_empty() || presence.is_empty() {
+        return false;
+    }
 
     let mut extended_any = false;
     let mut cursor = start;
     // Walk by focus interval boundaries to credit covered segments
     let mut boundaries: Vec<i64> = vec![start, end];
-    for fi in &focus { boundaries.push(fi.start_ts.max(start).min(end)); boundaries.push(fi.end_ts.unwrap_or(end).min(end).max(start)); }
-    for pi in &presence { boundaries.push(pi.start_ts.max(start).min(end)); boundaries.push(pi.end_ts.unwrap_or(end).min(end).max(start)); }
-    boundaries.sort(); boundaries.dedup();
+    for fi in &focus {
+        boundaries.push(fi.start_ts.max(start).min(end));
+        boundaries.push(fi.end_ts.unwrap_or(end).min(end).max(start));
+    }
+    for pi in &presence {
+        boundaries.push(pi.start_ts.max(start).min(end));
+        boundaries.push(pi.end_ts.unwrap_or(end).min(end).max(start));
+    }
+    boundaries.sort();
+    boundaries.dedup();
 
     for w in boundaries.windows(2) {
-        let a = w[0]; let b = w[1];
-        if b <= a { continue; }
-        if a < cursor { continue; }
+        let a = w[0];
+        let b = w[1];
+        if b <= a {
+            continue;
+        }
+        if a < cursor {
+            continue;
+        }
         // if there's an uncovered gap larger than idle_gap, stop extending
-        if a.saturating_sub(st.last_activity_ts) > idle_gap_ms { break; }
+        if a.saturating_sub(st.last_activity_ts) > idle_gap_ms {
+            break;
+        }
 
-        let present = presence.iter().any(|p| matches!(p.state.as_str(), "active"|"idle") && p.start_ts < b && p.end_ts.unwrap_or(end) >= a);
-        if !present { continue; }
+        let present = presence.iter().any(|p| {
+            matches!(p.state.as_str(), "active" | "idle")
+                && p.start_ts < b
+                && p.end_ts.unwrap_or(end) >= a
+        });
+        if !present {
+            continue;
+        }
 
         let covered = focus.iter().any(|fi| {
-            if fi.start_ts >= b || fi.end_ts.unwrap_or(end) <= a { return false; }
-            if fi.category != "work" { return false; }
+            if fi.start_ts >= b || fi.end_ts.unwrap_or(end) <= a {
+                return false;
+            }
+            if fi.category != "work" {
+                return false;
+            }
             let same_project = !fi.project_id.is_empty() && fi.project_id == project_id;
-            let same_repo = same_project && (fi.repo.is_empty() || st.cur_repo.is_empty() || fi.repo == st.cur_repo);
+            let same_repo = same_project
+                && (fi.repo.is_empty() || st.cur_repo.is_empty() || fi.repo == st.cur_repo);
             // Only extend by work-capable app when the focus interval is not mapped to a different project.
             let unmapped_focus = fi.project_id.is_empty();
             let same_work_app = unmapped_focus
-                && !fi.app.is_empty() && !st.last_app.is_empty()
+                && !fi.app.is_empty()
+                && !st.last_app.is_empty()
                 && fi.app.eq_ignore_ascii_case(&st.last_app)
                 && matches!(fi.app_kind.as_str(), "terminal" | "editor" | "office");
             same_project || same_repo || same_work_app
         });
-        if !covered { continue; }
+        if !covered {
+            continue;
+        }
 
         let mut delta = b.saturating_sub(st.last_activity_ts);
         let remaining = session_cap_ms.saturating_sub(st.session_credited_ms);
-        if delta > remaining { delta = remaining; }
-        if delta <= 0 { break; }
-        add_active_duration(pending, pending_spans, project_id, &st.project_name, &st.cur_workspace, &st.cur_repo, st.last_activity_ts, st.last_activity_ts + delta);
+        if delta > remaining {
+            delta = remaining;
+        }
+        if delta <= 0 {
+            break;
+        }
+        add_active_duration(
+            pending,
+            pending_spans,
+            project_id,
+            &st.project_name,
+            &st.cur_workspace,
+            &st.cur_repo,
+            st.last_activity_ts,
+            st.last_activity_ts + delta,
+        );
         st.session_credited_ms += delta;
         st.last_activity_ts += delta;
         cursor = st.last_activity_ts;
         extended_any = true;
-        if st.session_credited_ms >= session_cap_ms { break; }
+        if st.session_credited_ms >= session_cap_ms {
+            break;
+        }
     }
     extended_any
 }
@@ -459,7 +597,12 @@ mod tests {
             project_name: "proj".to_string(),
             workspace: ws.to_string(),
             repo: repo.to_string(),
-            rel_path: None, cmd: None, exit_code: None, duration_ms: None, count: 1, meta: None,
+            rel_path: None,
+            cmd: None,
+            exit_code: None,
+            duration_ms: None,
+            count: 1,
+            meta: None,
         }
     }
 
@@ -468,8 +611,10 @@ mod tests {
         let (_d, db) = test_db();
         let c = cfg();
         // two events 10s apart in same hour -> should create session and credit active time including tail (capped by events/gap logic)
-        db.insert_event(&ev(1_700_000_000_000, "file.modify", "p1", "ws1", "r1")).unwrap();
-        db.insert_event(&ev(1_700_000_010_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(1_700_000_000_000, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
+        db.insert_event(&ev(1_700_000_010_000, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
         rollup_all(&db, &c).unwrap();
         let rows = db.report_totals(0, i64::MAX / 2, None).unwrap();
         assert!(!rows.is_empty());
@@ -485,32 +630,50 @@ mod tests {
         let mut c = cfg();
         c.idle_gap = 60;
         c.tail_credit = 0;
-        db.insert_event(&ev(1_700_000_000_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(1_700_000_000_000, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
         // > idle gap later
-        db.insert_event(&ev(1_700_000_000_000 + 120_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(
+            1_700_000_000_000 + 120_000,
+            "file.modify",
+            "p1",
+            "ws1",
+            "r1",
+        ))
+        .unwrap();
         rollup_all(&db, &c).unwrap();
         let rows = db.report_totals(0, i64::MAX / 2, None).unwrap();
         let sessions: i64 = rows.iter().map(|r| r.session_count).sum();
         assert!(sessions >= 2, "expected >=2 sessions, got {}", sessions);
     }
 
-    fn seed_focus(db: &ActivityDb, start_ms: i64, end_ms: i64, project_id: &str, category: &str, app: &str, app_kind: &str) {
+    fn seed_focus(
+        db: &ActivityDb,
+        start_ms: i64,
+        end_ms: i64,
+        project_id: &str,
+        category: &str,
+        app: &str,
+        app_kind: &str,
+    ) {
         use crate::activity::model::FocusInterval;
-        let id = db.open_focus_interval(&FocusInterval {
-            start_ts: start_ms,
-            end_ts: None,
-            project_id: project_id.to_string(),
-            project_name: "proj".to_string(),
-            workspace: "ws1".to_string(),
-            repo: "r1".to_string(),
-            source: "test".to_string(),
-            confidence: "high".to_string(),
-            category: category.to_string(),
-            category_source: "test".to_string(),
-            app: app.to_string(),
-            app_kind: app_kind.to_string(),
-            ..Default::default()
-        }).unwrap();
+        let id = db
+            .open_focus_interval(&FocusInterval {
+                start_ts: start_ms,
+                end_ts: None,
+                project_id: project_id.to_string(),
+                project_name: "proj".to_string(),
+                workspace: "ws1".to_string(),
+                repo: "r1".to_string(),
+                source: "test".to_string(),
+                confidence: "high".to_string(),
+                category: category.to_string(),
+                category_source: "test".to_string(),
+                app: app.to_string(),
+                app_kind: app_kind.to_string(),
+                ..Default::default()
+            })
+            .unwrap();
         db.close_focus_interval(id, end_ms).unwrap();
     }
 
@@ -520,11 +683,19 @@ mod tests {
     }
 
     fn total_active(db: &ActivityDb) -> i64 {
-        db.report_totals(0, i64::MAX / 2, None).unwrap().iter().map(|r| r.active_seconds).sum()
+        db.report_totals(0, i64::MAX / 2, None)
+            .unwrap()
+            .iter()
+            .map(|r| r.active_seconds)
+            .sum()
     }
 
     fn total_sessions(db: &ActivityDb) -> i64 {
-        db.report_totals(0, i64::MAX / 2, None).unwrap().iter().map(|r| r.session_count).sum()
+        db.report_totals(0, i64::MAX / 2, None)
+            .unwrap()
+            .iter()
+            .map(|r| r.session_count)
+            .sum()
     }
 
     #[test]
@@ -535,14 +706,19 @@ mod tests {
         c.tail_credit = 0;
         c.presence.extend_sessions = true;
         let t0 = 1_700_000_000_000i64;
-        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
         // second event after idle gap; presence+focus cover the gap
-        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
         seed_focus(&db, t0, t0 + 700_000, "p1", "work", "kitty", "terminal");
         seed_presence(&db, t0, t0 + 700_000, "idle");
         rollup_all(&db, &c).unwrap();
         let total = total_active(&db);
-        assert!(total >= 540, "idle work focus should extend session, got {total}s");
+        assert!(
+            total >= 540,
+            "idle work focus should extend session, got {total}s"
+        );
     }
 
     #[test]
@@ -554,13 +730,18 @@ mod tests {
             c.tail_credit = 0;
             c.presence.extend_sessions = true;
             let t0 = 1_700_000_000_000i64;
-            db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1")).unwrap();
-            db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+            db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1"))
+                .unwrap();
+            db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1"))
+                .unwrap();
             seed_focus(&db, t0, t0 + 700_000, "p1", "work", "kitty", "terminal");
             seed_presence(&db, t0, t0 + 700_000, state);
             rollup_all(&db, &c).unwrap();
             let total = total_active(&db);
-            assert_eq!(total, 0, "{state} presence must not extend session, got {total}s");
+            assert_eq!(
+                total, 0,
+                "{state} presence must not extend session, got {total}s"
+            );
         }
     }
 
@@ -572,13 +753,18 @@ mod tests {
         c.tail_credit = 0;
         c.presence.extend_sessions = true;
         let t0 = 1_700_000_000_000i64;
-        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1")).unwrap();
-        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
+        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
         seed_focus(&db, t0, t0 + 700_000, "", "leisure", "mpv", "media");
         seed_presence(&db, t0, t0 + 700_000, "active");
         rollup_all(&db, &c).unwrap();
         let total = total_active(&db);
-        assert_eq!(total, 0, "leisure focus must not extend session, got {total}s");
+        assert_eq!(
+            total, 0,
+            "leisure focus must not extend session, got {total}s"
+        );
     }
 
     #[test]
@@ -589,14 +775,19 @@ mod tests {
         c.tail_credit = 0;
         c.presence.extend_sessions = true;
         let t0 = 1_700_000_000_000i64;
-        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1")).unwrap();
-        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
+        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
         // unmapped focus, work-capable app: may extend
         seed_focus(&db, t0, t0 + 700_000, "", "work", "code", "editor");
         seed_presence(&db, t0, t0 + 700_000, "active");
         rollup_all(&db, &c).unwrap();
         let total = total_active(&db);
-        assert!(total >= 540, "unmapped work-capable app should extend work session, got {total}s");
+        assert!(
+            total >= 540,
+            "unmapped work-capable app should extend work session, got {total}s"
+        );
     }
 
     #[test]
@@ -607,14 +798,19 @@ mod tests {
         c.tail_credit = 0;
         c.presence.extend_sessions = true;
         let t0 = 1_700_000_000_000i64;
-        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1")).unwrap();
-        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
+        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
         // focus is mapped to a different project - must not extend p1
         seed_focus(&db, t0, t0 + 700_000, "other", "work", "code", "editor");
         seed_presence(&db, t0, t0 + 700_000, "active");
         rollup_all(&db, &c).unwrap();
         let total = total_active(&db);
-        assert_eq!(total, 0, "different-project focus must not extend session, got {total}s");
+        assert_eq!(
+            total, 0,
+            "different-project focus must not extend session, got {total}s"
+        );
     }
 
     #[test]
@@ -625,13 +821,18 @@ mod tests {
         c.tail_credit = 0;
         c.presence.extend_sessions = true;
         let t0 = 1_700_000_000_000i64;
-        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1")).unwrap();
-        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
+        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
         seed_focus(&db, t0, t0 + 700_000, "other", "work", "firefox", "browser");
         seed_presence(&db, t0, t0 + 700_000, "active");
         rollup_all(&db, &c).unwrap();
         let total = total_active(&db);
-        assert_eq!(total, 0, "browser app should not extend by app match, got {total}s");
+        assert_eq!(
+            total, 0,
+            "browser app should not extend by app match, got {total}s"
+        );
     }
 
     #[test]
@@ -642,8 +843,10 @@ mod tests {
         c.tail_credit = 0;
         c.presence.extend_sessions = true;
         let t0 = 1_700_000_000_000i64;
-        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1")).unwrap();
-        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
+        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
         seed_focus(&db, t0, t0 + 700_000, "p1", "work", "kitty", "terminal");
         seed_presence(&db, t0, t0 + 700_000, "idle");
         rollup_all(&db, &c).unwrap();
@@ -652,8 +855,14 @@ mod tests {
         rollup_all(&db, &c).unwrap();
         let total2 = total_active(&db);
         let sessions2 = total_sessions(&db);
-        assert_eq!(total1, total2, "active seconds changed on second rollup: {total1} -> {total2}");
-        assert_eq!(sessions1, sessions2, "session count changed on second rollup: {sessions1} -> {sessions2}");
+        assert_eq!(
+            total1, total2,
+            "active seconds changed on second rollup: {total1} -> {total2}"
+        );
+        assert_eq!(
+            sessions1, sessions2,
+            "session count changed on second rollup: {sessions1} -> {sessions2}"
+        );
     }
 
     #[test]
@@ -664,8 +873,10 @@ mod tests {
         c.tail_credit = 0;
         let t0 = 1_700_000_000_000i64;
         // two projects active in same 10-minute window
-        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1")).unwrap();
-        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
+        db.insert_event(&ev(t0 + 600_000, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
         let mut ev2 = ev(t0, "file.modify", "p2", "ws2", "r2");
         ev2.project_name = "proj2".to_string();
         db.insert_event(&ev2).unwrap();
@@ -673,11 +884,22 @@ mod tests {
         ev2b.project_name = "proj2".to_string();
         db.insert_event(&ev2b).unwrap();
         rollup_all(&db, &c).unwrap();
-        let raw: i64 = db.report_totals(0, i64::MAX / 2, None).unwrap().iter().map(|r| r.active_seconds).sum();
+        let raw: i64 = db
+            .report_totals(0, i64::MAX / 2, None)
+            .unwrap()
+            .iter()
+            .map(|r| r.active_seconds)
+            .sum();
         let union = db.event_work_union(0, i64::MAX / 2, None).unwrap();
         assert!(raw >= 1200, "raw should count both sessions, got {raw}");
-        assert!(union >= 590 && union <= 610, "union should be ~600s, got {union}");
-        assert!(union < raw, "union should be less than raw when overlapping");
+        assert!(
+            (590..=610).contains(&union),
+            "union should be ~600s, got {union}"
+        );
+        assert!(
+            union < raw,
+            "union should be less than raw when overlapping"
+        );
     }
 
     #[test]
@@ -687,8 +909,10 @@ mod tests {
         c.idle_gap = 300;
         c.tail_credit = 0;
         let t0 = 1_700_000_000_000i64;
-        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1")).unwrap();
-        db.insert_event(&ev(t0 + 60_000, "file.modify", "p1", "ws1", "r1")).unwrap();
+        db.insert_event(&ev(t0, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
+        db.insert_event(&ev(t0 + 60_000, "file.modify", "p1", "ws1", "r1"))
+            .unwrap();
         rollup_all(&db, &c).unwrap();
         let u1 = db.event_work_union(0, i64::MAX / 2, None).unwrap();
         // rerollup from scratch: clear rollup state and buckets/spans for clean replay

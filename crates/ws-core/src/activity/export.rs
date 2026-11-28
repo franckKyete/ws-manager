@@ -23,21 +23,23 @@ pub fn export_events(db: &ActivityDb, from_ms: i64, to_ms: i64) -> Result<Vec<Ex
         "SELECT id, ts, kind, project_id, project_name, workspace, repo, rel_path, cmd, exit_code, duration_ms, count
          FROM events WHERE ts >= ?1 AND ts < ?2 ORDER BY ts ASC, id ASC"
     ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map(rusqlite::params![from_ms, to_ms], |r| {
-        Ok(ExportRow {
-            id: r.get(0)?,
-            ts: r.get(1)?,
-            kind: r.get(2)?,
-            project_id: r.get(3)?,
-            project_name: r.get(4)?,
-            workspace: r.get::<_, String>(5).unwrap_or_default(),
-            repo: r.get::<_, String>(6).unwrap_or_default(),
-            rel_path: r.get(7)?,
-            cmd: r.get(8)?,
-            exit_code: r.get(9)?,
-            duration_ms: r.get(10)?,
-            count: r.get::<_, i64>(11).unwrap_or(1),
+    let rows = stmt
+        .query_map(rusqlite::params![from_ms, to_ms], |r| {
+            Ok(ExportRow {
+                id: r.get(0)?,
+                ts: r.get(1)?,
+                kind: r.get(2)?,
+                project_id: r.get(3)?,
+                project_name: r.get(4)?,
+                workspace: r.get::<_, String>(5).unwrap_or_default(),
+                repo: r.get::<_, String>(6).unwrap_or_default(),
+                rel_path: r.get(7)?,
+                cmd: r.get(8)?,
+                exit_code: r.get(9)?,
+                duration_ms: r.get(10)?,
+                count: r.get::<_, i64>(11).unwrap_or(1),
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
     rows.map(|r| r.map_err(|e| e.to_string())).collect()
 }

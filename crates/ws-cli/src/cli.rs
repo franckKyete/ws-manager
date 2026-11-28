@@ -1009,9 +1009,15 @@ pub enum ActivityAction {
         repo: Option<String>,
         #[arg(long, help = "Filter by workspace name")]
         workspace: Option<String>,
-        #[arg(long, help = "Filter by device id (not applied to local bucketing; hub views only)")]
+        #[arg(
+            long,
+            help = "Filter by device id (not applied to local bucketing; hub views only)"
+        )]
         device: Option<String>,
-        #[arg(long, help = "Display timezone (not applied to local bucketing; hub views only)")]
+        #[arg(
+            long,
+            help = "Display timezone (not applied to local bucketing; hub views only)"
+        )]
         tz: Option<String>,
         #[arg(long, help = "Output JSON")]
         json: bool,
@@ -1062,7 +1068,11 @@ pub enum ActivityAction {
         repo: Option<String>,
         #[arg(long, help = "Filter by workspace name")]
         workspace: Option<String>,
-        #[arg(long, help = "Group series by: none or project", default_value = "none")]
+        #[arg(
+            long,
+            help = "Group series by: none or project",
+            default_value = "none"
+        )]
         group_by: String,
         #[arg(long, help = "Output JSON (default)")]
         json: bool,
@@ -1100,7 +1110,9 @@ pub enum ActivityAction {
         #[arg(long, help = "Show what would be deleted")]
         dry_run: bool,
     },
-    #[command(about = "Recompute activity buckets/spans from raw events (fixes overlap double-counting)")]
+    #[command(
+        about = "Recompute activity buckets/spans from raw events (fixes overlap double-counting)"
+    )]
     Recompute {
         #[arg(long, default_value = "today", help = "Range to recompute: today")]
         range: String,
@@ -1140,7 +1152,10 @@ pub enum ActivityAction {
         #[command(subcommand)]
         action: ActivityIdsAction,
     },
-    #[command(about = "Record a shell command event (used by shell hooks)", hide = true)]
+    #[command(
+        about = "Record a shell command event (used by shell hooks)",
+        hide = true
+    )]
     Record {
         #[arg(long)]
         cmd: Option<String>,
@@ -1226,7 +1241,6 @@ pub enum ActivityDeviceAction {
     },
 }
 
-
 #[derive(Subcommand, Debug)]
 pub enum ActivityIdsAction {
     #[command(about = "List canonical and legacy project IDs found in local activity data")]
@@ -1235,7 +1249,10 @@ pub enum ActivityIdsAction {
     Migrate {
         #[arg(long, help = "Show what would change without modifying data")]
         dry_run: bool,
-        #[arg(long, help = "Keep legacy aggregates instead of rebuilding from raw events")]
+        #[arg(
+            long,
+            help = "Keep legacy aggregates instead of rebuilding from raw events"
+        )]
         keep_aggregates: bool,
         #[arg(long, help = "Skip confirmation prompt")]
         yes: bool,

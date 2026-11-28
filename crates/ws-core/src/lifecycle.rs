@@ -84,9 +84,7 @@ impl LifecycleHook {
                 .or_else(|| obj.get("cmd"))
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
-            if run.is_none() {
-                return None;
-            }
+            run.as_ref()?;
             let name = obj
                 .get("name")
                 .and_then(|v| v.as_str())

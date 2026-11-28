@@ -474,6 +474,7 @@ mod tests {
             hub_auto_save: None,
             hub_project: None,
             hub: serde_json::Value::Null,
+            activity: serde_json::Value::Null,
             lifecycle,
             schema_version: Some(ws_core::lifecycle::LIFECYCLE_SCHEMA_VERSION),
             workspace: ws_core::models::WorkspaceRootConfig::default(),

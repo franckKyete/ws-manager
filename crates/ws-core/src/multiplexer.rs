@@ -29,16 +29,35 @@ pub struct TmuxSnapshot {
 impl TmuxSnapshot {
     pub fn capture() -> Self {
         let mut windows_by_session: HashMap<String, Vec<String>> = HashMap::new();
-        let Some(bin) = TmuxLauncher::binary() else { return Self { windows_by_session }; };
-        let Ok(out) = command_for(bin).args(["list-windows", "-a", "-F", "#{session_name}\t#{window_name}"]).output() else {
+        let Some(bin) = TmuxLauncher::binary() else {
             return Self { windows_by_session };
         };
-        if !out.status.success() { return Self { windows_by_session }; }
+        let Ok(out) = command_for(bin)
+            .args([
+                "list-windows",
+                "-a",
+                "-F",
+                "#{session_name}\t#{window_name}",
+            ])
+            .output()
+        else {
+            return Self { windows_by_session };
+        };
+        if !out.status.success() {
+            return Self { windows_by_session };
+        }
         for line in String::from_utf8_lossy(&out.stdout).lines() {
             let mut parts = line.splitn(2, '\t');
-            let Some(session) = parts.next() else { continue; };
-            let Some(window) = parts.next() else { continue; };
-            windows_by_session.entry(session.to_string()).or_default().push(window.to_string());
+            let Some(session) = parts.next() else {
+                continue;
+            };
+            let Some(window) = parts.next() else {
+                continue;
+            };
+            windows_by_session
+                .entry(session.to_string())
+                .or_default()
+                .push(window.to_string());
         }
         Self { windows_by_session }
     }
@@ -48,10 +67,14 @@ impl TmuxSnapshot {
     }
 
     pub fn window_active(&self, session_name: &str, window_name: &str) -> bool {
-        let Some(windows) = self.windows_by_session.get(session_name) else { return false; };
+        let Some(windows) = self.windows_by_session.get(session_name) else {
+            return false;
+        };
         let clean = window_name.trim_start_matches('@');
         let with_at = format!("@{clean}");
-        windows.iter().any(|t| t == window_name || t == clean || t == &with_at)
+        windows
+            .iter()
+            .any(|t| t == window_name || t == clean || t == &with_at)
     }
 }
 
@@ -61,27 +84,47 @@ pub struct ZellijSnapshot {
 
 impl ZellijSnapshot {
     pub fn capture() -> Self {
-        let Some(bin) = ZellijLauncher::binary() else { return Self { sessions: Vec::new() }; };
-        let Ok(out) = command_for(bin).args(["list-sessions"]).output() else {
-            return Self { sessions: Vec::new() };
+        let Some(bin) = ZellijLauncher::binary() else {
+            return Self {
+                sessions: Vec::new(),
+            };
         };
-        if !out.status.success() { return Self { sessions: Vec::new() }; }
+        let Ok(out) = command_for(bin).args(["list-sessions"]).output() else {
+            return Self {
+                sessions: Vec::new(),
+            };
+        };
+        if !out.status.success() {
+            return Self {
+                sessions: Vec::new(),
+            };
+        }
         let sessions = String::from_utf8_lossy(&out.stdout)
             .lines()
             .filter_map(|l| {
                 let t = l.trim();
-                if t.is_empty() { return None; }
+                if t.is_empty() {
+                    return None;
+                }
                 // zellij list-sessions includes formatting/exit status; first token is session name
                 let name = t.split_whitespace().next().unwrap_or(t);
-                let name = name.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '@' && c != '.');
-                if name.is_empty() { None } else { Some(name.to_string()) }
+                let name = name.trim_end_matches(|c: char| {
+                    !c.is_alphanumeric() && c != '-' && c != '_' && c != '@' && c != '.'
+                });
+                if name.is_empty() {
+                    None
+                } else {
+                    Some(name.to_string())
+                }
             })
             .collect();
         Self { sessions }
     }
 
     pub fn session_running(&self, session_name: &str) -> bool {
-        self.sessions.iter().any(|s| s == session_name || s.contains(session_name))
+        self.sessions
+            .iter()
+            .any(|s| s == session_name || s.contains(session_name))
     }
 }
 
@@ -490,9 +533,7 @@ impl ZellijLauncher {
         _all_panes: bool,
         _ws_dir: &Path,
     ) -> std::io::Result<std::process::ExitStatus> {
-        Self::raw_cmd()
-            .args(["attach", project_name])
-            .status()
+        Self::raw_cmd().args(["attach", project_name]).status()
     }
 
     pub fn is_available() -> bool {

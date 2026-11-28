@@ -32,7 +32,9 @@ ws create @feat-oauth %server:main:existing %mobile:feature/auth-screen:new
 
 - `%server` checks out existing `main` without creating a new branch.
 - `%mobile` creates and checks out a new branch `feature/auth-screen`.
-- For existing checkouts, if the target branch is not present locally in the bare repo but exists on the remote, `ws` fetches it and materializes a local branch ref automatically.
+- For existing checkouts, if the target branch is not present locally in the
+  bare repo but exists on the remote, `ws` fetches it and materializes a local
+  branch ref automatically.
 
 ---
 
@@ -49,9 +51,9 @@ ws create @prod-debug --all --existing
 
 ## 🌱 Choosing the Base Branch
 
-New branches start from each repository's `base_branch` in `ws-project.yml`.
-If it is missing, `ws create` prompts once per repository with the detected
-default (or accepts it with `--yes`) and saves it.
+New branches start from each repository's `base_branch` in `ws-project.yml`. If
+it is missing, `ws create` prompts once per repository with the detected default
+(or accepts it with `--yes`) and saves it.
 
 ```yaml
 repositories:

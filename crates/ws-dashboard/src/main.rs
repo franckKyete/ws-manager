@@ -1,7 +1,7 @@
 mod app;
+mod charts;
 mod data;
 mod window;
-mod charts;
 
 fn main() -> glib::ExitCode {
     app::run()

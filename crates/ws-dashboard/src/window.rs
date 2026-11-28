@@ -175,7 +175,11 @@ fn apply_snapshot(w: &Widgets, snapshot: DashboardSnapshot) {
         return;
     };
 
-    let daemon = if status.daemon_running { "running" } else { "not running" };
+    let daemon = if status.daemon_running {
+        "running"
+    } else {
+        "not running"
+    };
     w.status_label.set_text(&format!(
         "Range: {}  •  Active: {}  •  Wall-clock: {}  •  Daemon: {}  •  Watching: {}/{}",
         w.current_range.borrow().label(),
@@ -187,25 +191,56 @@ fn apply_snapshot(w: &Widgets, snapshot: DashboardSnapshot) {
     ));
 
     // cards
-    while let Some(child) = w.cards_box.first_child() { w.cards_box.remove(&child); }
-    w.cards_box.append(&metric_card("Active", &data::format_duration_human(snapshot.total_active_seconds)));
-    w.cards_box.append(&metric_card("Wall clock", &data::format_duration_human(snapshot.wall_clock_active_seconds)));
-    let events = snapshot.rows.iter().map(|r| r.file_events + r.git_events + r.command_events).sum::<i64>();
+    while let Some(child) = w.cards_box.first_child() {
+        w.cards_box.remove(&child);
+    }
+    w.cards_box.append(&metric_card(
+        "Active",
+        &data::format_duration_human(snapshot.total_active_seconds),
+    ));
+    w.cards_box.append(&metric_card(
+        "Wall clock",
+        &data::format_duration_human(snapshot.wall_clock_active_seconds),
+    ));
+    let events = snapshot
+        .rows
+        .iter()
+        .map(|r| r.file_events + r.git_events + r.command_events)
+        .sum::<i64>();
     let sessions = snapshot.rows.iter().map(|r| r.session_count).sum::<i64>();
-    w.cards_box.append(&metric_card("Events", &events.to_string()));
-    w.cards_box.append(&metric_card("Sessions", &sessions.to_string()));
-    w.cards_box.append(&metric_card("Daemon", if status.daemon_running { "running" } else { "stopped" }));
+    w.cards_box
+        .append(&metric_card("Events", &events.to_string()));
+    w.cards_box
+        .append(&metric_card("Sessions", &sessions.to_string()));
+    w.cards_box.append(&metric_card(
+        "Daemon",
+        if status.daemon_running {
+            "running"
+        } else {
+            "stopped"
+        },
+    ));
 
-    let step = match *w.current_range.borrow() { RangeKind::Today => "hour", _ => "day" };
+    let step = match *w.current_range.borrow() {
+        RangeKind::Today => "hour",
+        _ => "day",
+    };
     charts::timeseries::draw_timeseries(&w.series_area, &snapshot.series, step);
     charts::breakdown::draw_breakdown(&w.project_area, &snapshot.project_breakdown, "Top projects");
     charts::breakdown::draw_breakdown(&w.repo_area, &snapshot.event_breakdown, "Top repos");
 
-    let sync_errors = status.projects.iter().filter(|p| p.last_error.is_some() || p.backoff_until > ws_core::activity::db::now_ms()).count();
-    let last_event = status.last_event_at.map(|ts| {
-        let ago = (ws_core::activity::db::now_ms() - ts).max(0) / 1000;
-        format!("{}s ago", ago)
-    }).unwrap_or_else(|| "none".to_string());
+    let sync_errors = status
+        .projects
+        .iter()
+        .filter(|p| p.last_error.is_some() || p.backoff_until > ws_core::activity::db::now_ms())
+        .count();
+    let last_event = status
+        .last_event_at
+        .map(|ts| {
+            let ago = (ws_core::activity::db::now_ms() - ts).max(0) / 1000;
+            format!("{}s ago", ago)
+        })
+        .unwrap_or_else(|| "none".to_string());
     w.details_label.set_text(&format!(
         "Device: {}\nLast event: {}\nEvents: {}  Buckets: {}\nDB: {}\nSync errors/backoff: {}\nWatch limited: {}",
         status.device_name,
@@ -252,7 +287,9 @@ fn card_box(children: &[&gtk4::Widget]) -> gtk4::Frame {
     let b = GtkBox::new(Orientation::Vertical, 0);
     b.set_margin_top(4);
     b.set_margin_bottom(8);
-    for c in children { b.append(*c); }
+    for c in children {
+        b.append(*c);
+    }
     let f = gtk4::Frame::new(None);
     f.set_margin_start(12);
     f.set_margin_end(12);

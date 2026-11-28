@@ -37,7 +37,10 @@ pub fn build_snapshot(
     };
 
     let slots = build_slots(start_date, count, hourly, range);
-    let from_ms = slots.first().map(|s| s.start_ms).unwrap_or_else(|| local_ms(start_date, 0));
+    let from_ms = slots
+        .first()
+        .map(|s| s.start_ms)
+        .unwrap_or_else(|| local_ms(start_date, 0));
     let to_ms = local_ms(today + Duration::days(1), 0);
 
     let from_hour = (from_ms / 1000 / 3600) * 3600;
@@ -61,7 +64,9 @@ pub fn build_snapshot(
         accumulate(point, &row);
     }
 
-    let raw_rows = db.report_totals(from_hour, to_hour, project).unwrap_or_default();
+    let raw_rows = db
+        .report_totals(from_hour, to_hour, project)
+        .unwrap_or_default();
     let raw_active_seconds: i64 = raw_rows.iter().map(|r| r.active_seconds).sum();
     let totals = ActivityTotals {
         active_seconds: series.iter().map(|p| p.active_seconds).sum(),
@@ -75,10 +80,21 @@ pub fn build_snapshot(
 
     let projects = db.report_breakdown(from_hour, to_hour, "project", project, None, None)?;
     let repos = db.report_breakdown(from_hour, to_hour, "repo", project, None, None)?;
-    let work_projects = db.report_focus_breakdown(from_hour, to_hour, "project").unwrap_or_default();
-    let work_repos = db.report_focus_breakdown(from_hour, to_hour, "repo").unwrap_or_default();
+    let work_projects = db
+        .report_focus_breakdown(from_hour, to_hour, "project")
+        .unwrap_or_default();
+    let work_repos = db
+        .report_focus_breakdown(from_hour, to_hour, "repo")
+        .unwrap_or_default();
 
-    let presence = build_presence_snapshot(db, from_hour, to_hour, now, totals.active_seconds, totals.raw_active_seconds);
+    let presence = build_presence_snapshot(
+        db,
+        from_hour,
+        to_hour,
+        now,
+        totals.active_seconds,
+        totals.raw_active_seconds,
+    );
 
     Ok(ActivitySnapshot {
         range: range.to_string(),
@@ -126,7 +142,12 @@ fn build_slots(start_date: NaiveDate, count: usize, hourly: bool, range: &str) -
 }
 
 /// Map a UTC-aligned bucket start (seconds) into a dense local slot index.
-fn slot_index(start_date: NaiveDate, hourly: bool, count: usize, bucket_start_secs: i64) -> Option<usize> {
+fn slot_index(
+    start_date: NaiveDate,
+    hourly: bool,
+    count: usize,
+    bucket_start_secs: i64,
+) -> Option<usize> {
     let dt = Local.timestamp_opt(bucket_start_secs, 0).single()?;
     let index = if hourly {
         if dt.date_naive() != start_date {
@@ -175,10 +196,18 @@ pub fn local_day_start_ms(now: i64) -> i64 {
 
 pub const SNAPSHOT_RANGES: [&str; 3] = ["today", "week", "month"];
 
-fn build_presence_snapshot(db: &ActivityDb, from_hour: i64, to_hour: i64, now: i64, event_seconds: i64, raw_event_seconds: i64) -> PresenceSnapshot {
-    let totals = super::presence::presence_totals_for_range(db, from_hour, to_hour, now)
-        .unwrap_or_default();
-    let (state, source) = db.latest_presence_state()
+fn build_presence_snapshot(
+    db: &ActivityDb,
+    from_hour: i64,
+    to_hour: i64,
+    now: i64,
+    event_seconds: i64,
+    raw_event_seconds: i64,
+) -> PresenceSnapshot {
+    let totals =
+        super::presence::presence_totals_for_range(db, from_hour, to_hour, now).unwrap_or_default();
+    let (state, source) = db
+        .latest_presence_state()
         .ok()
         .flatten()
         .map(|(s, src, _)| (s, src))
@@ -187,15 +216,34 @@ fn build_presence_snapshot(db: &ActivityDb, from_hour: i64, to_hour: i64, now: i
     let (category, focus_project, focus_workspace, focus_repo) = if let Some(ref f) = focus {
         (
             f.category.clone(),
-            if f.project_name.is_empty() { None } else { Some(f.project_name.clone()) },
-            if f.workspace.is_empty() { None } else { Some(f.workspace.clone()) },
-            if f.repo.is_empty() { None } else { Some(f.repo.clone()) },
+            if f.project_name.is_empty() {
+                None
+            } else {
+                Some(f.project_name.clone())
+            },
+            if f.workspace.is_empty() {
+                None
+            } else {
+                Some(f.workspace.clone())
+            },
+            if f.repo.is_empty() {
+                None
+            } else {
+                Some(f.repo.clone())
+            },
         )
     } else {
         (String::new(), None, None, None)
     };
-    let override_category = db.active_category_override(now, focus.as_ref()).ok().flatten().map(|o| o.category);
-    let category_source = focus.as_ref().map(|f| f.category_source.clone()).unwrap_or_default();
+    let override_category = db
+        .active_category_override(now, focus.as_ref())
+        .ok()
+        .flatten()
+        .map(|o| o.category);
+    let category_source = focus
+        .as_ref()
+        .map(|f| f.category_source.clone())
+        .unwrap_or_default();
     let focused_work_seconds = totals.work_seconds;
     let active_work_seconds = totals.active_work_seconds;
     let event_work_seconds = event_seconds;
@@ -209,9 +257,27 @@ fn build_presence_snapshot(db: &ActivityDb, from_hour: i64, to_hour: i64, now: i
         focus_project,
         focus_workspace,
         focus_repo,
-        focus_app: focus.as_ref().and_then(|f| if f.app.is_empty() { None } else { Some(f.app.clone()) }),
-        focus_domain: focus.as_ref().and_then(|f| if f.domain.is_empty() { None } else { Some(f.domain.clone()) }),
-        focus_rule: focus.as_ref().and_then(|f| if f.rule.is_empty() { None } else { Some(f.rule.clone()) }),
+        focus_app: focus.as_ref().and_then(|f| {
+            if f.app.is_empty() {
+                None
+            } else {
+                Some(f.app.clone())
+            }
+        }),
+        focus_domain: focus.as_ref().and_then(|f| {
+            if f.domain.is_empty() {
+                None
+            } else {
+                Some(f.domain.clone())
+            }
+        }),
+        focus_rule: focus.as_ref().and_then(|f| {
+            if f.rule.is_empty() {
+                None
+            } else {
+                Some(f.rule.clone())
+            }
+        }),
         category_source,
         totals,
         event_work_seconds,
@@ -247,7 +313,15 @@ mod tests {
         (ms / 1000 / 3600) * 3600
     }
 
-    fn add(db: &ActivityDb, ts_ms: i64, active: i64, files: i64, git: i64, commands: i64, sessions: i64) {
+    fn add(
+        db: &ActivityDb,
+        ts_ms: i64,
+        active: i64,
+        files: i64,
+        git: i64,
+        commands: i64,
+        sessions: i64,
+    ) {
         db.add_bucket_active(&Bucket {
             project_id: "p1".to_string(),
             project_name: "kitchen".to_string(),
@@ -268,7 +342,8 @@ mod tests {
         let (_dir, db) = temp_db();
         add(&db, crate::activity::db::now_ms(), 600, 3, 2, 1, 1);
 
-        let snap = build_snapshot(&db, status(), "today", crate::activity::db::now_ms(), None).unwrap();
+        let snap =
+            build_snapshot(&db, status(), "today", crate::activity::db::now_ms(), None).unwrap();
 
         assert_eq!(snap.range, "today");
         assert_eq!(snap.series.len(), 24);
@@ -331,14 +406,16 @@ mod tests {
     #[test]
     fn invalid_range_is_rejected() {
         let (_dir, db) = temp_db();
-        let err = build_snapshot(&db, status(), "year", crate::activity::db::now_ms(), None).unwrap_err();
+        let err =
+            build_snapshot(&db, status(), "year", crate::activity::db::now_ms(), None).unwrap_err();
         assert!(err.contains("--range"));
     }
 
     #[test]
     fn day_alias_maps_to_today() {
         let (_dir, db) = temp_db();
-        let snap = build_snapshot(&db, status(), "day", crate::activity::db::now_ms(), None).unwrap();
+        let snap =
+            build_snapshot(&db, status(), "day", crate::activity::db::now_ms(), None).unwrap();
         assert_eq!(snap.range, "today");
     }
 }
