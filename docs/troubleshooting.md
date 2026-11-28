@@ -17,7 +17,7 @@ ws doctor
 - ✅ Git binary version and `git worktree` support (>= 2.20)
 - ✅ Multiplexer binaries (`tmux`, `zellij`)
 - ✅ Bare repositories directory integrity in `bares/`
-- ✅ Configuration syntax in `repositories.yml`
+- ✅ Configuration syntax in `ws-project.yml`
 - ✅ Active Unix domain sockets and permissions in `workspaces/`
 
 ---
@@ -38,12 +38,10 @@ The shell strips `#server` before passing arguments to the CLI.
 
 #### Resolution:
 
-Use the **`%`** sigil for repositories (or use plain names):
+Use the **`%`** sigil for repositories:
 
 ```bash
 ws lock @develop %server
-# or
-ws lock @develop server
 ```
 
 ---
@@ -65,7 +63,7 @@ is already active, but no processes are running.
    ```
 3. Or manually delete the socket file:
    ```bash
-   rm workspaces/@<name>/.ws/session.sock
+   rm workspaces/<name>/.ws/session.sock
    ```
 
 ---
@@ -126,7 +124,40 @@ Then retry creating the workspace.
 
 ---
 
-### 6. Subshell Prompt Not Showing Workspace Name
+### 6. Base Branch Not Found or Missing
+
+#### Problem:
+
+Workspace creation fails with one of:
+
+- `Base branch 'x' does not exist locally or on the primary remote for repository 'y'`
+- `No base branch is configured for repository 'y' and no default branch could be detected`
+- `Workspace file '...' must specify a base branch (...) for: %y`
+
+#### Cause:
+
+New branches start from a repository's `base_branch`. A configured value must
+exist; non-interactive runs have no way to ask; and `ws create --file` never
+falls back to prompts or `ws-project.yml`.
+
+#### Resolution:
+
+1. Check the repository's branches:
+   ```bash
+   git -C bares/<repo>.git branch -a
+   ```
+2. Fix the value in `ws-project.yml` (`base_branch: main`), or pass a one-shot
+   override:
+   ```bash
+   ws create @feat %server --base develop
+   ```
+3. For declarative files, add `base: <branch>` to every `create: true` entry.
+4. Fetch first if the branch was pushed recently: `ws project fetch`.
+5. Run interactively (or use `--yes`) to let `ws` detect and persist a default.
+
+---
+
+### 7. Subshell Prompt Not Showing Workspace Name
 
 #### Problem:
 

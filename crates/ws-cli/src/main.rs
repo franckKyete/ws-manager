@@ -7,8 +7,10 @@ use ws_core::WorkspaceManager;
 mod cli;
 mod commands;
 mod helpers;
+mod prompts;
 
 use cli::*;
+use commands::activity::*;
 use commands::completion::*;
 use commands::create::*;
 use commands::daemon::*;
@@ -22,6 +24,7 @@ use commands::hub::*;
 use commands::info::*;
 use commands::init::*;
 use commands::launch::*;
+use commands::lifecycle::*;
 use commands::list::*;
 use commands::open::*;
 use commands::project::*;
@@ -79,7 +82,49 @@ fn main() {
         _ => {}
     }
 
-    // 2. Determine whether empty config is permitted
+    // 2. Handle migration without requiring an already-migrated/loadable config.
+    if let Commands::Project(ProjectCommandArgs {
+        action: Some(ProjectAction::Migrate { action }),
+    }) = &command
+    {
+        let project_root = if let Some(cfg) = cli.config.as_deref() {
+            cfg.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+            })
+        } else {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        };
+        let result = match action {
+            ProjectMigrateAction::Lifecycle {
+                dry_run,
+                yes,
+                no_backup,
+                stage_name,
+                source,
+                no_state,
+                reset_state,
+            } => commands::project::execute_project_migrate_lifecycle(
+                &project_root,
+                *dry_run,
+                *yes,
+                !*no_backup,
+                stage_name,
+                source,
+                *no_state,
+                *reset_state,
+            ),
+            ProjectMigrateAction::Config { dry_run } => {
+                commands::project::execute_project_migrate_config(&project_root, *dry_run)
+            }
+        };
+        if let Err(e) = result {
+            OutputHandler::print_err(&e);
+            process::exit(1);
+        }
+        return;
+    }
+
+    // 3. Determine whether empty config is permitted
     let allow_empty_config = matches!(
         &command,
         Commands::Init { .. }
@@ -91,6 +136,7 @@ fn main() {
             | Commands::Clone { .. }
             | Commands::Daemon { .. }
             | Commands::Service { .. }
+            | Commands::Activity(_)
     );
 
     let app_config = match ConfigLoader::load_config(
@@ -118,6 +164,7 @@ fn main() {
             args.no_tmux,
             &args.extra_args,
             args.target_branch.as_deref(),
+            args.yes,
         ),
         Commands::List => execute_list(&manager),
         Commands::Info { name } => execute_info(&manager, name.as_deref()),
@@ -135,9 +182,9 @@ fn main() {
         Commands::Exec(args) => execute_exec(
             &manager,
             args.name.as_deref(),
-            &args.command,
+            &args.repos,
             args.all,
-            args.repos_flag.as_deref(),
+            &args.command,
         ),
         Commands::Push(args) => execute_push(
             &manager,
@@ -158,13 +205,17 @@ fn main() {
                 name,
                 repo,
                 branch,
+                base,
                 existing,
+                yes,
             }) => execute_repo_add(
                 &manager,
                 name.as_deref(),
                 repo.as_deref(),
                 branch.as_deref(),
+                base.as_deref(),
                 existing,
+                yes,
             ),
             Some(RepoAction::Remove {
                 name,
@@ -261,32 +312,36 @@ fn main() {
         Commands::Setup(args) => execute_setup(
             &mut manager,
             args.name.as_deref(),
-            Some(&args.repos),
+            &args.repos,
             args.all,
-            args.repos_flag.as_deref(),
             args.dry_run,
             args.skip_scripts,
             cli.verbose,
             args.interface.as_deref(),
             args.lan_ip.as_deref(),
         ),
+        Commands::Lifecycle(args) => execute_lifecycle(&mut manager, &args),
         Commands::Project(args) => match args.action {
-            Some(ProjectAction::Init { urls }) => execute_init(&mut manager, &urls),
-            Some(ProjectAction::Add { url }) => execute_add(&mut manager, &url),
+            Some(ProjectAction::Init { urls, yes }) => execute_init(&mut manager, &urls, yes),
+            Some(ProjectAction::Add { url, yes }) => execute_add(&mut manager, &url, yes),
             Some(ProjectAction::Fetch) => execute_fetch(&manager),
             Some(ProjectAction::Sync) => execute_sync(&manager),
             Some(ProjectAction::List) => execute_project_list(),
             Some(ProjectAction::Register { path }) => execute_project_register(path.as_deref()),
             Some(ProjectAction::Unregister { path }) => execute_project_unregister(path.as_deref()),
+            Some(ProjectAction::Migrate { .. }) => {
+                // Handled above before config load/enforcement.
+                Ok(())
+            }
             None => {
                 OutputHandler::print_err(
-                    "Please specify a project action: init, add, fetch, sync, list, register, unregister",
+                    "Please specify a project action: init, add, fetch, sync, list, register, unregister, migrate",
                 );
                 process::exit(1);
             }
         },
-        Commands::Init { urls } => execute_init(&mut manager, &urls),
-        Commands::Add { url } => execute_add(&mut manager, &url),
+        Commands::Init { urls, yes } => execute_init(&mut manager, &urls, yes),
+        Commands::Add { url, yes } => execute_add(&mut manager, &url, yes),
         Commands::Fetch => execute_fetch(&manager),
         Commands::Sync => execute_sync(&manager),
         Commands::Doctor => execute_doctor(&manager),
@@ -415,6 +470,7 @@ fn main() {
                 Ok(())
             }
         },
+        Commands::Activity(args) => execute_activity(args.action),
         Commands::Daemon { tick, action: _ } => execute_daemon(Some(tick)),
         Commands::Service { action } => dispatch_service_action(action),
         Commands::Completion { .. } | Commands::InternalComplete { .. } => unreachable!(),

@@ -1,4 +1,4 @@
-use crate::helpers::{clean_repo, resolve_ws_and_repo_args};
+use crate::helpers::{parse_repo_list, resolve_ws_and_repo_args};
 use ws_core::output::OutputHandler;
 use ws_core::WorkspaceManager;
 
@@ -14,12 +14,10 @@ pub fn execute_push(
     let mut target_repos: Option<Vec<String>> = None;
 
     if let Some(rf) = repos_flag {
-        let set: Vec<String> = rf
-            .split(',')
-            .filter(|r| !r.trim().is_empty())
-            .map(|r| clean_repo(Some(r.trim())).unwrap())
-            .collect();
-        target_repos = Some(set);
+        let set = parse_repo_list(manager, rf)?;
+        if !set.is_empty() {
+            target_repos = Some(set);
+        }
     } else if !resolved_repos.is_empty() {
         target_repos = Some(resolved_repos);
     }
@@ -45,12 +43,10 @@ pub fn execute_pull(
     let mut target_repos: Option<Vec<String>> = None;
 
     if let Some(rf) = repos_flag {
-        let set: Vec<String> = rf
-            .split(',')
-            .filter(|r| !r.trim().is_empty())
-            .map(|r| clean_repo(Some(r.trim())).unwrap())
-            .collect();
-        target_repos = Some(set);
+        let set = parse_repo_list(manager, rf)?;
+        if !set.is_empty() {
+            target_repos = Some(set);
+        }
     } else if !resolved_repos.is_empty() {
         target_repos = Some(resolved_repos);
     }

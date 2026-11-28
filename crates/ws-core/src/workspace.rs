@@ -2,16 +2,19 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Instant;
 
 use base64::Engine;
 use sha2::{Digest, Sha256};
 
-use crate::config::ConfigLoader;
+use crate::base_branch::{
+    detect_base_at, resolve_missing_bases, validate_base_at, BaseBranchOptions, BaseCandidate,
+};
+use crate::config::{ConfigLoader, ProjectConfigEdit};
 use crate::env::EnvEngine;
 use crate::errors::WSError;
 use crate::git::GitService;
 use crate::hub::HubClient;
+use crate::lifecycle::{self, LifecycleState, StageContext, StageRunOptions};
 use crate::models::{
     AppConfig, HubAutoSaveConfig, RepoConfig, RepoSpec, TmuxConfig, WorkspaceMetadata,
     WorkspacesSelector,
@@ -84,6 +87,25 @@ impl WorkspaceManager {
         let ws_dir = self.get_workspace_dir(name);
         ws_dir.exists()
             && (ws_dir.join("workspace.yml").exists() || ws_dir.join("workspace.yaml").exists())
+    }
+
+    fn ensure_cwd_outside_dir(&self, path: &Path) -> Result<(), WSError> {
+        let cwd = match std::env::current_dir() {
+            Ok(cwd) => cwd,
+            Err(_) => {
+                return std::env::set_current_dir(&self.config.project_root)
+                    .or_else(|_| std::env::set_current_dir(std::env::temp_dir()))
+                    .map_err(WSError::Io);
+            }
+        };
+        let cwd_canon = cwd.canonicalize().unwrap_or(cwd);
+        let path_canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if cwd_canon.starts_with(&path_canon) {
+            std::env::set_current_dir(&self.config.project_root)
+                .or_else(|_| std::env::set_current_dir(std::env::temp_dir()))
+                .map_err(WSError::Io)?;
+        }
+        Ok(())
     }
 
     pub fn detect_context(&self, cwd: Option<&Path>) -> (Option<String>, Option<String>) {
@@ -196,6 +218,19 @@ impl WorkspaceManager {
         Ok(out_cfg)
     }
 
+    fn persist_repo_base_branches(&self, values: &HashMap<String, String>) -> Result<(), WSError> {
+        if values.is_empty() {
+            return Ok(());
+        }
+        let Some(path) = self.config.config_file_path.as_deref() else {
+            OutputHandler::print_warning(
+                "Base branches were resolved, but no configuration file path is known; nothing was saved.",
+            );
+            return Ok(());
+        };
+        ConfigLoader::set_repo_base_branches(path, values)
+    }
+
     pub fn validate_creation(&self, name: &str, repo_specs: &[RepoSpec]) -> Result<(), WSError> {
         self.validate_environment()?;
         let ws_dir = self.get_workspace_dir(name);
@@ -208,23 +243,44 @@ impl WorkspaceManager {
 
         for spec in repo_specs {
             let repo_cfg = self.validate_repository_config(&spec.name)?;
-            let branch_exists = self.git.branch_exists(&repo_cfg.bare, &spec.branch);
+            let local_branch_exists = self.git.branch_exists(&repo_cfg.bare, &spec.branch);
 
-            if spec.create && branch_exists {
-                return Err(WSError::BranchAlreadyExists(format!(
-                    "Cannot create branch '{}' for repository '{}': branch already exists in bare repo {}",
-                    spec.branch,
-                    spec.name,
-                    repo_cfg.bare.display()
-                )));
+            if spec.create {
+                if local_branch_exists {
+                    return Err(WSError::BranchAlreadyExists(format!(
+                        "Cannot create branch '{}' for repository '{}': branch already exists in bare repo {}",
+                        spec.branch,
+                        spec.name,
+                        repo_cfg.bare.display()
+                    )));
+                }
+                continue;
             }
 
-            if !spec.create && !branch_exists {
+            if local_branch_exists {
+                continue;
+            }
+
+            let primary_remote = self.git.primary_remote(&repo_cfg.bare);
+            let mut remote_has_branch = false;
+            if let Some(remote) = &primary_remote {
+                self.git
+                    .fetch_remote_branch(&repo_cfg.bare, &spec.branch, remote, None);
+                let remote_ref = self.git.remote_branch_ref(remote, &spec.branch);
+                remote_has_branch = self.git.ref_exists(&repo_cfg.bare, &remote_ref, None);
+            }
+
+            if !remote_has_branch {
+                let remote_hint = primary_remote
+                    .as_ref()
+                    .map(|r| format!(" or on remote '{}'", r))
+                    .unwrap_or_else(|| " and no git remote is configured".to_string());
                 return Err(WSError::BranchNotFound(format!(
-                    "Branch '{}' does not exist in repository '{}' ({})",
+                    "Branch '{}' does not exist locally in repository '{}' ({}){}",
                     spec.branch,
                     spec.name,
-                    repo_cfg.bare.display()
+                    repo_cfg.bare.display(),
+                    remote_hint
                 )));
             }
         }
@@ -261,21 +317,40 @@ impl WorkspaceManager {
         if let Some(remote) = primary_remote {
             self.git
                 .fetch_remote_branch(bare_path, &resolved_target, &remote, None);
-            let remote_ref = format!("refs/remotes/{}/{}", remote, resolved_target);
+            let remote_ref = self.git.remote_branch_ref(&remote, &resolved_target);
             let has_remote = self.git.ref_exists(bare_path, &remote_ref, None);
-            let has_local = self.git.branch_exists(bare_path, &resolved_target);
+            let mut has_local = self.git.branch_exists(bare_path, &resolved_target);
 
             if !has_remote && !has_local {
                 if is_explicit {
                     return Err(WSError::Validation(format!(
-                        "Target branch '{}' does not exist in repository '{}'",
-                        resolved_target, repo_name
+                        "Target branch '{}' does not exist locally or on remote '{}' in repository '{}'",
+                        resolved_target, remote, repo_name
                     )));
                 }
                 return Ok(Some(self.git.get_default_branch(bare_path)));
             }
 
-            if has_remote {
+            if has_remote && !has_local {
+                let created = self.git.ensure_local_branch_from_remote(
+                    bare_path,
+                    &resolved_target,
+                    &remote,
+                )?;
+                if !created {
+                    return Err(WSError::Validation(format!(
+                        "Failed to create local branch '{}' from '{}/{}' in repository '{}'",
+                        resolved_target, remote, resolved_target, repo_name
+                    )));
+                }
+                OutputHandler::print_info(&format!(
+                    "Created local branch '{}' from '{}/{}' for repository '{}'",
+                    resolved_target, remote, resolved_target, repo_name
+                ));
+                has_local = true;
+            }
+
+            if has_remote && has_local {
                 let (ahead, behind) =
                     self.git
                         .get_branch_divergence(bare_path, &resolved_target, &remote, None);
@@ -318,7 +393,16 @@ impl WorkspaceManager {
                         }
                     }
                 }
+            } else if !has_local {
+                if is_explicit {
+                    return Err(WSError::Validation(format!(
+                        "Target branch '{}' does not exist locally or on remote '{}' in repository '{}'",
+                        resolved_target, remote, repo_name
+                    )));
+                }
+                return Ok(Some(self.git.get_default_branch(bare_path)));
             }
+
             Ok(Some(resolved_target))
         } else {
             if self.git.branch_exists(bare_path, &resolved_target) {
@@ -341,19 +425,76 @@ impl WorkspaceManager {
         tmux_cmd: Option<&str>,
         no_tmux: bool,
     ) -> Result<WorkspaceMetadata, WSError> {
+        let mut options = BaseBranchOptions::non_interactive();
+        self.create_workspace_with_options(name, repo_specs, tmux_cmd, no_tmux, &mut options)
+    }
+
+    pub fn create_workspace_with_options(
+        &self,
+        name: &str,
+        repo_specs: &[RepoSpec],
+        tmux_cmd: Option<&str>,
+        no_tmux: bool,
+        base_options: &mut BaseBranchOptions<'_>,
+    ) -> Result<WorkspaceMetadata, WSError> {
         self.validate_creation(name, repo_specs)?;
 
-        let mut resolved_bases = HashMap::new();
+        let mut resolved_bases: HashMap<String, Option<String>> = HashMap::new();
+        let mut candidates = Vec::new();
+
+        for spec in repo_specs {
+            if !spec.create {
+                continue;
+            }
+            let repo_cfg = self.validate_repository_config(&spec.name)?;
+
+            let explicit = spec
+                .base_branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|b| !b.is_empty());
+            if let Some(branch) = explicit {
+                let normalized = validate_base_at(&self.git, &repo_cfg.bare, &spec.name, branch)?;
+                resolved_bases.insert(spec.name.clone(), Some(normalized));
+                continue;
+            }
+
+            let configured = repo_cfg
+                .base_branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|b| !b.is_empty());
+            if let Some(branch) = configured {
+                let normalized = validate_base_at(&self.git, &repo_cfg.bare, &spec.name, branch)?;
+                resolved_bases.insert(spec.name.clone(), Some(normalized));
+                continue;
+            }
+
+            candidates.push(BaseCandidate {
+                repo: spec.name.clone(),
+                bare: repo_cfg.bare.clone(),
+                suggested: detect_base_at(&self.git, &repo_cfg.bare),
+            });
+        }
+
+        let prompted = resolve_missing_bases(&self.git, &candidates, base_options)?;
+        for (repo, branch) in &prompted {
+            resolved_bases.insert(repo.clone(), Some(branch.clone()));
+        }
+        self.persist_repo_base_branches(&prompted)?;
+
         for spec in repo_specs {
             let repo_cfg = self.validate_repository_config(&spec.name)?;
-            let target_to_sync = if spec.create {
-                spec.base_branch.as_deref()
+            if spec.create {
+                let base = resolved_bases.get(&spec.name).cloned().flatten();
+                self.prepare_and_sync_target_branch(&spec.name, &repo_cfg.bare, base.as_deref())?;
             } else {
-                Some(spec.branch.as_str())
-            };
-            let resolved_base =
-                self.prepare_and_sync_target_branch(&spec.name, &repo_cfg.bare, target_to_sync)?;
-            resolved_bases.insert(spec.name.clone(), resolved_base);
+                self.prepare_and_sync_target_branch(
+                    &spec.name,
+                    &repo_cfg.bare,
+                    Some(&spec.branch),
+                )?;
+            }
         }
 
         let ws_dir = self.get_workspace_dir(name);
@@ -535,7 +676,10 @@ impl WorkspaceManager {
                 .get("base")
                 .or_else(|| v.get("target"))
                 .or_else(|| v.get("from"))
+                .or_else(|| v.get("base_branch"))
                 .and_then(|b| b.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .map(|s| s.to_string());
 
             let frozen = v
@@ -553,6 +697,19 @@ impl WorkspaceManager {
                 locked: frozen,
                 base_branch: base,
             });
+        }
+
+        let missing_bases: Vec<String> = specs
+            .iter()
+            .filter(|spec| spec.create && spec.base_branch.is_none())
+            .map(|spec| format!("%{}", spec.name))
+            .collect();
+        if !missing_bases.is_empty() {
+            return Err(WSError::Validation(format!(
+                "Workspace file '{}' must specify a base branch ('base', 'target', 'from', or 'base_branch') for: {}",
+                config_file.display(),
+                missing_bases.join(", ")
+            )));
         }
 
         self.create_workspace(name, &specs, tmux_cmd, no_tmux)
@@ -849,47 +1006,149 @@ impl WorkspaceManager {
             }
         }
 
-        let mut branches_to_delete = Vec::new();
+        let mut branches_to_delete: Vec<(String, PathBuf, String)> = Vec::new();
         if delete_branch {
             if let Some(meta) = &metadata {
                 for (r_name, spec) in &meta.repositories {
                     if let Some(repo_cfg) = self.config.repositories.get(r_name) {
                         let bare_path = self.resolve_bare_path(&repo_cfg.bare);
-                        let default_br = self.git.get_default_branch(&bare_path);
-                        if spec.branch != default_br {
-                            branches_to_delete.push((bare_path, spec.branch.clone()));
-                        }
+                        branches_to_delete.push((r_name.clone(), bare_path, spec.branch.clone()));
                     }
                 }
             }
         }
 
-        self.remove_workspace(name, true)?;
+        self.ensure_cwd_outside_dir(&ws_dir)?;
+        let removal_result = self.remove_workspace(name, true);
+        let removal_ok = match &removal_result {
+            Ok(_) => true,
+            Err(e) => {
+                OutputHandler::print_error(
+                    &format!("Failed to remove workspace '@{}'", name),
+                    Some(&e.to_string()),
+                );
+                false
+            }
+        };
 
-        for (b_path, br_name) in branches_to_delete {
-            let _ = self.git.delete_branch(&b_path, &br_name, true);
-            OutputHandler::print_info(&format!(
-                "Deleted branch '{}' from {}",
-                br_name,
-                b_path.display()
-            ));
+        let mut branch_delete_failures: Vec<(String, String, String)> = Vec::new();
+        if !branches_to_delete.is_empty() {
+            let mut deleted: Vec<String> = Vec::new();
+            for (r_name, b_path, br_name) in &branches_to_delete {
+                let default_br = self.git.get_default_branch(b_path);
+                if br_name == &default_br {
+                    OutputHandler::print_info(&format!(
+                        "Skipped deleting default branch '{}' for %{}",
+                        br_name, r_name
+                    ));
+                    continue;
+                }
+                match self.git.delete_branch(b_path, br_name, true) {
+                    Ok(_) => {
+                        deleted.push(format!("%{} ({})", r_name, br_name));
+                    }
+                    Err(e) => {
+                        branch_delete_failures.push((
+                            r_name.clone(),
+                            br_name.clone(),
+                            e.to_string(),
+                        ));
+                    }
+                }
+            }
+
+            if !deleted.is_empty() {
+                OutputHandler::print_success(&format!(
+                    "Deleted branch(es): {}",
+                    deleted.join(", ")
+                ));
+            }
+            if !branch_delete_failures.is_empty() {
+                for (r_name, br_name, err) in &branch_delete_failures {
+                    OutputHandler::print_error(
+                        &format!("Failed to delete branch '{}' for %{}", br_name, r_name),
+                        Some(err.as_str()),
+                    );
+                }
+                OutputHandler::print_warning(&format!(
+                    "Branch deletion completed with {} failure(s).",
+                    branch_delete_failures.len()
+                ));
+            }
         }
+
+        let close_ok = removal_ok && branch_delete_failures.is_empty();
 
         if let Some(tmux_cfg) = &self.config.tmux {
             if !no_tmux {
                 let sess_name = &tmux_cfg.session;
                 if TmuxLauncher::is_window_active(sess_name, name) {
-                    let _ = TmuxLauncher::kill_workspace_window(sess_name, name);
-                    OutputHandler::print_info(&format!(
-                        "Closed tmux window '@{}' in session '{}'",
-                        name, sess_name
-                    ));
+                    if close_ok {
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                        let _ = std::io::stderr().flush();
+                        let inside_target = TmuxLauncher::is_current_window(sess_name, name);
+                        let _ = TmuxLauncher::kill_workspace_window(sess_name, name);
+                        if inside_target {
+                            OutputHandler::print_info(&format!(
+                                "Closing tmux window '@{}' in session '{}' (workspace closed successfully).",
+                                name, sess_name
+                            ));
+                        } else {
+                            OutputHandler::print_info(&format!(
+                                "Closed tmux window '@{}' in session '{}'",
+                                name, sess_name
+                            ));
+                        }
+                    } else {
+                        let inside_target = TmuxLauncher::is_current_window(sess_name, name);
+                        let reason = if !removal_ok {
+                            "workspace removal failed"
+                        } else {
+                            "branch deletion did not complete successfully"
+                        };
+                        OutputHandler::print_warning(&format!(
+                            "Left tmux window '@{}' in session '{}' open because {}. Review the errors above{}.",
+                            name,
+                            sess_name,
+                            reason,
+                            if inside_target {
+                                " before closing this window"
+                            } else {
+                                ""
+                            }
+                        ));
+                    }
                 }
             }
         }
 
-        OutputHandler::print_success(&format!("Safely closed workspace '@{}'", name));
-        Ok(())
+        if close_ok {
+            OutputHandler::print_success(&format!("Safely closed workspace '@{}'", name));
+            Ok(())
+        } else {
+            let mut details: Vec<String> = Vec::new();
+            if let Err(e) = removal_result {
+                details.push(format!("workspace removal: {}", e));
+            }
+            if !branch_delete_failures.is_empty() {
+                let failed_branches = branch_delete_failures
+                    .iter()
+                    .map(|(r, b, _)| format!("%{} ({})", r, b))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                details.push(format!("branch deletion failed: {}", failed_branches));
+            }
+            Err(WSError::Config(format!(
+                "Workspace '@{}' was not fully closed: {}",
+                name,
+                if details.is_empty() {
+                    "unknown error".to_string()
+                } else {
+                    details.join("; ")
+                }
+            )))
+        }
     }
 
     pub fn list_workspaces(&self) -> Vec<WorkspaceMetadata> {
@@ -1176,7 +1435,7 @@ impl WorkspaceManager {
     pub fn focus_workspace(&self, name: &str) -> Result<bool, WSError> {
         let tmux_cfg = self.config.tmux.as_ref().ok_or_else(|| {
             WSError::Config(
-                "Tmux integration is not configured. Add 'tmux:' to repositories.yml.".to_string(),
+                "Tmux integration is not configured. Add 'tmux:' to ws-project.yml.".to_string(),
             )
         })?;
 
@@ -1270,7 +1529,7 @@ impl WorkspaceManager {
 
         self.persist_launch_session(&candidate);
         OutputHandler::print_info(&format!(
-            "Configured tmux launch session as '{}' in repositories.yml",
+            "Configured tmux launch session as '{}' in ws-project.yml",
             candidate
         ));
         Ok(candidate)
@@ -1299,7 +1558,7 @@ impl WorkspaceManager {
             .config
             .config_file_path
             .clone()
-            .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
+            .unwrap_or_else(|| self.config.project_root.join("ws-project.yml"));
         if cfg_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&cfg_path) {
                 if let Ok(mut val) = serde_yaml::from_str::<serde_yaml::Value>(&content) {
@@ -1583,12 +1842,47 @@ impl WorkspaceManager {
     }
 
     pub fn init_project(&mut self, repo_inputs: &[String]) -> Result<AppConfig, WSError> {
+        let mut options = BaseBranchOptions::non_interactive();
+        self.init_project_with_options(repo_inputs, &mut options)
+    }
+
+    pub fn init_project_with_options(
+        &mut self,
+        repo_inputs: &[String],
+        base_options: &mut BaseBranchOptions<'_>,
+    ) -> Result<AppConfig, WSError> {
         self.validate_environment()?;
-        let mut updated_repos = self.config.repositories.clone();
+
+        struct InitEntry {
+            name: String,
+            repo: RepoConfig,
+            is_new: bool,
+            bare: PathBuf,
+        }
+
+        let config_path = self
+            .config
+            .config_file_path
+            .clone()
+            .unwrap_or_else(|| self.config.project_root.join("ws-project.yml"));
+
+        let mut entries: Vec<InitEntry> = Vec::new();
 
         for item in repo_inputs {
             let (name, url, bare_path, checkout) = Self::parse_repo_url(item);
-            let resolved_bare = self.resolve_bare_path(&bare_path);
+            if entries.iter().any(|e| e.name == name) {
+                continue;
+            }
+
+            let (repo, is_new) = if let Some(existing) = self.config.repositories.get(&name) {
+                (existing.clone(), false)
+            } else {
+                let mut repo = RepoConfig::new(name.clone(), bare_path.clone(), checkout);
+                repo.url = Some(url.clone());
+                (repo, true)
+            };
+
+            let resolved_bare = self.resolve_bare_path(&repo.bare);
             if let Some(parent) = resolved_bare.parent() {
                 ensure_directory(parent)?;
             }
@@ -1599,35 +1893,40 @@ impl WorkspaceManager {
                     name, url
                 ));
                 self.git.clone_bare(&url, &resolved_bare)?;
-                OutputHandler::print_success(&format!("Cloned bare repo {}", bare_path.display()));
+                OutputHandler::print_success(&format!("Cloned bare repo {}", repo.bare.display()));
             } else {
                 OutputHandler::print_info(&format!(
                     "Using existing bare repository at {}",
-                    bare_path.display()
+                    repo.bare.display()
                 ));
             }
 
-            updated_repos.insert(
-                name.clone(),
-                RepoConfig {
-                    name,
-                    bare: bare_path,
-                    checkout,
-                    url: Some(url),
-                    port: None,
-                    ports: HashMap::new(),
-                    env: HashMap::new(),
-                    secret_env: HashMap::new(),
-                    private_env: HashMap::new(),
-                    env_file: ".env".to_string(),
-                    env_example: ".env.example".to_string(),
-                    setup: Vec::new(),
-                    launch: None,
-                    secrets: Vec::new(),
-                    copy_files: Vec::new(),
-                },
-            );
+            entries.push(InitEntry {
+                name,
+                repo,
+                is_new,
+                bare: resolved_bare,
+            });
         }
+
+        let mut candidates = Vec::new();
+        for entry in &entries {
+            let has_base = entry
+                .repo
+                .base_branch
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|b| !b.is_empty());
+            if !has_base {
+                candidates.push(BaseCandidate {
+                    repo: entry.name.clone(),
+                    bare: entry.bare.clone(),
+                    suggested: detect_base_at(&self.git, &entry.bare),
+                });
+            }
+        }
+
+        let resolved = resolve_missing_bases(&self.git, &candidates, base_options)?;
 
         let root_dir_name = self
             .config
@@ -1642,7 +1941,6 @@ impl WorkspaceManager {
             command: Some("nvim".to_string()),
             switch: true,
         });
-
         let hub_auto_save =
             self.config
                 .hub_auto_save
@@ -1655,19 +1953,30 @@ impl WorkspaceManager {
                     notify: true,
                 });
 
-        let saved_path = ConfigLoader::save_config(
-            &updated_repos,
-            self.config.config_file_path.as_deref(),
-            Some(&tmux_cfg),
-            Some(&hub_auto_save),
-            self.config.hub_project.as_deref(),
-        )?;
+        let edit = ProjectConfigEdit::open(&config_path)?;
+        edit.ensure_schema_version()?;
+        edit.ensure_tmux(&tmux_cfg)?;
+        edit.ensure_hub(&hub_auto_save, self.config.hub_project.as_deref())?;
 
-        OutputHandler::print_success(&format!("Saved configuration to {}", saved_path.display()));
-        self.config.repositories = updated_repos;
-        self.config.tmux = Some(tmux_cfg);
-        self.config.hub_auto_save = Some(hub_auto_save);
-        self.config.config_file_path = Some(saved_path);
+        for entry in &entries {
+            if entry.is_new {
+                let mut repo = entry.repo.clone();
+                if let Some(base) = resolved.get(&entry.name) {
+                    repo.base_branch = Some(base.clone());
+                }
+                edit.upsert_repository(&entry.name, &repo)?;
+            } else if let Some(base) = resolved.get(&entry.name) {
+                edit.set_repo_base_branch(&entry.name, base)?;
+            }
+        }
+        edit.save()?;
+
+        OutputHandler::print_success(&format!("Saved configuration to {}", config_path.display()));
+
+        let reloaded =
+            ConfigLoader::load_config(Some(&config_path), Some(&self.config.workspaces_dir), true)?;
+        self.config = reloaded;
+        self.config.config_file_path = Some(config_path);
 
         Ok(self.config.clone())
     }
@@ -1690,6 +1999,26 @@ impl WorkspaceManager {
         branch: &str,
         create: bool,
     ) -> Result<(), WSError> {
+        let mut options = BaseBranchOptions::non_interactive();
+        self.workspace_add_repo_with_options(
+            workspace_name,
+            repo_name,
+            branch,
+            create,
+            None,
+            &mut options,
+        )
+    }
+
+    pub fn workspace_add_repo_with_options(
+        &self,
+        workspace_name: &str,
+        repo_name: &str,
+        branch: &str,
+        create: bool,
+        base_override: Option<&str>,
+        base_options: &mut BaseBranchOptions<'_>,
+    ) -> Result<(), WSError> {
         self.validate_environment()?;
         let (mut meta, ws_dir) = self.get_workspace_info(workspace_name)?;
 
@@ -1701,24 +2030,105 @@ impl WorkspaceManager {
         }
 
         let repo_cfg = self.validate_repository_config(repo_name)?;
-        let branch_exists = self.git.branch_exists(&repo_cfg.bare, branch);
+        let local_branch_exists = self.git.branch_exists(&repo_cfg.bare, branch);
 
-        if create && branch_exists {
-            return Err(WSError::BranchAlreadyExists(format!(
-                "Cannot create branch '{}' for repository '{}': branch already exists",
-                branch, repo_name
-            )));
-        }
-        if !create && !branch_exists {
-            return Err(WSError::BranchNotFound(format!(
-                "Branch '{}' does not exist in repository '{}'",
-                branch, repo_name
-            )));
+        let mut resolved_base: Option<String> = None;
+
+        if create {
+            if local_branch_exists {
+                return Err(WSError::BranchAlreadyExists(format!(
+                    "Cannot create branch '{}' for repository '{}': branch already exists",
+                    branch, repo_name
+                )));
+            }
+
+            let explicit = base_override.map(str::trim).filter(|b| !b.is_empty());
+            if let Some(base) = explicit {
+                resolved_base = Some(validate_base_at(
+                    &self.git,
+                    &repo_cfg.bare,
+                    repo_name,
+                    base,
+                )?);
+            } else if let Some(base) = repo_cfg
+                .base_branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+            {
+                resolved_base = Some(validate_base_at(
+                    &self.git,
+                    &repo_cfg.bare,
+                    repo_name,
+                    base,
+                )?);
+            } else {
+                let candidate = BaseCandidate {
+                    repo: repo_name.to_string(),
+                    bare: repo_cfg.bare.clone(),
+                    suggested: detect_base_at(&self.git, &repo_cfg.bare),
+                };
+                let prompted = resolve_missing_bases(&self.git, &[candidate], base_options)?;
+                if let Some(base) = prompted.get(repo_name) {
+                    resolved_base = Some(base.clone());
+                    self.persist_repo_base_branches(&prompted)?;
+                }
+            }
+
+            let base = resolved_base.as_deref().ok_or_else(|| {
+                WSError::Validation(format!(
+                    "No base branch could be resolved for repository '{}'",
+                    repo_name
+                ))
+            })?;
+            self.prepare_and_sync_target_branch(repo_name, &repo_cfg.bare, Some(base))?;
+        } else if !local_branch_exists {
+            let primary_remote = self.git.primary_remote(&repo_cfg.bare);
+            let mut remote_has_branch = false;
+            if let Some(remote) = &primary_remote {
+                self.git
+                    .fetch_remote_branch(&repo_cfg.bare, branch, remote, None);
+                let remote_ref = self.git.remote_branch_ref(remote, branch);
+                remote_has_branch = self.git.ref_exists(&repo_cfg.bare, &remote_ref, None);
+                if remote_has_branch {
+                    let created =
+                        self.git
+                            .ensure_local_branch_from_remote(&repo_cfg.bare, branch, remote)?;
+                    if !created {
+                        return Err(WSError::Validation(format!(
+                            "Failed to create local branch '{}' from '{}/{}' in repository '{}'",
+                            branch, remote, branch, repo_name
+                        )));
+                    }
+                    OutputHandler::print_info(&format!(
+                        "Created local branch '{}' from '{}/{}' for repository '{}'",
+                        branch, remote, branch, repo_name
+                    ));
+                }
+            }
+            if !remote_has_branch {
+                let remote_hint = primary_remote
+                    .as_ref()
+                    .map(|r| format!(" or on remote '{}'", r))
+                    .unwrap_or_else(|| " and no git remote is configured".to_string());
+                return Err(WSError::BranchNotFound(format!(
+                    "Branch '{}' does not exist locally in repository '{}' ({}){}",
+                    branch,
+                    repo_name,
+                    repo_cfg.bare.display(),
+                    remote_hint
+                )));
+            }
         }
 
         let worktree_path = ws_dir.join(&repo_cfg.checkout);
-        self.git
-            .create_worktree(&repo_cfg.bare, &worktree_path, branch, create, None)?;
+        self.git.create_worktree(
+            &repo_cfg.bare,
+            &worktree_path,
+            branch,
+            create,
+            resolved_base.as_deref(),
+        )?;
 
         meta.repositories.insert(
             repo_name.to_string(),
@@ -1729,7 +2139,7 @@ impl WorkspaceManager {
                 path: repo_cfg.checkout,
                 frozen: false,
                 locked: false,
-                base_branch: None,
+                base_branch: resolved_base,
             },
         );
 
@@ -1768,13 +2178,24 @@ impl WorkspaceManager {
         let worktree_path = ws_dir.join(&spec.path);
 
         if worktree_path.exists() {
+            self.ensure_cwd_outside_dir(&worktree_path)?;
             self.git.set_tracked_files_readonly(&worktree_path, false);
             self.git
                 .remove_worktree(&repo_cfg.bare, &worktree_path, true)?;
         }
 
+        let mut branch_deleted = false;
         if delete_branch {
-            let _ = self.git.delete_branch(&repo_cfg.bare, &spec.branch, true);
+            self.ensure_cwd_outside_dir(&ws_dir)?;
+            match self.git.delete_branch(&repo_cfg.bare, &spec.branch, true) {
+                Ok(_) => branch_deleted = true,
+                Err(e) => {
+                    OutputHandler::print_warning(&format!(
+                        "Failed to delete branch '{}' for repository '{}': {}",
+                        spec.branch, repo_name, e
+                    ));
+                }
+            }
         }
 
         meta.repositories.remove(repo_name);
@@ -1784,7 +2205,11 @@ impl WorkspaceManager {
             repo_name,
             workspace_name,
             if delete_branch {
-                " (deleted branch)"
+                if branch_deleted {
+                    " (deleted branch)"
+                } else {
+                    " (branch not deleted)"
+                }
             } else {
                 ""
             }
@@ -2019,27 +2444,216 @@ impl WorkspaceManager {
         interface: Option<&str>,
         lan_ip: Option<&str>,
     ) -> Result<HashMap<String, serde_json::Value>, WSError> {
-        self.validate_environment()?;
-        let (meta, ws_dir) = self.get_workspace_info(workspace_name)?;
+        self.setup_workspace_with_force(
+            workspace_name,
+            repos,
+            dry_run,
+            skip_scripts,
+            verbose,
+            interface,
+            lan_ip,
+            false,
+        )
+    }
 
-        let target_repos: Vec<String> = if let Some(r_list) = repos {
-            let mut tr = Vec::new();
-            for r in r_list {
-                let (r_name, _, _) = self.resolve_repo_spec(workspace_name, r)?;
-                if !tr.contains(&r_name) {
-                    tr.push(r_name);
+    pub fn setup_workspace_with_force(
+        &mut self,
+        workspace_name: &str,
+        repos: Option<&[String]>,
+        dry_run: bool,
+        skip_scripts: bool,
+        verbose: bool,
+        interface: Option<&str>,
+        lan_ip: Option<&str>,
+        force: bool,
+    ) -> Result<HashMap<String, serde_json::Value>, WSError> {
+        // Default lifecycle flow: configure + all setup stages (workspace order + repo-only stages)
+        let mut results = HashMap::new();
+        self.run_configure_stage(
+            workspace_name,
+            repos,
+            dry_run,
+            skip_scripts,
+            verbose,
+            interface,
+            lan_ip,
+            force,
+            &mut results,
+        )?;
+        let (meta, _) = self.get_workspace_info(workspace_name)?;
+        let target_repos: Vec<String> = match repos {
+            Some(r) => r.to_vec(),
+            None => meta.repositories.keys().cloned().collect(),
+        };
+        let mut stage_names: Vec<String> = lifecycle::setup_stage_names(&self.config, None);
+        for r in &target_repos {
+            for s in lifecycle::setup_stage_names(&self.config, Some(r)) {
+                if !stage_names.iter().any(|x| x == &s) {
+                    stage_names.push(s);
                 }
             }
-            tr
-        } else {
-            meta.repositories.keys().cloned().collect()
+        }
+        for stage in stage_names {
+            let stage_key = format!("setup:{}", stage);
+            self.run_setup_stage(
+                workspace_name,
+                &stage_key,
+                repos,
+                dry_run,
+                skip_scripts,
+                verbose,
+                interface,
+                lan_ip,
+                force,
+                &mut results,
+            )?;
+        }
+        Ok(results)
+    }
+
+    pub fn setup_workspace_stage(
+        &mut self,
+        workspace_name: &str,
+        repos: Option<&[String]>,
+        dry_run: bool,
+        skip_scripts: bool,
+        verbose: bool,
+        interface: Option<&str>,
+        lan_ip: Option<&str>,
+        stage: &str,
+    ) -> Result<HashMap<String, serde_json::Value>, WSError> {
+        self.setup_workspace_stage_with_force(
+            workspace_name,
+            repos,
+            dry_run,
+            skip_scripts,
+            verbose,
+            interface,
+            lan_ip,
+            stage,
+            false,
+        )
+    }
+
+    pub fn setup_workspace_stage_with_force(
+        &mut self,
+        workspace_name: &str,
+        repos: Option<&[String]>,
+        dry_run: bool,
+        skip_scripts: bool,
+        verbose: bool,
+        interface: Option<&str>,
+        lan_ip: Option<&str>,
+        stage: &str,
+        force: bool,
+    ) -> Result<HashMap<String, serde_json::Value>, WSError> {
+        let mut results = HashMap::new();
+        match stage {
+            "configure" => self.run_configure_stage(
+                workspace_name,
+                repos,
+                dry_run,
+                skip_scripts,
+                verbose,
+                interface,
+                lan_ip,
+                force,
+                &mut results,
+            )?,
+            "all" => {
+                return self.setup_workspace_with_force(
+                    workspace_name,
+                    repos,
+                    dry_run,
+                    skip_scripts,
+                    verbose,
+                    interface,
+                    lan_ip,
+                    force,
+                )
+            }
+            s if s.starts_with("setup:") => self.run_setup_stage(
+                workspace_name,
+                s,
+                repos,
+                dry_run,
+                skip_scripts,
+                verbose,
+                interface,
+                lan_ip,
+                force,
+                &mut results,
+            )?,
+            s if lifecycle::is_event_stage(s) => self.run_setup_stage(
+                workspace_name,
+                s,
+                repos,
+                dry_run,
+                skip_scripts,
+                verbose,
+                interface,
+                lan_ip,
+                force,
+                &mut results,
+            )?,
+            s => {
+                let key = if s == "env" || s == "bootstrap" || s == "ready" {
+                    return Err(WSError::Validation(format!(
+                        "Legacy stage '{}' is not supported. Run migration and use v3 lifecycle stages.",
+                        s
+                    )));
+                } else {
+                    format!("setup:{}", s)
+                };
+                self.run_setup_stage(
+                    workspace_name,
+                    &key,
+                    repos,
+                    dry_run,
+                    skip_scripts,
+                    verbose,
+                    interface,
+                    lan_ip,
+                    force,
+                    &mut results,
+                )?;
+            }
+        }
+        Ok(results)
+    }
+
+    fn run_configure_stage(
+        &mut self,
+        workspace_name: &str,
+        repos: Option<&[String]>,
+        dry_run: bool,
+        skip_scripts: bool,
+        verbose: bool,
+        interface: Option<&str>,
+        lan_ip: Option<&str>,
+        force: bool,
+        results: &mut HashMap<String, serde_json::Value>,
+    ) -> Result<(), WSError> {
+        self.validate_environment()?;
+        let (meta, ws_dir) = self.get_workspace_info(workspace_name)?;
+        let target_repos: Vec<String> = match repos {
+            Some(r_list) => {
+                let mut tr = Vec::new();
+                for r in r_list {
+                    let (r_name, _, _) = self.resolve_repo_spec(workspace_name, r)?;
+                    if !tr.contains(&r_name) {
+                        tr.push(r_name);
+                    }
+                }
+                tr
+            }
+            None => meta.repositories.keys().cloned().collect(),
         };
 
         let slot = EnvEngine::get_workspace_slot(&self.config.workspaces_dir, workspace_name);
         let resolved_lan_ip = lan_ip
             .map(|s| s.to_string())
             .unwrap_or_else(|| get_lan_ip(interface));
-
         let public_host = self
             .config
             .global_env
@@ -2048,7 +2662,6 @@ impl WorkspaceManager {
             .or_else(|| std::env::var("WS_PUBLIC_HOST").ok())
             .or_else(|| std::env::var("PUBLIC_HOST").ok())
             .unwrap_or_else(|| resolved_lan_ip.clone());
-
         let (service_ports, _) = allocate_workspace_ports(&self.config.repositories, slot, None);
         let _ = EnvEngine::write_service_discovery_files(
             &ws_dir,
@@ -2071,118 +2684,72 @@ impl WorkspaceManager {
             let _ = self.get_or_create_launch_session();
         }
 
-        let mut results = HashMap::new();
+        let mut lifecycle_state = LifecycleState::load(&ws_dir);
+        let lifecycle_opts = StageRunOptions {
+            dry_run,
+            force,
+            verbose,
+            interface: interface.map(|s| s.to_string()),
+            lan_ip: Some(resolved_lan_ip.clone()),
+        };
 
-        // Top level infrastructure setup
-        if repos.is_none() && !self.config.setup.is_empty() && !skip_scripts {
-            OutputHandler::print_setup_repo_start("WORKSPACE INFRASTRUCTURE", &ws_dir);
-            let global_vars = EnvEngine::resolve_repo_env(
-                &self.config,
-                workspace_name,
-                "",
-                slot,
-                Some(&service_ports),
-                Some(&resolved_lan_ip),
-                Some(&public_host),
-                interface,
+        // Built-in configure (workspace root): copy files + env/template sync, before hooks.
+        if !self.config.workspace.copy_files.is_empty() {
+            let (f_ok, f_msg) = EnvEngine::sync_copied_files(
+                &self.config.project_root,
+                &ws_dir,
+                &self.config.workspace.copy_files,
             );
-
-            if verbose {
-                OutputHandler::print_env_resolution_details(
-                    &global_vars,
-                    Some(&self.config.secrets),
-                );
-            }
-
-            for g_cmd in &self.config.setup {
-                let expanded = EnvEngine::expand_command(
-                    g_cmd,
-                    &global_vars,
-                    workspace_name,
-                    "",
-                    slot,
-                    Some(&self.config.project_root),
-                    Some(&self.config.workspaces_dir),
-                    Some(&service_ports),
-                    Some(&resolved_lan_ip),
-                    Some(&public_host),
-                    interface,
-                );
-
-                if dry_run {
-                    OutputHandler::print_setup_step(
-                        0,
-                        &format!("[DRY-RUN] {}", expanded),
-                        "skipped execution",
-                        "info",
-                    );
-                    continue;
-                }
-
-                OutputHandler::print_command_start(&expanded);
-                let t0 = Instant::now();
-                let mut env_map = global_vars.clone();
-                env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
-                env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
-                env_map.insert(
-                    "PROJECT_ROOT".to_string(),
-                    self.config.project_root.display().to_string(),
-                );
-                env_map.insert(
-                    "PROJECT_DIR".to_string(),
-                    self.config.project_root.display().to_string(),
-                );
-                env_map.insert(
-                    "ROOT_DIR".to_string(),
-                    self.config.project_root.display().to_string(),
-                );
-                env_map.insert(
-                    "SCRIPTS_DIR".to_string(),
-                    self.config
-                        .project_root
-                        .join("scripts")
-                        .display()
-                        .to_string(),
-                );
-                env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
-                env_map.insert("WS_DIR".to_string(), ws_dir.display().to_string());
-
-                let ret = run_shell_command(&expanded, &ws_dir, Some(&env_map));
-                let elapsed = t0.elapsed().as_secs_f64();
-                OutputHandler::print_command_done(&expanded, elapsed, ret == 0, ret);
-            }
+            OutputHandler::print_setup_step(
+                1,
+                "Workspace File Copy",
+                &f_msg,
+                if f_ok { "success" } else { "warning" },
+            );
+        }
+        let workspace_env_vars = EnvEngine::resolve_workspace_env(
+            &self.config,
+            workspace_name,
+            slot,
+            Some(&service_ports),
+            Some(&resolved_lan_ip),
+            Some(&public_host),
+            interface,
+        );
+        {
+            let (env_ok, env_msg) = EnvEngine::prepare_and_sync_env_file(
+                &ws_dir,
+                &workspace_env_vars,
+                &self.config.workspace.env_file,
+                &self.config.workspace.env_example,
+            )?;
+            OutputHandler::print_setup_step(
+                2,
+                "Workspace Env Sync",
+                &env_msg,
+                if env_ok { "success" } else { "error" },
+            );
         }
 
-        for r_name in target_repos {
-            let spec = &meta.repositories[&r_name];
-            let wt_path = ws_dir.join(&spec.path);
-            let repo_cfg = self.config.repositories.get(&r_name);
-
-            OutputHandler::print_setup_repo_start(&r_name, &wt_path);
-
-            let repo_cfg = match repo_cfg {
-                Some(rc) => rc,
-                None => {
-                    OutputHandler::print_setup_step(
-                        1,
-                        "Config Validation",
-                        "Repository missing from project configuration",
-                        "error",
-                    );
-                    let mut obj = serde_json::Map::new();
-                    obj.insert(
-                        "status".to_string(),
-                        serde_json::Value::String("failed".to_string()),
-                    );
-                    obj.insert(
-                        "reason".to_string(),
-                        serde_json::Value::String("missing from config".to_string()),
-                    );
-                    results.insert(r_name, serde_json::Value::Object(obj));
-                    continue;
-                }
+        // Built-in configure: copy files + env/template sync for each repo.
+        for r_name in &target_repos {
+            let Some(spec) = meta.repositories.get(r_name) else {
+                continue;
             };
-
+            let wt_path = ws_dir.join(&spec.path);
+            let Some(repo_cfg) = self.config.repositories.get(r_name) else {
+                OutputHandler::print_setup_step(
+                    1,
+                    "Config Validation",
+                    "Repository missing from project configuration",
+                    "error",
+                );
+                results.insert(
+                    r_name.clone(),
+                    serde_json::json!({"status":"failed","reason":"missing from config"}),
+                );
+                continue;
+            };
             if !wt_path.exists() {
                 OutputHandler::print_setup_step(
                     1,
@@ -2190,20 +2757,14 @@ impl WorkspaceManager {
                     "Worktree directory does not exist",
                     "warning",
                 );
-                let mut obj = serde_json::Map::new();
-                obj.insert(
-                    "status".to_string(),
-                    serde_json::Value::String("skipped".to_string()),
+                results.insert(
+                    r_name.clone(),
+                    serde_json::json!({"status":"skipped","reason":"missing worktree"}),
                 );
-                obj.insert(
-                    "reason".to_string(),
-                    serde_json::Value::String("missing worktree".to_string()),
-                );
-                results.insert(r_name, serde_json::Value::Object(obj));
                 continue;
             }
+            OutputHandler::print_setup_repo_start(r_name, &wt_path);
 
-            // Step 1: Copy files
             let mut all_copy = self.config.copy_files.clone();
             all_copy.extend(repo_cfg.copy_files.clone());
             if !all_copy.is_empty() {
@@ -2215,26 +2776,26 @@ impl WorkspaceManager {
                     &f_msg,
                     if f_ok { "success" } else { "warning" },
                 );
+            } else {
+                OutputHandler::print_setup_step(1, "File Copy", "No files to copy", "info");
             }
 
             let env_vars = EnvEngine::resolve_repo_env(
                 &self.config,
                 workspace_name,
-                &r_name,
+                r_name,
                 slot,
                 Some(&service_ports),
                 Some(&resolved_lan_ip),
                 Some(&public_host),
                 interface,
             );
-
             let (env_ok, env_msg) = EnvEngine::prepare_and_sync_env_file(
                 &wt_path,
                 &env_vars,
                 &repo_cfg.env_file,
                 &repo_cfg.env_example,
             )?;
-
             if !env_ok {
                 OutputHandler::print_setup_step(
                     1,
@@ -2242,16 +2803,12 @@ impl WorkspaceManager {
                     &format!("Failed: {}", env_msg),
                     "error",
                 );
-                let mut obj = serde_json::Map::new();
-                obj.insert(
-                    "status".to_string(),
-                    serde_json::Value::String("failed".to_string()),
+                results.insert(
+                    r_name.clone(),
+                    serde_json::json!({"status":"failed","reason":env_msg}),
                 );
-                obj.insert("reason".to_string(), serde_json::Value::String(env_msg));
-                results.insert(r_name, serde_json::Value::Object(obj));
                 continue;
             }
-
             OutputHandler::print_setup_step(
                 1,
                 "Template Setup",
@@ -2262,135 +2819,263 @@ impl WorkspaceManager {
                 "success",
             );
             OutputHandler::print_setup_step(2, "Env Resolution", &env_msg, "success");
-
             if verbose {
                 let mut all_sec = self.config.secrets.clone();
                 all_sec.extend(repo_cfg.secrets.clone());
                 OutputHandler::print_env_resolution_details(&env_vars, Some(&all_sec));
             }
+            results.insert(r_name.clone(), serde_json::json!({"status":"completed","reason":"configure completed (files synced, env resolved)","env_status":env_msg}));
+        }
 
-            // Step 3: Run setup commands
-            if skip_scripts || repo_cfg.setup.is_empty() {
-                OutputHandler::print_setup_step(
-                    3,
-                    "Setup Scripts",
-                    "No setup scripts configured (skipped)",
-                    "info",
+        // Run configure hooks (workspace + repos) if not skipping scripts.
+        if !skip_scripts {
+            let ws_hooks = lifecycle::workspace_stage_hooks(&self.config, "configure");
+            if !ws_hooks.is_empty() {
+                let mut env_map = workspace_env_vars.clone();
+                env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
+                env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
+                env_map.insert(
+                    "PROJECT_ROOT".to_string(),
+                    self.config.project_root.display().to_string(),
                 );
-                let mut obj = serde_json::Map::new();
-                obj.insert(
-                    "status".to_string(),
-                    serde_json::Value::String("completed".to_string()),
+                env_map.insert(
+                    "PROJECT_DIR".to_string(),
+                    self.config.project_root.display().to_string(),
                 );
-                obj.insert(
-                    "reason".to_string(),
-                    serde_json::Value::String("environment synced (no setup commands)".to_string()),
-                );
-                obj.insert("env_status".to_string(), serde_json::Value::String(env_msg));
-                results.insert(r_name, serde_json::Value::Object(obj));
-                continue;
-            }
-
-            let mut script_failures = Vec::new();
-            let mut executed_cmds = Vec::new();
-
-            for cmd in &repo_cfg.setup {
-                let expanded = EnvEngine::expand_command(
-                    cmd,
-                    &env_vars,
+                env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
+                env_map.insert("WS_DIR".to_string(), ws_dir.display().to_string());
+                let ctx = StageContext {
+                    config: &self.config,
                     workspace_name,
-                    &r_name,
+                    ws_dir: &ws_dir,
+                    repo_name: None,
+                    work_dir: &ws_dir,
+                    env_vars: &env_map,
+                };
+                OutputHandler::print_info("== Stage: configure (hooks) ==");
+                lifecycle::run_hooks(
+                    "configure",
+                    &ws_hooks,
+                    &mut lifecycle_state,
+                    &ws_dir,
+                    &ctx,
+                    &lifecycle_opts,
+                )?;
+            }
+            for r_name in &target_repos {
+                let hooks =
+                    lifecycle::stage_hooks_for_repo(&self.config, Some(r_name), "configure");
+                if hooks.is_empty() {
+                    continue;
+                }
+                let Some(spec) = meta.repositories.get(r_name) else {
+                    continue;
+                };
+                let wt_path = ws_dir.join(&spec.path);
+                if !wt_path.exists() {
+                    continue;
+                }
+                let mut env_map = EnvEngine::resolve_repo_env(
+                    &self.config,
+                    workspace_name,
+                    r_name,
                     slot,
-                    Some(&self.config.project_root),
-                    Some(&self.config.workspaces_dir),
                     Some(&service_ports),
                     Some(&resolved_lan_ip),
                     Some(&public_host),
                     interface,
                 );
-                executed_cmds.push(expanded.clone());
-
-                if dry_run {
-                    OutputHandler::print_setup_step(
-                        3,
-                        &format!("[DRY-RUN] {}", expanded),
-                        "skipped execution",
-                        "info",
-                    );
-                    continue;
-                }
-
-                OutputHandler::print_command_start(&expanded);
-                let t0 = Instant::now();
-                let mut proc_env = env_vars.clone();
-                proc_env.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
-                proc_env.insert("WS_NAME".to_string(), workspace_name.to_string());
-                proc_env.insert("REPO_NAME".to_string(), r_name.clone());
-                proc_env.insert("REPO".to_string(), r_name.clone());
-                proc_env.insert(
+                env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
+                env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
+                env_map.insert("REPO_NAME".to_string(), r_name.clone());
+                env_map.insert("REPO".to_string(), r_name.clone());
+                env_map.insert(
                     "PROJECT_ROOT".to_string(),
                     self.config.project_root.display().to_string(),
                 );
-                proc_env.insert(
+                env_map.insert(
                     "PROJECT_DIR".to_string(),
                     self.config.project_root.display().to_string(),
                 );
-                proc_env.insert(
-                    "ROOT_DIR".to_string(),
-                    self.config.project_root.display().to_string(),
-                );
-                proc_env.insert(
-                    "SCRIPTS_DIR".to_string(),
-                    self.config
-                        .project_root
-                        .join("scripts")
-                        .display()
-                        .to_string(),
-                );
-                proc_env.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
-                proc_env.insert("WS_DIR".to_string(), ws_dir.display().to_string());
-                proc_env.insert("WORKTREE_DIR".to_string(), wt_path.display().to_string());
-                proc_env.insert("WT_DIR".to_string(), wt_path.display().to_string());
+                env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
+                env_map.insert("WS_DIR".to_string(), ws_dir.display().to_string());
+                env_map.insert("WORKTREE_DIR".to_string(), wt_path.display().to_string());
+                env_map.insert("WT_DIR".to_string(), wt_path.display().to_string());
+                let ctx = StageContext {
+                    config: &self.config,
+                    workspace_name,
+                    ws_dir: &ws_dir,
+                    repo_name: Some(r_name),
+                    work_dir: &wt_path,
+                    env_vars: &env_map,
+                };
+                OutputHandler::print_setup_repo_start(r_name, &wt_path);
+                lifecycle::run_hooks(
+                    "configure",
+                    &hooks,
+                    &mut lifecycle_state,
+                    &ws_dir,
+                    &ctx,
+                    &lifecycle_opts,
+                )?;
+            }
+        }
+        Ok(())
+    }
 
-                let ret = run_shell_command(&expanded, &wt_path, Some(&proc_env));
-                let elapsed = t0.elapsed().as_secs_f64();
-                OutputHandler::print_command_done(&expanded, elapsed, ret == 0, ret);
-
-                if ret != 0 {
-                    script_failures.push(format!("'{}' failed: exit code {}", expanded, ret));
-                    break;
+    fn run_setup_stage(
+        &mut self,
+        workspace_name: &str,
+        stage_key: &str,
+        repos: Option<&[String]>,
+        dry_run: bool,
+        skip_scripts: bool,
+        verbose: bool,
+        interface: Option<&str>,
+        lan_ip: Option<&str>,
+        force: bool,
+        _results: &mut HashMap<String, serde_json::Value>,
+    ) -> Result<(), WSError> {
+        if skip_scripts {
+            return Ok(());
+        }
+        self.validate_environment()?;
+        let (meta, ws_dir) = self.get_workspace_info(workspace_name)?;
+        let target_repos: Vec<String> = match repos {
+            Some(r_list) => {
+                let mut tr = Vec::new();
+                for r in r_list {
+                    let (r_name, _, _) = self.resolve_repo_spec(workspace_name, r)?;
+                    if !tr.contains(&r_name) {
+                        tr.push(r_name);
+                    }
                 }
+                tr
             }
+            None => meta.repositories.keys().cloned().collect(),
+        };
+        let slot = EnvEngine::get_workspace_slot(&self.config.workspaces_dir, workspace_name);
+        let resolved_lan_ip = lan_ip
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| get_lan_ip(interface));
+        let public_host = self
+            .config
+            .global_env
+            .get("PUBLIC_HOST")
+            .cloned()
+            .or_else(|| std::env::var("WS_PUBLIC_HOST").ok())
+            .or_else(|| std::env::var("PUBLIC_HOST").ok())
+            .unwrap_or_else(|| resolved_lan_ip.clone());
+        let (service_ports, _) = allocate_workspace_ports(&self.config.repositories, slot, None);
+        let mut lifecycle_state = LifecycleState::load(&ws_dir);
+        let lifecycle_opts = StageRunOptions {
+            dry_run,
+            force,
+            verbose,
+            interface: interface.map(|s| s.to_string()),
+            lan_ip: Some(resolved_lan_ip.clone()),
+        };
 
-            let mut obj = serde_json::Map::new();
-            if script_failures.is_empty() {
-                obj.insert(
-                    "status".to_string(),
-                    serde_json::Value::String("completed".to_string()),
-                );
-                obj.insert(
-                    "reason".to_string(),
-                    serde_json::Value::String(format!(
-                        "ran {} setup command(s)",
-                        executed_cmds.len()
-                    )),
-                );
-            } else {
-                obj.insert(
-                    "status".to_string(),
-                    serde_json::Value::String("failed".to_string()),
-                );
-                obj.insert(
-                    "reason".to_string(),
-                    serde_json::Value::String(script_failures.join("; ")),
-                );
-            }
-            obj.insert("env_status".to_string(), serde_json::Value::String(env_msg));
-            obj.insert("commands_run".to_string(), serde_json::json!(executed_cmds));
-            results.insert(r_name, serde_json::Value::Object(obj));
+        OutputHandler::print_info(&format!("== Stage: {} ==", stage_key));
+
+        let ws_hooks = lifecycle::workspace_stage_hooks(&self.config, stage_key);
+        if !ws_hooks.is_empty() {
+            let mut env_map = EnvEngine::resolve_workspace_env(
+                &self.config,
+                workspace_name,
+                slot,
+                Some(&service_ports),
+                Some(&resolved_lan_ip),
+                Some(&public_host),
+                interface,
+            );
+            env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
+            env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
+            env_map.insert(
+                "PROJECT_ROOT".to_string(),
+                self.config.project_root.display().to_string(),
+            );
+            env_map.insert(
+                "PROJECT_DIR".to_string(),
+                self.config.project_root.display().to_string(),
+            );
+            env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
+            env_map.insert("WS_DIR".to_string(), ws_dir.display().to_string());
+            let ctx = StageContext {
+                config: &self.config,
+                workspace_name,
+                ws_dir: &ws_dir,
+                repo_name: None,
+                work_dir: &ws_dir,
+                env_vars: &env_map,
+            };
+            lifecycle::run_hooks(
+                stage_key,
+                &ws_hooks,
+                &mut lifecycle_state,
+                &ws_dir,
+                &ctx,
+                &lifecycle_opts,
+            )?;
         }
 
-        Ok(results)
+        for r_name in &target_repos {
+            let hooks = lifecycle::stage_hooks_for_repo(&self.config, Some(r_name), stage_key);
+            if hooks.is_empty() {
+                continue;
+            }
+            let Some(spec) = meta.repositories.get(r_name) else {
+                continue;
+            };
+            let wt_path = ws_dir.join(&spec.path);
+            if !wt_path.exists() {
+                continue;
+            }
+            let mut env_map = EnvEngine::resolve_repo_env(
+                &self.config,
+                workspace_name,
+                r_name,
+                slot,
+                Some(&service_ports),
+                Some(&resolved_lan_ip),
+                Some(&public_host),
+                interface,
+            );
+            env_map.insert("WORKSPACE_NAME".to_string(), workspace_name.to_string());
+            env_map.insert("WS_NAME".to_string(), workspace_name.to_string());
+            env_map.insert("REPO_NAME".to_string(), r_name.clone());
+            env_map.insert("REPO".to_string(), r_name.clone());
+            env_map.insert(
+                "PROJECT_ROOT".to_string(),
+                self.config.project_root.display().to_string(),
+            );
+            env_map.insert(
+                "PROJECT_DIR".to_string(),
+                self.config.project_root.display().to_string(),
+            );
+            env_map.insert("WORKSPACE_DIR".to_string(), ws_dir.display().to_string());
+            env_map.insert("WS_DIR".to_string(), ws_dir.display().to_string());
+            env_map.insert("WORKTREE_DIR".to_string(), wt_path.display().to_string());
+            env_map.insert("WT_DIR".to_string(), wt_path.display().to_string());
+            let ctx = StageContext {
+                config: &self.config,
+                workspace_name,
+                ws_dir: &ws_dir,
+                repo_name: Some(r_name),
+                work_dir: &wt_path,
+                env_vars: &env_map,
+            };
+            OutputHandler::print_setup_repo_start(r_name, &wt_path);
+            lifecycle::run_hooks(
+                stage_key,
+                &hooks,
+                &mut lifecycle_state,
+                &ws_dir,
+                &ctx,
+                &lifecycle_opts,
+            )?;
+        }
+        Ok(())
     }
 
     pub fn sync_env(
@@ -2400,7 +3085,20 @@ impl WorkspaceManager {
         interface: Option<&str>,
         lan_ip: Option<&str>,
     ) -> Result<HashMap<String, serde_json::Value>, WSError> {
-        self.setup_workspace(workspace_name, repos, false, true, false, interface, lan_ip)
+        // V3: env sync is part of configure.
+        let mut results = HashMap::new();
+        self.run_configure_stage(
+            workspace_name,
+            repos,
+            false,
+            true,
+            false,
+            interface,
+            lan_ip,
+            false,
+            &mut results,
+        )?;
+        Ok(results)
     }
 
     pub fn get_env_vars(
@@ -2435,6 +3133,16 @@ impl WorkspaceManager {
         lan_ip: Option<&str>,
     ) -> Result<Vec<(String, String, String, HashMap<String, String>)>, WSError> {
         let (meta, ws_dir) = self.get_workspace_info(workspace_name)?;
+
+        // Fail start/launch if setup stages are incomplete (except non-blocking always-only stages).
+        let repo_names: Vec<String> = meta.repositories.keys().cloned().collect();
+        let pending = lifecycle::pending_setup_stages(&self.config, &ws_dir, &repo_names);
+        if !pending.is_empty() {
+            return Err(WSError::Validation(lifecycle::format_pending_setup_error(
+                workspace_name,
+                &pending,
+            )));
+        }
         let target_repos: Vec<String> = repos
             .map(|r| r.to_vec())
             .unwrap_or_else(|| meta.repositories.keys().cloned().collect());
@@ -2800,7 +3508,7 @@ impl WorkspaceManager {
         ensure_directory(&dest_dir.join("bares"))?;
         ensure_directory(&dest_dir.join("workspaces"))?;
 
-        let config_path = dest_dir.join("repositories.yml");
+        let config_path = dest_dir.join("ws-project.yml");
         std::fs::write(&config_path, blueprint_yaml)?;
         OutputHandler::print_success(&format!("Wrote {}", config_path.display()));
 
@@ -2933,10 +3641,10 @@ impl WorkspaceManager {
             .config
             .config_file_path
             .clone()
-            .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
+            .unwrap_or_else(|| self.config.project_root.join("ws-project.yml"));
         if !config_file.exists() {
             return Err(WSError::Config(
-                "No 'repositories.yml' found in project root to publish.".to_string(),
+                "No 'ws-project.yml' found in project root to publish.".to_string(),
             ));
         }
 
@@ -3039,10 +3747,10 @@ impl WorkspaceManager {
             .config
             .config_file_path
             .clone()
-            .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
+            .unwrap_or_else(|| self.config.project_root.join("ws-project.yml"));
         if !config_file.exists() {
             return Err(WSError::Config(
-                "No 'repositories.yml' found in project root.".to_string(),
+                "No 'ws-project.yml' found in project root.".to_string(),
             ));
         }
 
@@ -3144,9 +3852,15 @@ impl WorkspaceManager {
             .config
             .config_file_path
             .clone()
-            .unwrap_or_else(|| self.config.project_root.join("repositories.yml"));
+            .unwrap_or_else(|| self.config.project_root.join("ws-project.yml"));
 
-        std::fs::write(&config_file, blueprint_yaml)?;
+        let merged_yaml = if config_file.is_file() {
+            let local_yaml = std::fs::read_to_string(&config_file)?;
+            ConfigLoader::merge_local_bases_into_yaml(&local_yaml, blueprint_yaml)?
+        } else {
+            blueprint_yaml.to_string()
+        };
+        std::fs::write(&config_file, merged_yaml)?;
         OutputHandler::print_success(&format!("Updated {} to revision", config_file.display()));
 
         // Reload config and clone newly added bare repos if any
@@ -3172,6 +3886,173 @@ impl WorkspaceManager {
         }
 
         Ok(data)
+    }
+
+    fn collect_workspace_context_snapshot(
+        &self,
+        ws_dir: &Path,
+        meta: &WorkspaceMetadata,
+    ) -> (serde_json::Map<String, serde_json::Value>, Vec<String>) {
+        let mut snapshot = serde_json::Map::new();
+        let mut warnings = Vec::new();
+
+        let mut repo_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for spec in meta.repositories.values() {
+            if !spec.path.is_empty() {
+                let norm = spec.path.trim_matches('/').to_string();
+                if !norm.is_empty() {
+                    repo_paths.insert(norm);
+                }
+            }
+        }
+
+        let env_file = self.config.workspace.env_file.trim_matches('/').to_string();
+        let env_example = self
+            .config
+            .workspace
+            .env_example
+            .trim_matches('/')
+            .to_string();
+        let max_size = self.config.workspace.save_max_file_size();
+
+        let mut builder = globset::GlobSetBuilder::new();
+        for pat in self.config.workspace.save_excludes() {
+            match globset::Glob::new(&pat) {
+                Ok(g) => {
+                    builder.add(g);
+                }
+                Err(e) => warnings.push(format!("invalid exclude glob '{}': {}", pat, e)),
+            }
+        }
+        let globset = builder.build().ok();
+
+        for entry in walkdir::WalkDir::new(ws_dir).follow_links(false) {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            let rel = match path.strip_prefix(ws_dir) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            if rel.as_os_str().is_empty() {
+                continue;
+            }
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if rel_str.is_empty() {
+                continue;
+            }
+
+            // Built-in excludes
+            if rel_str == "workspace.yml"
+                || rel_str == "workspace.yaml"
+                || rel_str == ".ws"
+                || rel_str.starts_with(".ws/")
+                || rel_str == env_file
+                || rel_str == env_example
+                || rel_str.starts_with(&format!("{}/", env_file))
+                || rel_str.starts_with(&format!("{}/", env_example))
+            {
+                continue;
+            }
+            let mut excluded_by_repo = false;
+            for rp in &repo_paths {
+                if rel_str == *rp || rel_str.starts_with(&format!("{}/", rp)) {
+                    excluded_by_repo = true;
+                    break;
+                }
+            }
+            if excluded_by_repo {
+                continue;
+            }
+
+            let ft = entry.file_type();
+            if ft.is_symlink() {
+                warnings.push(format!("skipped symlink: {}", rel_str));
+                continue;
+            }
+            if ft.is_dir() {
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
+
+            if let Some(ref gs) = globset {
+                if gs.is_match(&rel_str) {
+                    continue;
+                }
+            }
+
+            let md = match std::fs::symlink_metadata(path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if md.len() > max_size {
+                warnings.push(format!(
+                    "skipped oversized file ({} bytes > {}): {}",
+                    md.len(),
+                    max_size,
+                    rel_str
+                ));
+                continue;
+            }
+
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+                    snapshot.insert(rel_str, serde_json::Value::String(encoded));
+                }
+                Err(_) => warnings.push(format!("failed to read: {}", rel_str)),
+            }
+        }
+
+        (snapshot, warnings)
+    }
+
+    fn apply_workspace_context_snapshot(
+        &self,
+        ws_dir: &Path,
+        snapshot: &serde_json::Map<String, serde_json::Value>,
+    ) -> Vec<String> {
+        let mut restored = Vec::new();
+        for (rel_str, val) in snapshot {
+            // Safety: prevent path traversal
+            if rel_str.contains("..") || rel_str.starts_with('/') || rel_str.contains('\0') {
+                continue;
+            }
+            let Some(b64_str) = val.as_str() else {
+                continue;
+            };
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64_str) else {
+                continue;
+            };
+            let dest = ws_dir.join(rel_str);
+            if let Some(parent) = dest.parent() {
+                let _ = ensure_directory(parent);
+            }
+            if std::fs::write(&dest, bytes).is_ok() {
+                restored.push(rel_str.clone());
+            }
+        }
+        restored
+    }
+
+    fn workspace_context_fingerprint(&self, ws_dir: &Path, meta: &WorkspaceMetadata) -> String {
+        let (snapshot, _) = self.collect_workspace_context_snapshot(ws_dir, meta);
+        let mut keys: Vec<_> = snapshot.keys().cloned().collect();
+        keys.sort();
+        let mut hasher = Sha256::new();
+        for k in keys {
+            if let Some(v) = snapshot.get(&k).and_then(|v| v.as_str()) {
+                hasher.update(k.as_bytes());
+                hasher.update([0]);
+                hasher.update(v.as_bytes());
+                hasher.update([0]);
+            }
+        }
+        hex::encode(hasher.finalize())
     }
 
     pub fn hub_state_save(
@@ -3239,6 +4120,21 @@ impl WorkspaceManager {
             }
         }
 
+        let (context_snapshot, context_warnings) =
+            self.collect_workspace_context_snapshot(&ws_dir, &meta);
+        let context_count = context_snapshot.len();
+        if !context_snapshot.is_empty() {
+            state_map.insert(
+                "context_files".to_string(),
+                serde_json::Value::Object(context_snapshot),
+            );
+        }
+        if !silent {
+            for w in &context_warnings {
+                OutputHandler::print_warning(&format!("workspace context: {}", w));
+            }
+        }
+
         let result = match client.save_workspace_state(&namespace, &name, &meta.name, &state_val) {
             Ok(r) => r,
             Err(e) => {
@@ -3273,6 +4169,12 @@ impl WorkspaceManager {
                 OutputHandler::print_info(&format!(
                     "  Captured uncommitted work in %{} ({} modified, {} untracked)",
                     r_name, mod_cnt, untr_cnt
+                ));
+            }
+            if context_count > 0 {
+                OutputHandler::print_info(&format!(
+                    "  Captured {} workspace-root context file(s)",
+                    context_count
                 ));
             }
         }
@@ -3349,6 +4251,9 @@ impl WorkspaceManager {
                 }
             }
         }
+
+        let ctx_fp = self.workspace_context_fingerprint(&ws_dir, &meta);
+        hasher.update(format!("context:{}", ctx_fp).as_bytes());
 
         Ok(hex::encode(hasher.finalize()))
     }
@@ -3698,8 +4603,8 @@ impl WorkspaceManager {
             repo_specs.push(spec);
         }
 
-        let ws_dir = self.get_workspace_dir(&meta.name);
-        if !ws_dir.exists() {
+        let ws_dir_path = self.get_workspace_dir(&meta.name);
+        if !ws_dir_path.exists() {
             OutputHandler::print_info(&format!(
                 "Recreating workspace @{} from hub state...",
                 meta.name
@@ -3712,9 +4617,20 @@ impl WorkspaceManager {
             ));
         }
 
+        let (_, ws_dir) = self.get_workspace_info(&meta.name)?;
+
+        if let Some(ctx) = state_val.get("context_files").and_then(|v| v.as_object()) {
+            let restored = self.apply_workspace_context_snapshot(&ws_dir, ctx);
+            if !restored.is_empty() {
+                OutputHandler::print_success(&format!(
+                    "Restored {} workspace-root context file(s)",
+                    restored.len()
+                ));
+            }
+        }
+
         if apply_wip {
             if let Some(wip_data) = state_val.get("wip").and_then(|w| w.as_object()) {
-                let (_, ws_dir) = self.get_workspace_info(&meta.name)?;
                 for (r_name, r_wip) in wip_data {
                     let spec = meta.repositories.get(r_name);
                     let wt_path = ws_dir.join(spec.map(|s| s.path.as_str()).unwrap_or(r_name));
@@ -3836,6 +4752,7 @@ mod tests {
             bare: PathBuf::from("bares/stocktik-mobile.git"),
             checkout: "stocktik-mobile".to_string(),
             url: Some("git@github.com:Fantastik-sarl/stocktik-mobile.git".to_string()),
+            base_branch: None,
             port: None,
             ports: HashMap::new(),
             env: HashMap::new(),
@@ -3847,6 +4764,7 @@ mod tests {
             launch: None,
             secrets: Vec::new(),
             copy_files: Vec::new(),
+            lifecycle: None,
         };
 
         let yaml = serde_yaml::to_string(&repo).unwrap();
@@ -3862,6 +4780,10 @@ mod tests {
             !yaml.contains("env_example:"),
             "Serialized YAML should not contain default 'env_example'"
         );
+        assert!(
+            !yaml.contains("base_branch:"),
+            "Serialized YAML should omit an unset 'base_branch'"
+        );
         assert!(yaml.contains("checkout: stocktik-mobile"));
         assert!(yaml.contains("bare: bares/stocktik-mobile.git"));
     }
@@ -3876,5 +4798,35 @@ checkout: '%mobile'
         let cfg = RepoConfig::from_yaml_value("%mobile", &val).unwrap();
         assert_eq!(cfg.name, "mobile");
         assert_eq!(cfg.checkout, "mobile");
+    }
+
+    #[test]
+    fn test_repo_config_parses_base_branch() {
+        let yaml_str = r#"
+bare: bares/api.git
+checkout: api
+base_branch: develop
+"#;
+        let val: serde_yaml::Value = serde_yaml::from_str(yaml_str).unwrap();
+        let cfg = RepoConfig::from_yaml_value("api", &val).unwrap();
+        assert_eq!(cfg.base_branch.as_deref(), Some("develop"));
+
+        let empty = r#"
+bare: bares/api.git
+checkout: api
+base_branch: "   "
+"#;
+        let val: serde_yaml::Value = serde_yaml::from_str(empty).unwrap();
+        let cfg = RepoConfig::from_yaml_value("api", &val).unwrap();
+        assert_eq!(cfg.base_branch, None);
+
+        let null = r#"
+bare: bares/api.git
+checkout: api
+base_branch:
+"#;
+        let val: serde_yaml::Value = serde_yaml::from_str(null).unwrap();
+        let cfg = RepoConfig::from_yaml_value("api", &val).unwrap();
+        assert_eq!(cfg.base_branch, None);
     }
 }

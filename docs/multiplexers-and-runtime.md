@@ -49,9 +49,9 @@ ws start @develop
 `ws` provides first-class support for `tmux` across two dimensions: **Workspace
 Window Management** and **Multi-Service Panes**.
 
-### A. Workspace Window Management (`repositories.yml`)
+### A. Workspace Window Management (`ws-project.yml`)
 
-Configure `tmux:` in your `repositories.yml` to have `ws` manage a dedicated
+Configure `tmux:` in your `ws-project.yml` to have `ws` manage a dedicated
 window for each workspace inside your project tmux session:
 
 ```yaml

@@ -1,3 +1,5 @@
+pub mod activity;
+pub mod base_branch;
 pub mod completion;
 pub mod config;
 pub mod daemon;
@@ -6,6 +8,7 @@ pub mod errors;
 pub mod git;
 pub mod hub;
 pub mod hub_discovery;
+pub mod lifecycle;
 pub mod models;
 pub mod multiplexer;
 pub mod network;
@@ -25,3 +28,4 @@ pub use hub::HubClient;
 pub use models::*;
 pub use output::OutputHandler;
 pub use workspace::WorkspaceManager;
+pub mod migration;

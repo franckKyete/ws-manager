@@ -12,7 +12,7 @@ and headless terminal screen emulator.
 graph TD
     User["👤 Developer (CLI / Subshell)"]
     CLI["🦀 ws CLI (Rust)"]
-    Config["📄 repositories.yml / workspace.yml"]
+    Config["📄 ws-project.yml / workspace.yml"]
 
     subgraph "Git Storage Layer"
         BareStore["📦 Bare Store (bares/*.git)"]
@@ -69,7 +69,7 @@ or relies on Git submodules. Both approaches suffer from substantial downsides:
    - Each repository is cloned once with `--bare`.
    - The bare repository holds the complete Git object database and commit
      graph.
-2. **Instant Worktree Creation (`workspaces/@<name>/<checkout>`)**:
+2. **Instant Worktree Creation (`workspaces/<name>/<checkout>`)**:
    - Creating a workspace executes `git worktree add -b <branch> <path>`.
    - Worktree checkouts take **under 100 milliseconds** and consume zero
      duplicate object storage.
@@ -209,3 +209,54 @@ graph TD
    - If any port shifts during launch, `ws` automatically re-synchronizes
      worktree `.env` files and updates `.ws/services.json` and
      `.ws/services.env` before starting processes.
+
+---
+
+## 4. Activity Tracking & Time Accounting
+
+`ws` includes an optional local activity tracking subsystem (integrated into the
+daemon/collector loop) that:
+
+- watches registered workspaces and records file/git/heartbeat/terminal-command
+  events (command name, cwd, duration, exit code only; no arguments or file
+  contents),
+- derives active-time sessions and hourly UTC buckets (idle
+  gap/cap/tail/heartbeat window) in a global SQLite WAL database
+  (`~/.local/share/ws/activity.db`),
+- can incrementally sync **aggregates only**
+  (time/counts/project/repo/workspace/ device) to `wshub` for per-user reporting
+  in `wshub-web`.
+
+Raw events are retained locally according to configuration; synced payloads
+never include paths, command names, command arguments, or contents. The UI
+surfaces consume the same SQLite/WAL data through `ws-core`:
+`ws activity status --waybar` for the Waybar module,
+`ws activity snapshot --range today|week|month --json` for the Quickshell hover
+panel (`~/.config/quickshell/ws-activity/`, overlay anchored to the fixed Waybar
+`custom/ws` slot), and `ws activity dashboard` for the optional GTK4/libadwaita
+`ws-dashboard` crate.
+
+Presence tracking (`ext-idle-notify-v1` + logind) records
+active/idle/away/locked/asleep intervals in `presence_buckets`. Focus
+attribution resolves the active Hyprland window through tmux pane cwd/session,
+browser domain (Firefox sessionstore/history/title, local-only), `/proc`
+cwd/process tree, and class/title/domain rules. It records `focus_intervals`/
+`focus_buckets` with work/leisure/neutral categories. Precedence is manual
+override > project mapping > explicit work rule > explicit leisure rule >
+default neutral; unmapped windows default to neutral.
+
+Work metrics are kept separate: **Event work** is the headline metric: the
+deduped union of credited event-session spans (file/git/command/heartbeats, tail
+credit, and presence-confirmed extensions). Overlapping sessions across projects
+are counted once, so event work cannot exceed elapsed wall clock; it is not
+capped by presence. **Raw session sum** is diagnostic: the pre-dedupe
+per-session total. **Active work** is input-active time while focused on a work
+context. **Focus work** is present (active+idle) time while focused on a work
+context. Never add event seconds to presence seconds. When `extend_sessions` is
+enabled, open event sessions can be extended only while presence is active/idle
+and focus category is `work` on the same project/repo, or on an unmapped focus
+with the same work-capable app (terminal/editor/office). Use
+`ws activity presence explain` to debug classification;
+`ws activity recompute --range today` rebuilds today's buckets/spans from raw
+events. Hub sync for presence/work is still pending. See `ws activity --help`
+and [Configuration](configuration.md#activity-tracking-configwsactivityyml).

@@ -33,8 +33,9 @@ overhead.
 - 🖥️ **High-Performance Rust Terminal Engine**: Real-time headless VT100/ANSI
   screen parser with a 10,000-line lossless ring buffer preserving progress bars
   and carriage returns (`\r`).
-- 🏷️ **Intuitive Sigil Semantics**: Clean `@<workspace>` (e.g. `@develop`) and
-  `%<repo>` (e.g. `%server`) targets with forgiving shell parsing.
+- 🏷️ **Intuitive Sigil Semantics**: Mandatory `@<workspace>` (e.g. `@develop`)
+  and `%<repo>` (e.g. `%server`) prefixes for positional arguments and flag
+  values.
 - ⚡ **Universal Inverted Shorthand Syntax**: Run `ws @develop start --tmux` or
   `ws @develop shell %mobile` from any directory.
 - 🛡️ **Atomic Rollback Engine**: Guaranteed filesystem and Git resource cleanup

@@ -278,7 +278,7 @@ fn test_e2e_clone_from_hub_wshub_format() {
     assert!(status.success());
 
     let blueprint_content = format!(
-        "repositories:\n  backend:\n    url: {}\n    bare: bares/backend.git\n    checkout: backend\n",
+        "schema_version: 3\nrepositories:\n  backend:\n    url: {}\n    bare: bares/backend.git\n    checkout: backend\n",
         upstream_bare.display()
     );
 
@@ -331,8 +331,8 @@ fn test_e2e_clone_from_hub_wshub_format() {
     let res = manager.clone_from_hub("kyete/projecti-ws", Some(&clone_target));
     assert!(res.is_ok(), "clone_from_hub failed: {:?}", res.err());
 
-    // Verify repositories.yml exists with the blueprint content
-    let repo_yml = clone_target.join("repositories.yml");
+    // Verify ws-project.yml exists with the blueprint content
+    let repo_yml = clone_target.join("ws-project.yml");
     assert!(repo_yml.exists());
     let content = std::fs::read_to_string(&repo_yml).unwrap();
     assert_eq!(content, blueprint_content);
@@ -356,7 +356,7 @@ fn test_e2e_clone_from_hub_legacy_fallback_format() {
     assert!(status.success());
 
     let blueprint_content = format!(
-        "repositories:\n  frontend:\n    url: {}\n    bare: bares/frontend.git\n    checkout: frontend\n",
+        "schema_version: 3\nrepositories:\n  frontend:\n    url: {}\n    bare: bares/frontend.git\n    checkout: frontend\n",
         upstream_bare.display()
     );
 
@@ -398,7 +398,7 @@ fn test_e2e_clone_from_hub_legacy_fallback_format() {
     let res = manager.clone_from_hub("kyete/legacy-ws", Some(&clone_target));
     assert!(res.is_ok(), "legacy clone_from_hub failed: {:?}", res.err());
 
-    let repo_yml = clone_target.join("repositories.yml");
+    let repo_yml = clone_target.join("ws-project.yml");
     assert!(repo_yml.exists());
     let content = std::fs::read_to_string(&repo_yml).unwrap();
     assert_eq!(content, blueprint_content);
@@ -463,7 +463,7 @@ fn test_e2e_clone_from_hub_default_directory_no_workspaces_affix() {
     );
     assert!(!cloned_path.to_str().unwrap().contains("-workspaces"));
     assert!(!cloned_path.to_str().unwrap().contains("workspaces-"));
-    assert!(cloned_path.join("repositories.yml").exists());
+    assert!(cloned_path.join("ws-project.yml").exists());
 }
 
 #[test]
@@ -569,10 +569,10 @@ fn test_e2e_hub_state_restore_recreates_workspace_with_named_repos() {
         .unwrap();
 
     let repo_yml_content = format!(
-        "repositories:\n  mono:\n    bare: {}\n    checkout: mono\n",
+        "schema_version: 3\nrepositories:\n  mono:\n    bare: {}\n    checkout: mono\n",
         bare_repo.display()
     );
-    let repo_yml = proj_dir.path().join("repositories.yml");
+    let repo_yml = proj_dir.path().join("ws-project.yml");
     std::fs::write(&repo_yml, &repo_yml_content).unwrap();
 
     // Mock hub route returning state where repositories contains "mono" without "name" field

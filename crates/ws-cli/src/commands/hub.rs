@@ -1,4 +1,4 @@
-use crate::helpers::resolve_ws_and_repo_args;
+use crate::helpers::{parse_repo_token, resolve_ws_and_repo_args};
 use colored::Colorize;
 use comfy_table::{Cell, Color};
 use std::fs;
@@ -225,7 +225,7 @@ pub fn execute_hub_pull(
         .and_then(|v| v.as_i64());
     if let Some(rev) = ver {
         OutputHandler::print_success(&format!(
-            "Updated local repositories.yml to wshub blueprint v{}",
+            "Updated local ws-project.yml to wshub blueprint v{}",
             rev
         ));
     } else {
@@ -384,12 +384,16 @@ pub fn execute_hub_secret_set(
     repo: Option<&str>,
     project: Option<&str>,
 ) -> Result<(), String> {
+    let repo = match repo {
+        Some(repo) => Some(parse_repo_token(manager, repo)?),
+        None => None,
+    };
     let (ns, p_name) = manager
         .get_project_namespace_and_name(project)
         .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     client
-        .set_secret(&ns, &p_name, key, value, repo)
+        .set_secret(&ns, &p_name, key, value, repo.as_deref())
         .map_err(|e| e.to_string())?;
     OutputHandler::print_success(&format!("Secret '{}' set in wshub", key));
     Ok(())
@@ -401,12 +405,16 @@ pub fn execute_hub_secret_get(
     repo: Option<&str>,
     project: Option<&str>,
 ) -> Result<(), String> {
+    let repo = match repo {
+        Some(repo) => Some(parse_repo_token(manager, repo)?),
+        None => None,
+    };
     let (ns, p_name) = manager
         .get_project_namespace_and_name(project)
         .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     let res = client
-        .get_secret(&ns, &p_name, key, repo)
+        .get_secret(&ns, &p_name, key, repo.as_deref())
         .map_err(|e| e.to_string())?;
     println!("{}", res);
     Ok(())
@@ -418,12 +426,16 @@ pub fn execute_hub_secret_delete(
     repo: Option<&str>,
     project: Option<&str>,
 ) -> Result<(), String> {
+    let repo = match repo {
+        Some(repo) => Some(parse_repo_token(manager, repo)?),
+        None => None,
+    };
     let (ns, p_name) = manager
         .get_project_namespace_and_name(project)
         .map_err(|e| e.to_string())?;
     let client = HubClient::default();
     client
-        .delete_secret(&ns, &p_name, key, repo)
+        .delete_secret(&ns, &p_name, key, repo.as_deref())
         .map_err(|e| e.to_string())?;
     OutputHandler::print_success(&format!("Secret '{}' deleted from wshub", key));
     Ok(())
@@ -717,7 +729,7 @@ pub fn execute_hub_auto_save_start(
     let auto_cfg = manager.config.hub_auto_save.as_ref();
     if !auto_cfg.map(|a| a.enabled).unwrap_or(false) {
         OutputHandler::print_warning(
-            "Note: 'hub.auto_save.enabled' is currently false or missing in repositories.yml for this project.\nSet 'enabled: true' under 'hub.auto_save' in repositories.yml to include this project.",
+            "Note: 'hub.auto_save.enabled' is currently false or missing in ws-project.yml for this project.\nSet 'enabled: true' under 'hub.auto_save' in ws-project.yml to include this project.",
         );
     }
 

@@ -12,7 +12,7 @@ for polyrepo development.
 | :----------------------------------------------------------- | :----------------------------------------------------------------------------------------------------------------------------------------- |
 | [**🚀 Getting Started**](getting-started.md)                 | System requirements, installation instructions, and a 3-minute onboarding tutorial.                                                        |
 | [**💻 CLI Reference**](cli-reference.md)                     | Exhaustive command manual detailing syntax, options, aliases, and real-world examples for all commands.                                    |
-| [**⚙️ Configuration Specification**](configuration.md)       | Complete schema reference for `repositories.yml` and declarative `workspace.yml` spec files.                                               |
+| [**⚙️ Configuration Specification**](configuration.md)       | Complete schema reference for `ws-project.yml` and declarative `workspace.yml` spec files.                                                 |
 | [**🏛️ Architecture & Internals**](architecture.md)           | Deep dive into the Git worktree model, bare repositories store, daemon architecture, Unix socket IPC, and the Rust `_native` vt100 engine. |
 | [**🖥️ Multiplexers & Runtime**](multiplexers-and-runtime.md) | Operating the Interactive TUI, Tmux vertical panes, Zellij split grid, Background Daemon, and **Zero-Downtime Presentation Switching**.    |
 | [**🌲 Worktree & Git Management**](worktree-management.md)   | Worktree lifecycles, branch coordination, tracked file locking (`ws repo lock`), and safe multi-repo push/pull.                            |

@@ -145,6 +145,9 @@ pub enum Commands {
     #[command(about = "Run setup scripts and environment variable sync for a workspace")]
     Setup(SetupArgs),
 
+    #[command(about = "Run or inspect workspace lifecycle stages")]
+    Lifecycle(LifecycleCommandArgs),
+
     // ==================== 6. Project & Bare Repositories ====================
     #[command(about = "Manage project-wide bare repositories")]
     Project(ProjectCommandArgs),
@@ -153,12 +156,22 @@ pub enum Commands {
     Init {
         #[arg(help = "Git repository URLs")]
         urls: Vec<String>,
+        #[arg(
+            long = "yes",
+            help = "Non-interactive: accept detected default base branches"
+        )]
+        yes: bool,
     },
 
     #[command(about = "Add and clone a new bare repository")]
     Add {
         #[arg(help = "Git repository URL or name=URL")]
         url: String,
+        #[arg(
+            long = "yes",
+            help = "Non-interactive: accept detected default base branches"
+        )]
+        yes: bool,
     },
 
     #[command(about = "Fetch updates in all bare repositories")]
@@ -217,6 +230,9 @@ pub enum Commands {
         #[command(subcommand)]
         action: Option<ServiceAction>,
     },
+
+    #[command(about = "Track local activity and sync time reports")]
+    Activity(ActivityCommandArgs),
 }
 
 // Subcommand Argument Structs
@@ -259,6 +275,12 @@ pub struct CreateArgs {
         help = "Base branch to create workspace branches from"
     )]
     pub target_branch: Option<String>,
+
+    #[arg(
+        long = "yes",
+        help = "Non-interactive: accept detected default base branches"
+    )]
+    pub yes: bool,
 
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     pub extra_args: Vec<String>,
@@ -305,13 +327,17 @@ pub struct ExecArgs {
     #[arg(help = "Workspace name (@<name>)")]
     pub name: Option<String>,
 
+    #[arg(help = "Repository names (%<repo>)")]
+    pub repos: Vec<String>,
+
     #[arg(long = "all", help = "Execute across all worktrees in workspace")]
     pub all: bool,
 
-    #[arg(long = "repos", help = "Comma-separated list of repository names")]
-    pub repos_flag: Option<String>,
-
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    #[arg(
+        last = true,
+        allow_hyphen_values = true,
+        help = "Command to execute (after --)"
+    )]
     pub command: Vec<String>,
 }
 
@@ -343,15 +369,31 @@ pub enum RepoAction {
         about = "Add a repository worktree to an existing workspace"
     )]
     Add {
+        #[arg(help = "Workspace name (@<name>)")]
         name: Option<String>,
+        #[arg(help = "Repository specification (%<repo>[:branch])")]
         repo: Option<String>,
+        #[arg(help = "Target branch name")]
         branch: Option<String>,
+        #[arg(
+            long = "base",
+            visible_aliases = ["target", "from"],
+            help = "Base branch for a newly created branch (one-shot override)"
+        )]
+        base: Option<String>,
         #[arg(long = "existing")]
         existing: bool,
+        #[arg(
+            long = "yes",
+            help = "Non-interactive: accept detected default base branches"
+        )]
+        yes: bool,
     },
     #[command(aliases = ["rm", "remove-repo"], about = "Remove a repository worktree from a workspace")]
     Remove {
+        #[arg(help = "Workspace name (@<name>)")]
         name: Option<String>,
+        #[arg(help = "Repository name (%<repo>)")]
         repo: Option<String>,
         #[arg(long = "delete-branch")]
         delete_branch: bool,
@@ -361,7 +403,9 @@ pub enum RepoAction {
         about = "Lock repository worktree (mark files read-only)"
     )]
     Lock {
+        #[arg(help = "Workspace name (@<name>)")]
         name: Option<String>,
+        #[arg(help = "Repository name (%<repo>)")]
         repo: Option<String>,
     },
     #[command(
@@ -369,7 +413,9 @@ pub enum RepoAction {
         about = "Unlock repository worktree (restore write permissions)"
     )]
     Unlock {
+        #[arg(help = "Workspace name (@<name>)")]
         name: Option<String>,
+        #[arg(help = "Repository name (%<repo>)")]
         repo: Option<String>,
     },
 }
@@ -530,13 +576,6 @@ pub struct SetupArgs {
     #[arg(long = "all", help = "Setup all repositories in the workspace")]
     pub all: bool,
 
-    #[arg(
-        long = "repos",
-        visible_alias = "only",
-        help = "Comma-separated list of repository names to setup"
-    )]
-    pub repos_flag: Option<String>,
-
     #[arg(long = "dry-run", help = "Print setup commands without executing them")]
     pub dry_run: bool,
 
@@ -566,9 +605,23 @@ pub struct ProjectCommandArgs {
 #[derive(Subcommand, Debug)]
 pub enum ProjectAction {
     #[command(about = "Initialize project and clone bare repositories")]
-    Init { urls: Vec<String> },
+    Init {
+        urls: Vec<String>,
+        #[arg(
+            long = "yes",
+            help = "Non-interactive: accept detected default base branches"
+        )]
+        yes: bool,
+    },
     #[command(about = "Add and clone a new bare repository")]
-    Add { url: String },
+    Add {
+        url: String,
+        #[arg(
+            long = "yes",
+            help = "Non-interactive: accept detected default base branches"
+        )]
+        yes: bool,
+    },
     #[command(about = "Fetch updates in all bare repositories")]
     Fetch,
     #[command(about = "Sync and prune worktrees")]
@@ -579,6 +632,96 @@ pub enum ProjectAction {
     Register { path: Option<PathBuf> },
     #[command(about = "Unregister a project from the global registry")]
     Unregister { path: Option<PathBuf> },
+    #[command(about = "Migrate project configuration/state")]
+    Migrate {
+        #[command(subcommand)]
+        action: ProjectMigrateAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProjectMigrateAction {
+    #[command(about = "Migrate ws-project.yml and workspace state to lifecycle schema v3")]
+    Lifecycle {
+        #[arg(long = "dry-run", help = "Show migration plan without writing changes")]
+        dry_run: bool,
+        #[arg(long = "yes", help = "Apply migration without confirmation prompt")]
+        yes: bool,
+        #[arg(
+            long = "no-backup",
+            help = "Do not create a backup of the configuration file"
+        )]
+        no_backup: bool,
+        #[arg(
+            long = "stage-name",
+            default_value = "install",
+            help = "Setup stage name for migrated legacy/setup commands"
+        )]
+        stage_name: String,
+        #[arg(
+            long = "source",
+            default_value = "auto",
+            help = "Migration source: auto|legacy|v1"
+        )]
+        source: String,
+        #[arg(long = "no-state", help = "Do not migrate workspace lifecycle state")]
+        no_state: bool,
+        #[arg(long = "reset-state", help = "Reset lifecycle state before migration")]
+        reset_state: bool,
+    },
+    #[command(about = "Rename legacy repositories.yml to ws-project.yml")]
+    Config {
+        #[arg(long = "dry-run", help = "Show rename plan without changing files")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Args, Debug)]
+#[command(
+    about = "Run or inspect workspace lifecycle stages",
+    long_about = "Run or inspect workspace lifecycle stages.\n\n\
+The workspace is inferred from the current directory when @workspace is omitted.\n\
+When @workspace, %repo and --all are all omitted, the repository is inferred from\n\
+the current directory. Stage names must be prefixed with '+' (for example\n\
+'+configure', '+install', '+pre_launch'). With no stages, 'run' executes\n\
+configure followed by every setup stage in order.",
+    override_usage = "ws lifecycle [@workspace] [%repo ...] run [--all] [+stage ...] [flags]\n       ws lifecycle [@workspace] [%repo ...] status [+stage ...]"
+)]
+pub struct LifecycleCommandArgs {
+    #[arg(
+        value_name = "ARGS",
+        num_args = 0..,
+        help = "Positional arguments: [@workspace] [%repo ...] run|status [+stage ...]"
+    )]
+    pub raw: Vec<String>,
+
+    #[arg(long = "all", help = "Run for all repositories in the workspace")]
+    pub all: bool,
+
+    #[arg(
+        long = "force",
+        help = "Force re-run even if stage is marked completed"
+    )]
+    pub force: bool,
+
+    #[arg(long = "dry-run", help = "Show commands without executing them")]
+    pub dry_run: bool,
+
+    #[arg(
+        long = "skip-configure",
+        help = "Skip automatic configure stage before setup stages"
+    )]
+    pub skip_configure: bool,
+
+    #[arg(long = "interface", visible_aliases = ["iface", "lan-interface"], help = "Network interface name or type")]
+    pub interface: Option<String>,
+
+    #[arg(
+        long = "ip",
+        visible_alias = "lan-ip",
+        help = "Explicit host LAN IP override"
+    )]
+    pub lan_ip: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -664,6 +807,7 @@ pub enum HubAction {
     },
     #[command(about = "Restore workspace state from wshub on this machine")]
     Resume {
+        #[arg(help = "Workspace name (@<name>)")]
         workspace: String,
         #[arg(long = "project")]
         project: Option<String>,
@@ -689,6 +833,7 @@ pub enum HubAction {
 pub enum HubStateAction {
     #[command(about = "Save workspace state to wshub")]
     Save {
+        #[arg(help = "Workspace name (@<name>)")]
         workspace: String,
         #[arg(long = "project")]
         project: Option<String>,
@@ -699,6 +844,7 @@ pub enum HubStateAction {
     },
     #[command(about = "Restore workspace state from wshub")]
     Restore {
+        #[arg(help = "Workspace name (@<name>)")]
         workspace: String,
         #[arg(long = "project")]
         project: Option<String>,
@@ -759,7 +905,7 @@ pub enum HubSecretAction {
     Set {
         key: String,
         value: String,
-        #[arg(long = "repo")]
+        #[arg(long = "repo", help = "Repository name (%<repo>)")]
         repo: Option<String>,
         #[arg(long = "project")]
         project: Option<String>,
@@ -767,7 +913,7 @@ pub enum HubSecretAction {
     #[command(about = "Get a secret value from wshub vault")]
     Get {
         key: String,
-        #[arg(long = "repo")]
+        #[arg(long = "repo", help = "Repository name (%<repo>)")]
         repo: Option<String>,
         #[arg(long = "project")]
         project: Option<String>,
@@ -775,7 +921,7 @@ pub enum HubSecretAction {
     #[command(about = "Delete a secret from wshub vault")]
     Delete {
         key: String,
-        #[arg(long = "repo")]
+        #[arg(long = "repo", help = "Repository name (%<repo>)")]
         repo: Option<String>,
         #[arg(long = "project")]
         project: Option<String>,
@@ -823,5 +969,292 @@ pub enum ServiceAction {
         follow: bool,
         #[arg(short = 'n', long = "lines", default_value = "50")]
         lines: usize,
+    },
+}
+
+#[derive(Args, Debug)]
+pub struct ActivityCommandArgs {
+    #[command(subcommand)]
+    pub action: Option<ActivityAction>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityAction {
+    #[command(about = "Show activity collector, daemon, DB and sync status")]
+    Status {
+        #[arg(long, help = "Output machine-readable JSON")]
+        json: bool,
+        #[arg(long, help = "Output compact Waybar JSON")]
+        waybar: bool,
+        #[arg(long, help = "Recompute rollups before reading (default: read-only)")]
+        fresh: bool,
+        #[arg(long, help = "Include daemon performance counters")]
+        stats: bool,
+    },
+    #[command(about = "Report time spent by project, workspace and repo")]
+    Report {
+        #[arg(long, help = "Report today (default)")]
+        day: bool,
+        #[arg(long, help = "Report the last 7 days")]
+        week: bool,
+        #[arg(long, help = "Report the last 30 days")]
+        month: bool,
+        #[arg(long, help = "Start date/time (YYYY-MM-DD or RFC3339)")]
+        from: Option<String>,
+        #[arg(long, help = "End date/time (exclusive, YYYY-MM-DD or RFC3339)")]
+        to: Option<String>,
+        #[arg(long, help = "Filter by project name or id")]
+        project: Option<String>,
+        #[arg(long, help = "Filter by repository name")]
+        repo: Option<String>,
+        #[arg(long, help = "Filter by workspace name")]
+        workspace: Option<String>,
+        #[arg(
+            long,
+            help = "Filter by device id (not applied to local bucketing; hub views only)"
+        )]
+        device: Option<String>,
+        #[arg(
+            long,
+            help = "Display timezone (not applied to local bucketing; hub views only)"
+        )]
+        tz: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Output CSV")]
+        csv: bool,
+        #[arg(long, help = "Recompute rollups before reading (default: read-only)")]
+        fresh: bool,
+    },
+    #[command(about = "Show a dense local-aligned activity snapshot")]
+    Snapshot {
+        #[arg(long, default_value = "today", help = "Range: today, week or month")]
+        range: String,
+        #[arg(long, help = "Filter by project name or id")]
+        project: Option<String>,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Recompute rollups before reading (default: read-only)")]
+        fresh: bool,
+    },
+    #[command(about = "Show presence state and computer usage totals")]
+    Presence {
+        #[arg(long, default_value = "today", help = "Range: today, week or month")]
+        range: String,
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+        #[arg(long, help = "Recompute rollups before reading (default: read-only)")]
+        fresh: bool,
+        #[command(subcommand)]
+        action: Option<ActivityPresenceAction>,
+    },
+    #[command(about = "Show time-series activity buckets")]
+    Series {
+        #[arg(long, help = "Report today (default)")]
+        day: bool,
+        #[arg(long, help = "Report the last 7 days")]
+        week: bool,
+        #[arg(long, help = "Report the last 30 days")]
+        month: bool,
+        #[arg(long, help = "Start date/time (YYYY-MM-DD or RFC3339)")]
+        from: Option<String>,
+        #[arg(long, help = "End date/time (exclusive, YYYY-MM-DD or RFC3339)")]
+        to: Option<String>,
+        #[arg(long, help = "Bucket step: hour or day", default_value = "hour")]
+        step: String,
+        #[arg(long, help = "Filter by project name or id")]
+        project: Option<String>,
+        #[arg(long, help = "Filter by repository name")]
+        repo: Option<String>,
+        #[arg(long, help = "Filter by workspace name")]
+        workspace: Option<String>,
+        #[arg(
+            long,
+            help = "Group series by: none or project",
+            default_value = "none"
+        )]
+        group_by: String,
+        #[arg(long, help = "Output JSON (default)")]
+        json: bool,
+        #[arg(long, help = "Recompute rollups before reading (default: read-only)")]
+        fresh: bool,
+    },
+    #[command(about = "Open the GTK activity dashboard (requires ws-dashboard build)")]
+    Dashboard,
+    #[command(about = "Sync pending activity aggregates to wshub")]
+    Sync {
+        #[arg(long, help = "Sync only this project")]
+        project: Option<String>,
+        #[arg(long, help = "Ignore backoff and force a sync pass")]
+        force: bool,
+        #[command(subcommand)]
+        action: Option<ActivitySyncAction>,
+    },
+    #[command(about = "Export raw local activity events")]
+    Export {
+        #[arg(long, help = "Export raw events (required)")]
+        raw: bool,
+        #[arg(long)]
+        from: Option<String>,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        csv: bool,
+    },
+    #[command(about = "Prune old raw events")]
+    Prune {
+        #[arg(long, help = "Delete raw events before this date")]
+        before: Option<String>,
+        #[arg(long, help = "Show what would be deleted")]
+        dry_run: bool,
+    },
+    #[command(
+        about = "Recompute activity buckets/spans from raw events (fixes overlap double-counting)"
+    )]
+    Recompute {
+        #[arg(long, default_value = "today", help = "Range to recompute: today")]
+        range: String,
+        #[arg(long, help = "Show what would change without writing")]
+        dry_run: bool,
+        #[arg(long, help = "Proceed even if the daemon appears to be running")]
+        force: bool,
+    },
+    #[command(about = "Install or uninstall shell command hooks")]
+    Shell {
+        #[command(subcommand)]
+        action: ActivityShellAction,
+    },
+    #[command(about = "Enable local activity collection")]
+    Enable {
+        #[arg(long)]
+        yes: bool,
+    },
+    #[command(about = "Disable local activity collection")]
+    Disable,
+    #[command(about = "Pause local activity collection")]
+    Pause,
+    #[command(about = "Resume local activity collection")]
+    Resume,
+    #[command(about = "Delete local activity data")]
+    Clear {
+        #[arg(long)]
+        yes: bool,
+    },
+    #[command(about = "Manage this device identity")]
+    Device {
+        #[command(subcommand)]
+        action: ActivityDeviceAction,
+    },
+    #[command(about = "Inspect and migrate legacy activity project IDs")]
+    Ids {
+        #[command(subcommand)]
+        action: ActivityIdsAction,
+    },
+    #[command(
+        about = "Record a shell command event (used by shell hooks)",
+        hide = true
+    )]
+    Record {
+        #[arg(long)]
+        cmd: Option<String>,
+        #[arg(long)]
+        cwd: Option<String>,
+        #[arg(long)]
+        exit: Option<i64>,
+        #[arg(long)]
+        dur: Option<i64>,
+        #[arg(long)]
+        ts: Option<i64>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivitySyncAction {
+    #[command(about = "Enable hub sync for a project or all projects")]
+    Enable {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    #[command(about = "Disable hub sync for a project or all projects")]
+    Disable {
+        #[arg(long)]
+        project: Option<String>,
+    },
+    #[command(about = "Delete synced activity history from wshub for this user")]
+    Purge {
+        #[arg(long)]
+        project: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityShellAction {
+    #[command(about = "Install shell hooks for command tracking")]
+    Install {
+        #[arg(long, help = "Shell: bash, zsh, fish (default: auto-detect)")]
+        shell: Option<String>,
+        #[arg(long, help = "Target rc/config file path")]
+        file: Option<String>,
+    },
+    #[command(about = "Uninstall shell hooks")]
+    Uninstall {
+        #[arg(long)]
+        shell: Option<String>,
+        #[arg(long)]
+        file: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityPresenceAction {
+    #[command(about = "Set manual presence state (for hooks/testing)")]
+    Set {
+        #[arg(help = "State: active, idle, away, locked, asleep")]
+        state: String,
+    },
+    #[command(about = "Set or clear a work/leisure/neutral category override")]
+    Category {
+        #[arg(help = "Category: work, leisure, neutral, auto")]
+        category: String,
+        #[arg(long, help = "Duration (e.g. 30m, 1h, 2h). Omit for until cleared")]
+        r#for: Option<String>,
+        #[arg(long, help = "Apply to current focus interval only (default: global)")]
+        current: bool,
+    },
+    #[command(about = "Explain how the current focused window is classified")]
+    Explain {
+        #[arg(long, help = "Output JSON")]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityDeviceAction {
+    #[command(about = "Rename this device as shown in reports and wshub")]
+    Rename {
+        #[arg(help = "New device name")]
+        name: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ActivityIdsAction {
+    #[command(about = "List canonical and legacy project IDs found in local activity data")]
+    List,
+    #[command(about = "Migrate legacy path:<dir> IDs to canonical activity.project_id values")]
+    Migrate {
+        #[arg(long, help = "Show what would change without modifying data")]
+        dry_run: bool,
+        #[arg(
+            long,
+            help = "Keep legacy aggregates instead of rebuilding from raw events"
+        )]
+        keep_aggregates: bool,
+        #[arg(long, help = "Skip confirmation prompt")]
+        yes: bool,
     },
 }

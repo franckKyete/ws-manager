@@ -1,78 +1,100 @@
 # ⚙️ Configuration Specification
 
 `ws` is configured declaratively using YAML. This document details the schema
-and behavior of the project configuration file (`repositories.yml`), declarative
+and behavior of the project configuration file (`ws-project.yml`), declarative
 workspace templates (`workspace.yml`), environment variable scoping, and
-automated setup scripts.
+lifecycle/setup configuration.
 
 ---
 
-## 📄 `repositories.yml` Schema
+## 📄 `ws-project.yml` Schema
 
-The `repositories.yml` file resides in the root of your project directory and
+The `ws-project.yml` file resides in the root of your project directory and
 defines the bare repository store, services, ports, environment variables, and
 setup pipelines.
 
-### Full Annotated Example
+### Full Annotated Example (Lifecycle schema v3)
 
 ```yaml
+schema_version: 3
+
 # Global environment variables accessible across all workspaces and services
 env:
   NODE_ENV: development
   LOG_LEVEL: debug
   GLOBAL_API_URL: http://localhost:8080
 
-# Global workspace setup scripts (executed in workspace root)
-setup:
-  scripts:
-    - name: 'Global Pre-flight Check'
-      command: "echo 'Preparing workspace: ${WORKSPACE_NAME}'"
+# Lifecycle (v3): built-in configure stage + ordered setup stages
+lifecycle:
+  configure:
+    - run: "echo 'Preparing workspace: ${WORKSPACE_NAME}'"
+      when: once
+  setup:
+    - name: install
+      hooks:
+        - run: "echo 'global install hooks (optional)'"
+    - name: verify
+      hooks:
+        - run: "echo 'workspace verification'"
 
 # Repositories & Services Definition
 repositories:
   server:
     bare: bares/Renttik-server.git
     checkout: Renttik-server
+    base_branch: main
     command: npm run dev
     port: 8080
     depends_on: []
-    setup:
-      # Copy files from files/ directory or template examples into worktree
-      copy_files:
-        - from: files/.env.server
-          to: .env
-        - from: .env.example
-          to: .env.local
-      # Static & scoped environment variables
-      env:
-        PORT: '8080'
-        DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/db_${WORKSPACE_NAME}'
-        SECRET_KEY: '${ENV:DEV_SECRET_KEY:-default_secret}'
-      # Repository-specific setup scripts executed inside worktree
-      scripts:
-        - name: 'Install Server Dependencies'
-          command: 'npm install'
-        - name: 'Run Database Migrations'
-          command: 'npm run db:migrate'
+    # File/env sync is handled by the built-in configure stage.
+    copy_files:
+      - from: files/.env.server
+        to: .env
+      - from: .env.example
+        to: .env.local
+    env:
+      PORT: '8080'
+      DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/db_${WORKSPACE_NAME}'
+      SECRET_KEY: '${ENV:DEV_SECRET_KEY:-default_secret}'
+    lifecycle:
+      setup:
+        - name: install
+          hooks:
+            - run: npm install
+        - name: migrate
+          hooks:
+            - run: npm run db:migrate
+        - name: verify
+          hooks:
+            - run: npm run check
 
   mobile:
     bare: bares/Renttik-mobile.git
     checkout: Renttik-mobile
+    base_branch: main
     command: npx expo start --port 8081
     port: 8081
     depends_on:
       - server
-    setup:
-      copy_files:
-        - from: files/.env.mobile
-          to: .env
-      env:
-        EXPO_PUBLIC_API_URL: 'http://localhost:8080'
-        EXPO_PORT: '8081'
-      scripts:
-        - name: 'Install Mobile Dependencies'
-          command: 'npm install'
+    copy_files:
+      - from: files/.env.mobile
+        to: .env
+    env:
+      EXPO_PUBLIC_API_URL: 'http://localhost:8080'
+      EXPO_PORT: '8081'
+    lifecycle:
+      setup:
+        - name: install
+          hooks:
+            - run: npm install
 ```
+
+> **Migration required:** legacy configs and v1 lifecycle configs must be
+> migrated before use:
+>
+> ```bash
+> ws project migrate lifecycle --yes
+> ```
 
 ---
 
@@ -80,15 +102,44 @@ repositories:
 
 ### Top-Level Fields
 
-| Field           | Type                    | Description                                                                                |
-| :-------------- | :---------------------- | :----------------------------------------------------------------------------------------- |
-| `env`           | `dict[str, str]`        | Global public environment variables synchronized in blueprint revisions.                   |
-| `secret`        | `dict[str, str]`        | Global sensitive secrets encrypted with AES-256-GCM in wshub Vault.                        |
-| `private`       | `dict[str, str]`        | Global host-specific variables that **never leave the local machine**.                     |
-| `setup.scripts` | `list[ScriptSpec]`      | Global setup scripts executed in the workspace root directory.                             |
-| `tmux`          | `dict` or `str`         | Project Tmux session configuration for workspace windows (`session`, `command`, `switch`). |
-| `hub`           | `dict`                  | wshub settings: default project identifier and background `auto_save` configuration.       |
-| `repositories`  | `dict[str, RepoConfig]` | Map of repository definitions keyed by repository alias (`server`, `mobile`, etc.).        |
+| Field            | Type                    | Description                                                                                                        |
+| :--------------- | :---------------------- | :----------------------------------------------------------------------------------------------------------------- |
+| `schema_version` | `integer`               | Lifecycle/config schema version (v3).                                                                              |
+| `env`            | `dict[str, str]`        | Global public environment variables synchronized in blueprint revisions.                                           |
+| `secret`         | `dict[str, str]`        | Global sensitive secrets encrypted with AES-256-GCM in wshub Vault.                                                |
+| `private`        | `dict[str, str]`        | Global host-specific variables that **never leave the local machine**.                                             |
+| `lifecycle`      | `object`                | v3 lifecycle definition (`configure` hooks and ordered `setup` stages).                                            |
+| `tmux`           | `dict` or `str`         | Project Tmux session configuration for workspace windows (`session`, `command`, `switch`).                         |
+| `hub`            | `dict`                  | wshub settings: default project identifier and background `auto_save` configuration.                               |
+| `workspace`      | `object`                | Workspace-root settings (project-wide): root `copy_files`, root `env`/env file sync, and hub context save options. |
+| `repositories`   | `dict[str, RepoConfig]` | Map of repository definitions keyed by repository alias (`server`, `mobile`, etc.).                                |
+
+---
+
+### 📁 Workspace Root (`workspace:`)
+
+Configures workspace-root behavior applied to each workspace directory
+(`workspaces/<name>/`) during the built-in `configure` stage (before
+workspace-scope configure hooks):
+
+- `copy_files` / `files`: copy specs (same format as repository `copy_files`)
+  from project sources (`files/` or project root) into the workspace root.
+- `env`: workspace-specific environment variables (merged with global env,
+  workspace values override on key collision) resolved with placeholder
+  expansion in workspace context.
+- `env_file` / `env_example`: target and template filenames for generated/synced
+  workspace env file (defaults `.env` / `.env.example`).
+- `save.exclude`: glob patterns to exclude additional workspace-root context
+  files from hub state snapshots.
+- `save.max_file_size`: per-file size limit in bytes for hub context snapshots
+  (default `1048576`).
+
+Hub state save/restore captures eligible workspace-root context files (implicit,
+excluding repo worktrees, `.ws/`, `workspace.yml`/`workspace.yaml`, and the
+configured workspace env files by default), skips symlinks and oversized files,
+and restores snapshot paths by upsert (no deletions). Workspace-scope lifecycle
+hooks continue to run at the workspace root and receive resolved workspace env
+vars.
 
 ---
 
@@ -194,42 +245,90 @@ hub:
 
 ### `RepoConfig` Fields
 
-| Field              | Type                            | Required | Description                                                                                        |
-| :----------------- | :------------------------------ | :------- | :------------------------------------------------------------------------------------------------- |
-| `bare`             | `string`                        | **Yes**  | Relative or absolute path to the bare Git repository (e.g. `bares/server.git`).                    |
-| `checkout`         | `string`                        | **Yes**  | Subdirectory name where the worktree is checked out inside each workspace (e.g. `Renttik-server`). |
-| `command`          | `string`                        | No       | Service launch command (e.g. `npm run dev`, `cargo run`).                                          |
-| `port`             | `integer`                       | No       | Primary base network port the service listens on (used as default port in discovery and status).   |
-| `ports`            | `list[int]` or `dict[str, int]` | No       | Multiple base network ports (e.g. `[8080, 8081]` or `{http: 8080, ws: 8081, metrics: 9090}`).      |
-| `depends_on`       | `list[str]`                     | No       | List of service aliases that must start before this service.                                       |
-| `setup.copy_files` | `list[FileCopySpec]`            | No       | File copy specifications to execute during `ws setup` or workspace creation.                       |
-| `setup.env`        | `dict[str, str]`                | No       | Environment variables specific to this repository worktree.                                        |
-| `setup.scripts`    | `list[ScriptSpec]`              | No       | Setup commands executed sequentially inside the repository worktree directory.                     |
+| Field         | Type                            | Required | Description                                                                                        |
+| :------------ | :------------------------------ | :------- | :------------------------------------------------------------------------------------------------- |
+| `bare`        | `string`                        | **Yes**  | Relative or absolute path to the bare Git repository (e.g. `bares/server.git`).                    |
+| `checkout`    | `string`                        | **Yes**  | Subdirectory name where the worktree is checked out inside each workspace (e.g. `Renttik-server`). |
+| `base_branch` | `string`                        | No       | Default branch new workspace branches are created from. Prompted/detected when missing.            |
+| `command`     | `string`                        | No       | Service launch command (e.g. `npm run dev`, `cargo run`).                                          |
+| `port`        | `integer`                       | No       | Primary base network port the service listens on (used as default port in discovery and status).   |
+| `ports`       | `list[int]` or `dict[str, int]` | No       | Multiple base network ports (e.g. `[8080, 8081]` or `{http: 8080, ws: 8081, metrics: 9090}`).      |
+| `depends_on`  | `list[str]`                     | No       | List of service aliases that must start before this service.                                       |
+| `copy_files`  | `list[FileCopySpec]`            | No       | File copy specifications applied during the built-in `configure` stage.                            |
+| `env`         | `dict[str, str]`                | No       | Environment variables specific to this repository worktree (resolved/synced during `configure`).   |
+| `lifecycle`   | `object`                        | No       | Repository lifecycle definition (e.g. ordered `setup` stages/hooks) for v3 lifecycle execution.    |
+
+> Legacy `setup.scripts`/`setup.env`/bootstrap/env/ready lifecycle forms are not
+> used at runtime in schema v3; migrate with
+> `ws project migrate lifecycle --yes`.
+
+---
+
+### 🌿 Default Base Branches (`base_branch`)
+
+`base_branch` is the branch a repository's new workspace branch starts from. It
+only applies when a branch is **created** (`create: true`); checking out an
+existing branch ignores it.
+
+```yaml
+repositories:
+  server:
+    bare: bares/server.git
+    checkout: server
+    base_branch: develop
+```
+
+- **Optional and additive.** `schema_version` stays `3`; existing configs remain
+  valid without the field.
+- **Prompted when missing.** `ws init`, `ws add`, `ws create`, and `ws repo add`
+  ask for a base branch when the repository has none and the terminal is
+  interactive. The prompt is prefilled with the detected default; pressing Enter
+  accepts it, and an unknown branch re-prompts.
+- **Persisted on choice.** The chosen value is written back to `ws-project.yml`
+  before any worktree is created. If persistence fails, the workspace is not
+  created. A base persisted before a later failure remains.
+- **Non-interactive behavior.** With `--yes` (or no TTY), each repository uses
+  its detected default, which is saved with a warning. If no default can be
+  detected, the command fails.
+- **Detection order.** `origin/HEAD`, the bare repository's `HEAD`, then `main`
+  → `develop` → `master`. No branch is invented when none exists.
+- **Validation.** A configured base must exist locally or on the primary remote
+  (`origin`, otherwise the first remote). A missing branch is fetched once
+  before failing.
+- **One-shot overrides.** `--base`, `--target`, and `--from` on `ws create` and
+  `ws repo add` override the configured value for that command only and are
+  never persisted.
+- **Declarative files are strict.** `ws create --file` does not prompt, detect,
+  or fall back: every `create: true` entry must supply `base`, `target`, `from`,
+  or `base_branch` in the file, or the command fails before touching Git.
+- **Editing defaults.** Change `base_branch` directly in `ws-project.yml`; there
+  is no dedicated config command.
 
 ---
 
 ## 🔄 Dynamic Variable Interpolation & Service Discovery
 
 `ws` provides dynamic template variables and cross-service discovery
-placeholders inside commands, environment variable values, and setup scripts:
+placeholders inside commands, environment variable values, and lifecycle hook
+scripts:
 
 ### Standard Template Variables
 
-| Variable                   | Description                                       | Example Value                                   |
-| :------------------------- | :------------------------------------------------ | :---------------------------------------------- |
-| `${WORKSPACE_NAME}`        | Name of the active workspace                      | `feat-auth`                                     |
-| `${WORKSPACE_SLOT}`        | Deterministic integer slot index of the workspace | `0`, `1`, `2`                                   |
-| `${WORKSPACE_PATH}`        | Absolute path to the workspace root               | `/path/to/workspaces/@feat-auth`                |
-| `${WORKSPACE_DIR}`         | Absolute path to the workspace root directory     | `/path/to/workspaces/@feat-auth`                |
-| `${PROJECT_ROOT}`          | Absolute path to the project root directory       | `/path/to/project`                              |
-| `${PROJECT_DIR}`           | Alias for `${PROJECT_ROOT}`                       | `/path/to/project`                              |
-| `${SCRIPTS_DIR}`           | Path to project root automation scripts directory | `/path/to/project/scripts`                      |
-| `${REPO_NAME}`             | Alias of the target repository                    | `server`                                        |
-| `${REPO_PATH}`             | Absolute path to the repository worktree          | `/path/to/workspaces/@feat-auth/Renttik-server` |
-| `${LAN_IP}`                | Auto-detected host LAN Wi-Fi IP address           | `192.168.1.45`                                  |
-| `${PUBLIC_HOST}`           | Configured public or tunnel hostname              | `myproject.loca.lt`                             |
-| `${ENV:VAR_NAME:-default}` | Host environment variable with optional fallback  | `${ENV:API_KEY:-dev_key}`                       |
-| `${PORT:3000}`             | Dynamic port offset (`3000 + slot * 10`)          | `3000`, `3010`, `3020`                          |
+| Variable                   | Description                                       | Example Value                                  |
+| :------------------------- | :------------------------------------------------ | :--------------------------------------------- |
+| `${WORKSPACE_NAME}`        | Name of the active workspace                      | `feat-auth`                                    |
+| `${WORKSPACE_SLOT}`        | Deterministic integer slot index of the workspace | `0`, `1`, `2`                                  |
+| `${WORKSPACE_PATH}`        | Absolute path to the workspace root               | `/path/to/workspaces/feat-auth`                |
+| `${WORKSPACE_DIR}`         | Absolute path to the workspace root directory     | `/path/to/workspaces/feat-auth`                |
+| `${PROJECT_ROOT}`          | Absolute path to the project root directory       | `/path/to/project`                             |
+| `${PROJECT_DIR}`           | Alias for `${PROJECT_ROOT}`                       | `/path/to/project`                             |
+| `${SCRIPTS_DIR}`           | Path to project root automation scripts directory | `/path/to/project/scripts`                     |
+| `${REPO_NAME}`             | Alias of the target repository                    | `server`                                       |
+| `${REPO_PATH}`             | Absolute path to the repository worktree          | `/path/to/workspaces/feat-auth/Renttik-server` |
+| `${LAN_IP}`                | Auto-detected host LAN Wi-Fi IP address           | `192.168.1.45`                                 |
+| `${PUBLIC_HOST}`           | Configured public or tunnel hostname              | `myproject.loca.lt`                            |
+| `${ENV:VAR_NAME:-default}` | Host environment variable with optional fallback  | `${ENV:API_KEY:-dev_key}`                      |
+| `${PORT:3000}`             | Dynamic port offset (`3000 + slot * 10`)          | `3000`, `3010`, `3020`                         |
 
 ---
 
@@ -338,7 +437,7 @@ Native on Android & iOS) can reliably connect to local API backend services,
 ### 📄 Live Service Registry File (`.ws/services.json`)
 
 On startup, `ws` writes a machine-readable discovery descriptor to
-`workspaces/@<name>/.ws/services.json`:
+`workspaces/<name>/.ws/services.json`:
 
 ```json
 {
@@ -410,9 +509,11 @@ repositories:
   server:
     branch: feature/auth-api
     create: true
+    base: develop # Required for create: true (base/target/from/base_branch)
   mobile:
     branch: feature/auth-ui
     create: true
+    base: main
   frontend:
     branch: main
     create: false
@@ -423,4 +524,69 @@ Create the workspace directly from the file:
 
 ```bash
 ws create -f feature-auth.yml --setup
+```
+
+> `ws create --file` is strict: any `create: true` repository without a base in
+> the file is a hard error. It never prompts, detects a default, falls back to
+> `ws-project.yml`, or writes the file.
+
+---
+
+## Activity Tracking (`~/.config/ws/activity.yml`)
+
+Global activity tracking is configured in `~/.config/ws/activity.yml`
+(created/managed by `ws activity ...`). Common fields:
+
+```yaml
+enabled: true
+paused: false
+device_name: null # defaults to hostname
+idle_gap: 300 # seconds (or duration string)
+session_cap: 14400
+tail_credit: 60
+heartbeat_interval: 60
+heartbeat_window: 900
+debounce: 2
+raw_retention: 365d
+watch_reconcile: 60 # seconds; light git/light scan cadence (full watch rebuild/file scan on overflow or ~15m)
+sync:
+  enabled: true
+  interval: 600
+  backfill: none
+presence:
+  enabled: true
+  source: auto # auto | wayland | logind | none
+  idle_timeout: 120s
+  away_timeout: 900s
+  lock_aware: true
+  sleep_aware: true
+  attribution: true
+  hyprland: true
+  terminal_process_tree: true
+  extend_sessions: true # extend event sessions while present and focused on work (same project/repo or unmapped work-capable app)
+  browser:
+    inspect: auto # auto | sessionstore | history | title | off
+    profiles: auto
+  rules:
+    - name: github-work
+      match: { domain: ['github.com', '*.github.com'] }
+      category: work
+    - name: youtube-leisure
+      match: { domain: ['youtube.com', '*.youtube.com'] }
+      category: leisure
+    - match: { class: 'mpv' }
+      category: leisure
+    - match: { class: 'firefox', title: '*project-docs*' }
+      category: work
+      project: myproject
+exclude: []
+```
+
+Project-level overrides/mapping in `ws-project.yml` (no schema_version bump):
+
+```yaml
+activity:
+  project_id: <uuid> # generated/persisted locally
+  sync: true # per-project sync enable/disable
+  hub_project: org/name # hub mapping (may be auto-created/persisted)
 ```

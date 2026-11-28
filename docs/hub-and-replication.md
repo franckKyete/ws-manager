@@ -17,7 +17,7 @@ Git repositories.
    - **Secrets never enter Git commits or repositories**.
 
 2. **Project Blueprint Registry & Versioning**:
-   - Stores `repositories.yml` blueprints and automation scripts with linear
+   - Stores `ws-project.yml` blueprints and automation scripts with linear
      versioning (`v1`, `v2`, ...).
    - Enables one-command project cloning: `ws clone <org/project>`.
 
@@ -35,6 +35,22 @@ Git repositories.
      Blob)**.
 
 ---
+
+## Activity Sync (Aggregates)
+
+When activity tracking is enabled and hub sync is configured, `ws` can
+periodically push **hourly aggregate buckets** to `wshub` (scoped to the
+authenticated user/project):
+
+- synced fields: active time, event/session counts, project/repo/workspace,
+  device
+- never synced: file paths, file contents, command names, command arguments, or
+  raw events
+- projects may be auto-linked/created (sanitized blueprint) and can be disabled
+  per project; remote history can be purged via `ws activity sync purge`.
+
+`wshub-web` surfaces this data in an Activity view for users with available
+data.
 
 ## Quick Start Workflow
 
@@ -65,6 +81,10 @@ classification:
 4. **Sensitive files** (`files/` directory or `copy_files:`) are **encrypted and
    uploaded** to the wshub encrypted blob store.
 
+Repository `base_branch` values are included in the published blueprint. When
+pulling a revised blueprint, a `base_branch` present remotely wins; local values
+are preserved for repositories the remote revision omits it for.
+
 ```bash
 cd my-project-workspaces
 ws hub publish kyete/renttik -d "Production polyrepo ecosystem"
@@ -90,7 +110,7 @@ ws start @develop
 
 ```bash
 # Set a secret key
-ws hub secret set PAWAPAY_JWT_TOKEN "eyJraWQiOiIx..." --repo server
+ws hub secret set PAWAPAY_JWT_TOKEN "eyJraWQiOiIx..." --repo %server
 
 # Upload a sensitive file (e.g. RSA private key or service account JSON)
 ws hub secret upload files/pawapay-private.pem
@@ -155,7 +175,7 @@ Auto-save continuously computes a workspace fingerprint incorporating:
 If nothing has changed since the last snapshot, the upload is **completely
 skipped**, ensuring zero wasteful network calls.
 
-#### Configuration in `repositories.yml`
+#### Configuration in `ws-project.yml`
 
 ```yaml
 hub:
@@ -221,7 +241,7 @@ Auto-save automatically sends desktop notifications over D-Bus
   (e.g. `wshub` server offline or connection lost), without interrupting your
   terminal or local work.
 - Notifications can be muted anytime by setting `notify: false` under
-  `hub.auto_save` in `repositories.yml`.
+  `hub.auto_save` in `ws-project.yml`.
 
 #### Automatic Publishing on First Save
 
@@ -239,7 +259,7 @@ registered on `wshub`, `ws` automatically:
 The background daemon (`ws.service`) includes a lightweight real-time file
 watcher that continuously monitors all registered projects:
 
-- **`repositories.yml` Edited**: Automatically pushes an updated blueprint
+- **`ws-project.yml` Edited**: Automatically pushes an updated blueprint
   revision to `wshub` and issues a desktop notification.
 - **`workspace.yml` Edited**: Automatically saves the workspace state (branches,
   locks, uncommitted WIP) to `wshub` and updates the deduplication fingerprint

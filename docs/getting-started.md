@@ -118,10 +118,14 @@ ws project init server=git@github.com:example-org/api-server.git \
 This command:
 
 1. Clones bare repositories into `bares/server.git` and `bares/mobile.git`.
-2. Generates a root `repositories.yml` configuration file with sensible `tmux`
-   and `hub` defaults.
+2. Generates a root `ws-project.yml` configuration file with sensible `tmux` and
+   `hub` defaults.
+3. Detects each repository's default branch (`origin/HEAD`, bare `HEAD`, then
+   `main`/`develop`/`master`) and prompts for a `base_branch`, prefilled with
+   that default. Press Enter to accept; the choice is saved for future
+   workspaces. Pass `--yes` to accept detected defaults non-interactively.
 
-Inspect the generated `repositories.yml`:
+Inspect the generated `ws-project.yml`:
 
 ```yaml
 tmux:
@@ -140,11 +144,13 @@ repositories:
   server:
     bare: bares/server.git
     checkout: server
+    base_branch: main
     command: npm run dev
     port: 8080
   mobile:
     bare: bares/mobile.git
     checkout: mobile
+    base_branch: main
     command: npm start
     port: 8081
 ```
@@ -167,6 +173,14 @@ Or checkout an existing `main` branch for `%server` while creating a new
 ws create @feat-auth %server:main:existing %mobile:feature/auth-ui:new
 ```
 
+New branches start from each repository's configured `base_branch`. Override
+that for a single command with `--base`:
+
+```bash
+# Branch both repositories from develop without changing ws-project.yml:
+ws create @feat-auth %server %mobile --base develop
+```
+
 Your directory structure now contains lightweight Git worktrees:
 
 ```
@@ -174,7 +188,7 @@ my-polyrepo-project/
 ├── bares/
 │   ├── server.git/
 │   └── mobile.git/
-├── repositories.yml
+├── ws-project.yml
 └── workspaces/
     └── @feat-auth/
         ├── .ws/
@@ -185,14 +199,17 @@ my-polyrepo-project/
 
 ---
 
-### Step 3: Run Setup Scripts & Environment Sync
+### Step 3: Run Configure & Setup Stages
 
-Sync `.env` files and run setup scripts (e.g. `npm install`) inside all
-repositories:
+Run the default lifecycle flow for all repositories (`configure` for file
+copy/env sync, then ordered setup stages such as `install`/`build`/`verify`):
 
 ```bash
 ws setup @feat-auth --all
 ```
+
+> If the project config is not yet on lifecycle schema v3, migrate first with
+> `ws project migrate lifecycle --yes`.
 
 ---
 

@@ -1,3 +1,4 @@
+pub mod activity;
 pub mod completion;
 pub mod create;
 pub mod daemon;
@@ -11,6 +12,7 @@ pub mod hub;
 pub mod info;
 pub mod init;
 pub mod launch;
+pub mod lifecycle;
 pub mod list;
 pub mod open;
 pub mod project;

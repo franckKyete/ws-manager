@@ -20,7 +20,7 @@ ws create @feat-oauth %server %mobile
 ```
 
 - Creates `feature/feat-oauth` in `%server` and `%mobile`.
-- Both worktrees are checked out under `workspaces/@feat-oauth/`.
+- Both worktrees are checked out under `workspaces/feat-oauth/`.
 
 ---
 
@@ -32,6 +32,9 @@ ws create @feat-oauth %server:main:existing %mobile:feature/auth-screen:new
 
 - `%server` checks out existing `main` without creating a new branch.
 - `%mobile` creates and checks out a new branch `feature/auth-screen`.
+- For existing checkouts, if the target branch is not present locally in the
+  bare repo but exists on the remote, `ws` fetches it and materializes a local
+  branch ref automatically.
 
 ---
 
@@ -43,6 +46,40 @@ ws create @prod-debug --all --existing
 
 - Checks out existing branches matching `@prod-debug` or default branches across
   every configured repository.
+
+---
+
+## 🌱 Choosing the Base Branch
+
+New branches start from each repository's `base_branch` in `ws-project.yml`. If
+it is missing, `ws create` prompts once per repository with the detected default
+(or accepts it with `--yes`) and saves it.
+
+```yaml
+repositories:
+  server:
+    bare: bares/server.git
+    checkout: server
+    base_branch: develop
+```
+
+Resolution order when the field is unset: a prompt when interactive, otherwise
+the detected default. Detection tries `origin/HEAD`, the bare repository's
+`HEAD`, then `main` → `develop` → `master`; no branch is invented.
+
+Override the configured base for one command without editing the file:
+
+```bash
+# New branches start from release/2.0 just this time:
+ws create @hotfix %server %mobile --base release/2.0
+```
+
+`--base`, `--target`, and `--from` are aliases and are never persisted. Existing
+branch checkouts (`:existing` or `create: false`) ignore the base entirely.
+
+Declarative workspace files are strict: `ws create --file` requires a base
+(`base`, `target`, `from`, or `base_branch`) for every `create: true` entry and
+fails before touching Git otherwise.
 
 ---
 
@@ -163,6 +200,9 @@ ws repo add @develop %web:feature/auth-page
 
 # Add a repository on an existing branch:
 ws repo add @develop %web:main --existing
+
+# Create the new branch from a different base just this once:
+ws repo add @develop %web:feature/auth-page --base develop
 ```
 
 ### Removing a Repository:

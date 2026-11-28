@@ -40,6 +40,7 @@ _ws() {
         'open:Open interactive subshell'
         'env:Inspect or sync environment variables'
         'setup:Run setup scripts and sync .env'
+        'lifecycle:Run or inspect workspace lifecycle stages'
         'repo:Manage repositories inside workspace'
         'lock:Lock worktree tracked files read-only'
         'unlock:Unlock worktree tracked files writable'
@@ -55,6 +56,7 @@ _ws() {
         'clone:Clone and replicate a project from wshub'
         'daemon:Manage or run global background daemon'
         'service:Manage systemd user service (ws.service)'
+        'activity:Track local activity and sync time reports'
         'completion:Generate or install shell completion scripts'
     )
 
@@ -89,6 +91,23 @@ _ws() {
         if [[ -n "$iface_list" ]]; then
             _describe -t interfaces 'network interface' iface_list
         fi
+    }
+
+    _ws_stages() {
+        local -a stage_list
+        stage_list=(${(f)"$(ws _complete stages 2>/dev/null)"})
+        if [[ -n "$stage_list" ]]; then
+            _describe -t stages 'lifecycle stage' stage_list
+        fi
+    }
+
+    _ws_lifecycle_tokens() {
+        local -a lc_actions
+        lc_actions=('run:Run lifecycle stages' 'status:Show lifecycle status')
+        _describe -t lifecycle-actions 'lifecycle action' lc_actions
+        _ws_workspaces
+        _ws_repositories
+        _ws_stages
     }
 
     if [[ "$words[2]" == @* ]]; then
@@ -153,6 +172,18 @@ _ws() {
                     '--lan-ip[Explicit host LAN IP address override]:ip:' \
                     '*:service:_ws_repositories'
                 ;;
+            lifecycle)
+                _arguments \
+                    '--all[Run for all repositories]' \
+                    '--force[Force rerun even if stage is already complete]' \
+                    '--dry-run[Print actions without running hooks]' \
+                    '--skip-configure[Skip automatic configure stage before setup stages]' \
+                    '--interface[Network interface name or type]:interface:_ws_interfaces' \
+                    '--iface[Network interface name or type]:interface:_ws_interfaces' \
+                    '--ip[Explicit host LAN IP address override]:ip:' \
+                    '--lan-ip[Explicit host LAN IP address override]:ip:' \
+                    '*: :_ws_lifecycle_tokens'
+                ;;
             push|pull)
                 _arguments \
                     '--remote[Git remote name]:remote:(origin upstream)' \
@@ -191,6 +222,7 @@ _ws() {
                         '--no-tmux[Skip creating a tmux window for this workspace]' \
                         '--all[Include all repositories]' \
                         '--existing[Checkout existing branches]' \
+                        '--yes[Non-interactive: accept detected default base branches]' \
                         '*:repository specification:_ws_repositories'
                     ;;
                 focus|switch)
@@ -238,9 +270,9 @@ _ws() {
                     ;;
                 exec)
                     _arguments \
+                        '1:workspace or service:_ws_workspace_or_service' \
                         '--all[Execute across all repositories]' \
-                        '--repos[Comma-separated repository list]:repos:' \
-                        '*:args:_files'
+                        '*: :_files'
                     ;;
                 restart)
                     _arguments \
@@ -281,6 +313,18 @@ _ws() {
                         '--lan-ip[Explicit host LAN IP address override]:ip:' \
                         '*:service:_ws_repositories'
                     ;;
+                lifecycle)
+                    _arguments \
+                        '--all[Run for all repositories]' \
+                        '--force[Force rerun even if stage is already complete]' \
+                        '--dry-run[Print actions without running hooks]' \
+                        '--skip-configure[Skip automatic configure stage before setup stages]' \
+                        '--interface[Network interface name or type]:interface:_ws_interfaces' \
+                        '--iface[Network interface name or type]:interface:_ws_interfaces' \
+                        '--ip[Explicit host LAN IP address override]:ip:' \
+                        '--lan-ip[Explicit host LAN IP address override]:ip:' \
+                        '*: :_ws_lifecycle_tokens'
+                    ;;
                 push|pull)
                     _arguments \
                         '1:workspace or service:_ws_workspace_or_service' \
@@ -292,11 +336,99 @@ _ws() {
                         '1:action:(add remove lock unlock)' \
                         '2:workspace:_ws_workspaces' \
                         '3:repository:_ws_repositories' \
+                        '--base[Base branch for a newly created branch]:branch:' \
+                        '--target[Base branch for a newly created branch]:branch:' \
+                        '--from[Base branch for a newly created branch]:branch:' \
                         '--existing[Checkout existing branch]' \
+                        '--yes[Non-interactive: accept detected default base branches]' \
                         '--delete-branch[Also delete branch from bare store]'
                     ;;
+                init)
+                    _arguments \
+                        '--yes[Non-interactive: accept detected default base branches]' \
+                        '*:repository URL:_files -/'
+                    ;;
+                add)
+                    _arguments \
+                        '--yes[Non-interactive: accept detected default base branches]' \
+                        '1:repository URL or name=URL:_files -/'
+                    ;;
                 project)
-                    _arguments '1:action:(init add fetch sync list register unregister)' '*:args:_files'
+                    local proj_cmd="${words[2]}"
+                    if [[ $CURRENT -eq 3 ]]; then
+                        _arguments '1:action:(init add fetch sync list register unregister migrate)'
+                    elif [[ "$proj_cmd" == "migrate" ]]; then
+                        if [[ $CURRENT -eq 4 ]]; then
+                            _arguments '1:action:(init add fetch sync list register unregister migrate)' '2:subaction:(lifecycle config)'
+                        elif [[ "${words[3]}" == "config" ]]; then
+                            _arguments \
+                                '--dry-run[Preview rename without changing files]'
+                        else
+                            _arguments \
+                                '--dry-run[Preview migration changes without writing files]' \
+                                '--yes[Apply migration without prompting]' \
+                                '--no-backup[Do not write a .bak backup file before applying migration]' \
+                                '--stage-name[Stage name for migrated setup scripts]:stage name:' \
+                                '--source[Migration source preference]:source:(auto legacy v1)' \
+                                '--no-state[Migrate config only; skip workspace lifecycle state migration]' \
+                                '--reset-state[Reset workspace lifecycle state instead of migrating it]'
+                        fi
+                    else
+                        _arguments \
+                            '1:action:(init add fetch sync list register unregister migrate)' \
+                            '*:args:_files' \
+                            '--yes[Non-interactive: accept detected default base branches]'
+                    fi
+                    ;;
+                activity)
+                    local act_cmd="${words[2]}"
+                    if [[ $CURRENT -eq 3 ]]; then
+                        _arguments '1:action:(status report sync export enable disable pause resume clear prune shell device record)'
+                    else
+                        case "$act_cmd" in
+                            status)
+                                _arguments '--json[Output as JSON]'
+                                ;;
+                            report)
+                                _arguments \
+                                    '--day[Today]' '--week[Last 7 days]' '--month[Last 30 days]' \
+                                    '--from[Start date]:date:' '--to[End date]:date:' \
+                                    '--project[Project name or id]:project:' '--repo[Repository name]:repo:_ws_repositories' \
+                                    '--workspace[Workspace name]:workspace:_ws_workspaces' \
+                                    '--device[Device id or name]:device:' '--tz[Timezone]:tz:' \
+                                    '--json[JSON output]' '--csv[CSV output]'
+                                ;;
+                            sync)
+                                if [[ "${words[3]}" == "enable" || "${words[3]}" == "disable" || "${words[3]}" == "purge" ]]; then
+                                    _arguments '--project[Project name or id]:project:' '--yes[Confirm]'
+                                else
+                                    _arguments '1:action:(enable disable purge)' '--project[Project name or id]:project:' '--force[Force sync]' '--yes[Confirm]'
+                                fi
+                                ;;
+                            export)
+                                _arguments '--raw[Export raw events]' '--from[Start date]:date:' '--to[End date]:date:' '--json[JSON lines]' '--csv[CSV output]'
+                                ;;
+                            prune)
+                                _arguments '--before[Delete events before date]:date:' '--dry-run[Show what would be deleted]'
+                                ;;
+                            clear|enable)
+                                _arguments '--yes[Skip confirmation]'
+                                ;;
+                            shell)
+                                if [[ "${words[3]}" == "install" || "${words[3]}" == "uninstall" ]]; then
+                                    _arguments '--shell[Shell]:shell:(bash zsh fish)' '--file[RC file path]:file:_files'
+                                else
+                                    _arguments '1:action:(install uninstall)' '--shell[Shell]:shell:(bash zsh fish)' '--file[RC file path]:file:_files'
+                                fi
+                                ;;
+                            device)
+                                _arguments '1:action:(rename)' '2:name:'
+                                ;;
+                            record)
+                                _arguments '--cmd[Command]:cmd:' '--cwd[Working directory]:cwd:_files -/' '--exit[Exit code]:code:' '--dur[Duration ms]:ms:' '--ts[Timestamp ms]:ts:'
+                                ;;
+                        esac
+                    fi
                     ;;
                 daemon)
                     _arguments \
@@ -372,7 +504,7 @@ _ws_completion() {
         cword=$COMP_CWORD
     fi
 
-    local commands="create new list ls info focus switch end close delete rm remove status exec push pull start launch run attach stop kill restart logs bridge shell enter open env setup repo lock unlock project init add fetch sync doctor antigravity hub clone daemon service completion"
+    local commands="create new list ls info focus switch end close delete rm remove status exec push pull start launch run attach stop kill restart logs bridge shell enter open env setup lifecycle repo lock unlock project init add fetch sync doctor antigravity hub clone daemon service activity completion"
 
     if [[ $cword -eq 1 ]]; then
         local workspaces=$(ws _complete workspaces_all 2>/dev/null | cut -d: -f1)
@@ -397,7 +529,7 @@ _ws_completion() {
     case "$subcmd" in
         create|new)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=( $(compgen -W "--file -f --setup --cmd --command --no-tmux --all --existing" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--file -f --setup --cmd --command --no-tmux --all --existing --yes" -- "$cur") )
             elif [[ $cword -eq 2 ]]; then
                 local workspaces=$(ws _complete workspaces_all 2>/dev/null | cut -d: -f1)
                 COMPREPLY=( $(compgen -W "${workspaces}" -- "$cur") )
@@ -442,6 +574,20 @@ _ws_completion() {
                 COMPREPLY=( $(compgen -W "${repos}" -- "$cur") )
             fi
             ;;
+        lifecycle)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--all --force --dry-run --skip-configure --interface --iface --ip --lan-ip" -- "$cur") )
+            elif [[ $cword -eq 2 ]]; then
+                local workspaces=$(ws _complete workspaces_all 2>/dev/null | cut -d: -f1)
+                local repos=$(ws _complete repos_all 2>/dev/null | cut -d: -f1)
+                local stages=$(ws _complete stages 2>/dev/null | cut -d: -f1)
+                COMPREPLY=( $(compgen -W "run status ${workspaces} ${repos} ${stages}" -- "$cur") )
+            else
+                local repos=$(ws _complete repos_all "${target_ws:-}" 2>/dev/null | cut -d: -f1)
+                local stages=$(ws _complete stages 2>/dev/null | cut -d: -f1)
+                COMPREPLY=( $(compgen -W "run status ${repos} ${stages}" -- "$cur") )
+            fi
+            ;;
         end|close|delete|rm|remove|focus|switch|info|status)
             if [[ "$cur" == -* ]]; then
                 COMPREPLY=( $(compgen -W "--no-merge --force -f --delete-branch --target --target-branch -t --no-tmux" -- "$cur") )
@@ -464,7 +610,7 @@ _ws_completion() {
             ;;
         exec)
             if [[ "$cur" == -* ]]; then
-                COMPREPLY=( $(compgen -W "--all --repos" -- "$cur") )
+                COMPREPLY=( $(compgen -W "--all" -- "$cur") )
             elif [[ $cword -eq 2 ]]; then
                 local workspaces=$(ws _complete workspaces_all 2>/dev/null | cut -d: -f1)
                 local repos=$(ws _complete repos_all 2>/dev/null | cut -d: -f1)
@@ -472,7 +618,9 @@ _ws_completion() {
             fi
             ;;
         repo|workspace)
-            if [[ $cword -eq 2 ]]; then
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--base --target --from --existing --yes --delete-branch" -- "$cur") )
+            elif [[ $cword -eq 2 ]]; then
                 COMPREPLY=( $(compgen -W "add remove lock unlock" -- "$cur") )
             elif [[ $cword -eq 3 ]]; then
                 local workspaces=$(ws _complete workspaces_all 2>/dev/null | cut -d: -f1)
@@ -482,9 +630,28 @@ _ws_completion() {
                 COMPREPLY=( $(compgen -W "${repos}" -- "$cur") )
             fi
             ;;
+        init|add)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=( $(compgen -W "--yes" -- "$cur") )
+            else
+                COMPREPLY=( $(compgen -f -- "$cur") )
+            fi
+            ;;
         project)
             if [[ $cword -eq 2 ]]; then
-                COMPREPLY=( $(compgen -W "init add fetch sync list register unregister" -- "$cur") )
+                COMPREPLY=( $(compgen -W "init add fetch sync list register unregister migrate" -- "$cur") )
+            elif [[ "${words[2]}" == "migrate" ]]; then
+                if [[ $cword -eq 3 ]]; then
+                    COMPREPLY=( $(compgen -W "lifecycle config" -- "$cur") )
+                elif [[ "${words[3]}" == "config" ]]; then
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=( $(compgen -W "--dry-run" -- "$cur") )
+                    fi
+                elif [[ "$cur" == -* ]]; then
+                    COMPREPLY=( $(compgen -W "--dry-run --yes --no-backup --stage-name --source --no-state --reset-state" -- "$cur") )
+                elif [[ "$prev" == "--source" ]]; then
+                    COMPREPLY=( $(compgen -W "auto legacy v1" -- "$cur") )
+                fi
             fi
             ;;
         daemon)
@@ -529,6 +696,29 @@ _ws_completion() {
                 COMPREPLY=( $(compgen -W "--project --force --no-wip" -- "$cur") )
             fi
             ;;
+        activity)
+            if [[ $cword -eq 2 ]]; then
+                COMPREPLY=( $(compgen -W "status report sync export enable disable pause resume clear prune shell device record" -- "$cur") )
+            elif [[ $cword -eq 3 ]]; then
+                case "${words[2]}" in
+                    sync) COMPREPLY=( $(compgen -W "enable disable purge" -- "$cur") ) ;;
+                    shell) COMPREPLY=( $(compgen -W "install uninstall" -- "$cur") ) ;;
+                    device) COMPREPLY=( $(compgen -W "rename" -- "$cur") ) ;;
+                esac
+            fi
+            if [[ "$cur" == -* ]]; then
+                case "${words[2]}" in
+                    status) COMPREPLY=( $(compgen -W "--json" -- "$cur") ) ;;
+                    report) COMPREPLY=( $(compgen -W "--day --week --month --from --to --project --repo --workspace --device --tz --json --csv" -- "$cur") ) ;;
+                    sync) COMPREPLY=( $(compgen -W "--project --force --yes" -- "$cur") ) ;;
+                    export) COMPREPLY=( $(compgen -W "--raw --from --to --json --csv" -- "$cur") ) ;;
+                    prune) COMPREPLY=( $(compgen -W "--before --dry-run" -- "$cur") ) ;;
+                    clear|enable) COMPREPLY=( $(compgen -W "--yes" -- "$cur") ) ;;
+                    shell) COMPREPLY=( $(compgen -W "--shell --file" -- "$cur") ) ;;
+                    record) COMPREPLY=( $(compgen -W "--cmd --cwd --exit --dur --ts" -- "$cur") ) ;;
+                esac
+            fi
+            ;;
         clone)
             ;;
         completion)
@@ -553,6 +743,10 @@ end
 
 function __fish_ws_repos
     ws _complete repos_all 2>/dev/null | string replace -r ':(.*)' '\t$1'
+end
+
+function __fish_ws_stages
+    ws _complete stages 2>/dev/null | string replace -r ':(.*)' '\t$1'
 end
 
 function __fish_ws_interfaces
@@ -588,6 +782,7 @@ complete -c ws -n "__fish_use_subcommand" -a "enter" -d "Open interactive subshe
 complete -c ws -n "__fish_use_subcommand" -a "open" -d "Open interactive subshell"
 complete -c ws -n "__fish_use_subcommand" -a "env" -d "Inspect or sync environment variables"
 complete -c ws -n "__fish_use_subcommand" -a "setup" -d "Run setup scripts and sync .env"
+complete -c ws -n "__fish_use_subcommand" -a "lifecycle" -d "Run or inspect workspace lifecycle stages"
 complete -c ws -n "__fish_use_subcommand" -a "repo" -d "Manage repositories inside workspace"
 complete -c ws -n "__fish_use_subcommand" -a "lock" -d "Lock worktree tracked files read-only"
 complete -c ws -n "__fish_use_subcommand" -a "unlock" -d "Unlock worktree tracked files writable"
@@ -603,14 +798,72 @@ complete -c ws -n "__fish_use_subcommand" -a "hub" -d "Collaborate, clone, publi
 complete -c ws -n "__fish_use_subcommand" -a "clone" -d "Clone and replicate a project from wshub"
 complete -c ws -n "__fish_use_subcommand" -a "daemon" -d "Manage or run global background daemon"
 complete -c ws -n "__fish_use_subcommand" -a "service" -d "Manage systemd user service (ws.service)"
+complete -c ws -n "__fish_use_subcommand" -a "activity" -d "Track local activity and sync time reports"
 complete -c ws -n "__fish_use_subcommand" -a "completion" -d "Generate completion scripts"
 
 # Subcommands
-complete -c ws -n "__fish_seen_subcommand_from project" -a "init add fetch sync list register unregister"
+complete -c ws -n "__fish_seen_subcommand_from project" -a "init add fetch sync list register unregister migrate"
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -a "status run"
 complete -c ws -n "__fish_seen_subcommand_from daemon" -a "run" -d "Run global daemon in foreground"
 complete -c ws -n "__fish_seen_subcommand_from service" -a "install uninstall start stop restart enable disable status logs"
 complete -c ws -n "__fish_seen_subcommand_from hub" -a "login whoami logout clone publish push pull status sync state resume auto-save secret service"
 complete -c ws -n "__fish_seen_subcommand_from repo" -a "add remove lock unlock"
+
+# Activity
+complete -c ws -n "__fish_seen_subcommand_from activity" -a "status report sync export enable disable pause resume clear prune shell device record"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from sync" -a "enable disable purge"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from shell" -a "install uninstall"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from device" -a "rename"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from status" -l json -d "Output as JSON"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l day -d "Today"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l week -d "Last 7 days"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l month -d "Last 30 days"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l from -d "Start date"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l to -d "End date"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l project -d "Project name or id"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l repo -d "Repository name"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l workspace -d "Workspace name"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l device -d "Device"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l tz -d "Timezone"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l json -d "JSON output"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from report" -l csv -d "CSV output"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from sync" -l project -d "Project name or id"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from sync" -l force -d "Force sync"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from sync" -l yes -d "Confirm"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from export" -l raw -d "Export raw events"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from export" -l from -d "Start date"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from export" -l to -d "End date"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from export" -l json -d "JSON lines"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from export" -l csv -d "CSV output"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from prune" -l before -d "Delete events before date"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from prune" -l dry-run -d "Show what would be deleted"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from clear" -l yes -d "Skip confirmation"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from enable" -l yes -d "Skip confirmation"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from shell" -l shell -a "bash zsh fish" -d "Shell"
+complete -c ws -n "__fish_seen_subcommand_from activity; and __fish_seen_subcommand_from shell" -l file -d "RC file path"
+
+# Project migrate
+complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -a "lifecycle config"
+complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -l dry-run -d "Preview migration changes without writing files"
+complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -l yes -d "Apply migration without prompting"
+complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -l no-backup -d "Do not write a backup file before applying migration"
+complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -l stage-name -d "Stage name for migrated setup scripts"
+complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -l source -a "auto legacy v1" -d "Migration source preference"
+complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -l no-state -d "Migrate config only; skip workspace lifecycle state migration"
+complete -c ws -n "__fish_seen_subcommand_from project; and __fish_seen_subcommand_from migrate" -l reset-state -d "Reset workspace lifecycle state instead of migrating it"
+
+# Lifecycle
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -a "(__fish_ws_workspaces)"
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -a "(__fish_ws_repos)"
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -a "(__fish_ws_stages)"
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -l all -d "Run for all repositories"
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -l force -d "Force rerun even if stage is already complete"
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -l dry-run -d "Print actions without running hooks"
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -l skip-configure -d "Skip automatic configure stage before explicit setup stages"
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -l interface -a "(__fish_ws_interfaces)" -d "Network interface name or type"
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -l iface -a "(__fish_ws_interfaces)" -d "Network interface name or type"
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -l ip -d "Explicit LAN IP address override"
+complete -c ws -n "__fish_seen_subcommand_from lifecycle" -l lan-ip -d "Explicit LAN IP address override"
 
 # Dynamic workspace and repo arguments
 complete -c ws -n "__fish_seen_subcommand_from start attach info end close delete status restart logs bridge shell env setup lock unlock push pull" -a "(__fish_ws_workspaces)"
@@ -635,6 +888,11 @@ complete -c ws -n "__fish_seen_subcommand_from daemon" -l tick -d "Worker loop t
 complete -c ws -n "__fish_seen_subcommand_from service" -s f -l follow -d "Follow live logs"
 complete -c ws -n "__fish_seen_subcommand_from service" -s n -l lines -d "Number of lines to display"
 complete -c ws -n "__fish_seen_subcommand_from completion" -a "zsh bash fish install"
+complete -c ws -n "__fish_seen_subcommand_from create init add" -l yes -d "Non-interactive: accept detected default base branches"
+complete -c ws -n "__fish_seen_subcommand_from repo" -l base -d "Base branch for a newly created branch"
+complete -c ws -n "__fish_seen_subcommand_from repo" -l target -d "Base branch for a newly created branch"
+complete -c ws -n "__fish_seen_subcommand_from repo" -l from -d "Base branch for a newly created branch"
+complete -c ws -n "__fish_seen_subcommand_from repo" -l yes -d "Non-interactive: accept detected default base branches"
 "#;
 
 pub fn generate_completion_script(shell: &str) -> Result<String, String> {
@@ -652,7 +910,11 @@ pub fn generate_completion_script(shell: &str) -> Result<String, String> {
 pub fn find_project_root_and_workspaces_dir() -> (Option<PathBuf>, Option<PathBuf>) {
     if let Ok(mut curr) = std::env::current_dir() {
         loop {
-            if curr.join("repositories.yml").exists() || curr.join("repositories.yaml").exists() {
+            if curr.join("ws-project.yml").exists()
+                || curr.join("ws-project.yaml").exists()
+                || curr.join("repositories.yml").exists()
+                || curr.join("repositories.yaml").exists()
+            {
                 let ws_dir = curr.join("workspaces");
                 return (Some(curr), Some(ws_dir));
             }
@@ -779,7 +1041,12 @@ pub fn query_repositories(
     }
 
     if let Some(pr) = proj_root {
-        if let Ok(cfg) = ConfigLoader::load_config(Some(&pr.join("repositories.yml")), None, true) {
+        let cfg_path = if pr.join("ws-project.yml").exists() {
+            pr.join("ws-project.yml")
+        } else {
+            pr.join("ws-project.yaml")
+        };
+        if let Ok(cfg) = ConfigLoader::load_config(Some(&cfg_path), None, true) {
             for (k, v) in cfg.repositories {
                 let disp = if include_sigil { format!("%{}", k) } else { k };
                 let desc = v.launch.clone().unwrap_or_else(|| "repository".to_string());
@@ -788,6 +1055,43 @@ pub fn query_repositories(
         }
     }
     candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    candidates
+}
+
+pub fn query_stages(workspace_name: Option<&str>) -> Vec<(String, String)> {
+    let _ = workspace_name;
+    let mut candidates: Vec<(String, String)> = vec![(
+        "+configure".to_string(),
+        "built-in configure stage".to_string(),
+    )];
+
+    let (proj_root, _) = find_project_root_and_workspaces_dir();
+    if let Some(pr) = proj_root {
+        let cfg_path = if pr.join("ws-project.yml").exists() {
+            pr.join("ws-project.yml")
+        } else {
+            pr.join("ws-project.yaml")
+        };
+        if let Ok(cfg) = ConfigLoader::load_config(Some(&cfg_path), None, true) {
+            let mut stages = std::collections::BTreeSet::new();
+            for stage in crate::lifecycle::setup_stage_names(&cfg, None) {
+                stages.insert(stage);
+            }
+            for repo in cfg.repositories.keys() {
+                for stage in crate::lifecycle::setup_stage_names(&cfg, Some(repo)) {
+                    stages.insert(stage);
+                }
+            }
+            for stage in stages {
+                candidates.push((format!("+{}", stage), format!("setup stage: {}", stage)));
+            }
+        }
+    }
+
+    for stage in crate::lifecycle::EVENT_STAGES {
+        candidates.push((format!("+{}", stage), "lifecycle event stage".to_string()));
+    }
+
     candidates
 }
 
@@ -837,6 +1141,10 @@ pub fn query_completions(query_type: &str, target: Option<&str>) -> Vec<String> 
             .map(|(c, d)| format!("{}:{}", c, d))
             .collect(),
         "repos_plain" => query_repositories(target, false)
+            .into_iter()
+            .map(|(c, d)| format!("{}:{}", c, d))
+            .collect(),
+        "stages" => query_stages(target)
             .into_iter()
             .map(|(c, d)| format!("{}:{}", c, d))
             .collect(),
